@@ -1,0 +1,51 @@
+INSTANA GCP DEPLOYER v0.2.0 - REVIEW
+====================================
+
+KRITICNI PROBLEMI NADJENI U PRILOZENOJ VERZIJI
+----------------------------------------------
+1. prompt_choice je slao meni na stdout, pa je command substitution hvatao ceo
+   meni umesto samo izabrane vrednosti. Skripta zato nije mogla pouzdano da
+   prepozna topologiju. Ispravljeno.
+2. Nije postojao izbor online/air-gapped. Dodat je.
+3. Trazen je sales key, ali ne i agent key. Dodat je agent key; sales key ostaje
+   jer ga stanctl koristi za licencu.
+4. Tajne su bile deo komandne linije i mogle su se pojaviti u process listi i
+   dry-run izlazu. Sada se prenose privremenim mode-600 fajlom, dry-run ih skriva,
+   a stanctl env fajl se uklanja posle izvrsavanja.
+5. run() je koristio eval. Uklonjeno je.
+6. Disk je bezuslovno formatiran. Sada skripta staje ako disk vec ima filesystem.
+7. Komande su se izvrsavale kao obican GCP SSH korisnik, ali su pisale u /etc i
+   /root. Remote komande sada prolaze kroz sudo bash.
+8. SSH je bio otvoren ka celom internetu. Dodat je poseban SSH firewall sa CIDR
+   unosom i automatskim predlogom javne /32 adrese kada je moguce.
+9. State fajl nije cuvao project i zone. Sada ih cuva bez tajni.
+10. destroy je prihvatao samo rec yes. Sada zahteva precizan project/zone tekst.
+
+STA JE PROVERENO LOKALNO
+------------------------
+- bash sintaksa install.sh i destroy.sh
+- identicnost zasebnih i ZIP kopija originalnih skripti
+- prisustvo relevantnih stanctl flagova u prilozenom izvornom kodu:
+  download-key, sales-key, unit-agent-key, air-gapped, multi-node-enable,
+  multi-node-ips, core-base-domain i storage volume flagovi
+- air-gapped create/import komande postoje u prilozenom stanctl kodu
+- smoke test interaktivnog toka sa laznim gcloud alatom
+
+STA NIJE JOS DOKAZANO
+---------------------
+- potpuna uspesna Instana instalacija na stvarnom GCP nalogu
+- stvarni DNS i TLS tok
+- GCP kvote i dostupnost izabranog n2 tipa u svakoj zoni
+- tacan trosak VM-ova i diskova
+- OS zavisnosti za air-gapped stanctl .deb
+- produkcijska ispravnost multi-node rasporeda i svih firewall pravila
+
+PREPORUCEN REDOSLED TESTIRANJA
+-----------------------------
+1. ./install.sh --dry-run, single-node + online + demo
+2. Stvarni single-node + online + demo na zasebnom test GCP projektu
+3. Provera diskova, reboot-a, stanctl preflight-a i health check-a
+4. Tek zatim production single-node
+5. Multi-node online
+6. Air-gapped single-node, pa air-gapped multi-node
+

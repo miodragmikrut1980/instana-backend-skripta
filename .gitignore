@@ -1,0 +1,10 @@
+.install-state.json*
+*.log
+*.before-*
+*.tmp
+.env*
+*.pem
+*.key
+*.deb
+*.zip
+*.tar*
