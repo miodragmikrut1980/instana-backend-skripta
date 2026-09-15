@@ -30,6 +30,7 @@ run_case() {
   local case_dir="$TEST_ROOT/$name"
   mkdir -p "$case_dir"
   cp "$SCRIPT_DIR/install.sh" "$case_dir/install.sh"
+  cp "$SCRIPT_DIR/parameters.sh" "$case_dir/parameters.sh"
   (
     cd "$case_dir"
     if ! PATH="$TEST_ROOT/bin:$PATH" bash ./install.sh --dry-run <<< "$input" > output.txt 2>&1; then

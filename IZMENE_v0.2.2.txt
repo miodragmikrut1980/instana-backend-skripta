@@ -1,0 +1,24 @@
+v0.2.2 — pamcenje parametara
+
+install.sh i parameters.sh moraju biti u istom folderu.
+Posle zavrsenog unosa (pre GCP provera) parametri se atomicki cuvaju u
+.install-config.json, mode 600, bez lozinki i kljuceva. Dry-run ne cuva.
+Ponovno pokretanje nudi reuse ili edit. Reuse preskace konfiguraciona pitanja,
+ali ponovo trazi cetiri tajne. Edit nudi sacuvane tekstualne vrednosti kao
+defaults; menije korisnik ponovo bira. Na kraju je i dalje potrebna potvrda.
+Putanje TLS/airgap fajlova se pamte, njihov sadrzaj se ne kopira u config.
+
+Ovo je inkrementalna promena konfiguracije, NE potpuni recovery engine.
+--resume i dalje podrzava samo postojece resurse single-node online demo
+sa praznim diskovima i bez zapocete stanctl/k3s instalacije. Za prekid posle
+formatiranja ili stanctl instalacije STOP i pregled; ne ponavljati naslepo.
+Ne ucitavaj --resume na sada uspesno instaliranoj VM.
+
+Vazno: zadrzana je korisnikova working kopija sa preskocenim single-node
+kernel korakom. Nije jos genericki installer za novu VM. Restart i potpuni
+checkpoint recovery su naredni odvojeni zahvati, ne tvrdi se da su uradjeni.
+Stari v0.2.1 ne sadrzi config; parametri se moraju jednom uneti u v0.2.2.
+Ako premestas folder, kopiraj config i state privatno, nikada preko Gita.
+
+Provere: bash syntax, mock dry-run, config roundtrip/permissions,
+odsustvo tajni i dry-run bez pisanja. Bez stvarnog GCP deploy testa.

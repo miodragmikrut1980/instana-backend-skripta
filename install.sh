@@ -24,6 +24,9 @@ set -euo pipefail
 # ── Constants ─────────────────────────────────────────────────────────────────
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly STATE_FILE="${SCRIPT_DIR}/.install-state.json"
+readonly CONFIG_FILE="${SCRIPT_DIR}/.install-config.json"
+umask 077
+source "${SCRIPT_DIR}/parameters.sh"
 readonly LOG_FILE="${SCRIPT_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
 readonly INSTANA_APT_REPO="deb [signed-by=/usr/share/keyrings/instana-archive-keyring.gpg] https://artifact-public.instana.io/artifactory/rel-debian-public-virtual generic main"
 readonly INSTANA_KEYRING_URL="https://artifact-public.instana.io/artifactory/api/security/keypair/public/repositories/rel-debian-public-virtual"
@@ -226,6 +229,10 @@ show_three_node_requirements() {
 # =============================================================================
 prompt() {
   local var_name="$1" prompt_text="$2" default="${3:-}"
+  if [[ "$CONFIG_LOADED" == true ]]; then
+    default="$(jq -r --arg k "$var_name" '.parameters[$k] // empty' "$CONFIG_FILE")"
+    [[ -n "$default" ]] || default="${3:-}"
+  fi
   local value
   if [[ -n "$default" ]]; then
     read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text} [${default}]: ")" value
@@ -1287,7 +1294,10 @@ main() {
 
   check_local_tools
   check_gcp_login
-  collect_parameters
+  if ! offer_saved_parameters; then
+    collect_parameters
+  fi
+  save_parameters
   validate_vm_names
   check_gcp_configuration
   if [[ "$RESUME" == true ]]; then
