@@ -539,19 +539,37 @@ build_airgapped_package_locally() {
     return 1
   fi
   log "artifact-public.instana.io reachable (HTTP ${http_code})."
-  prompt_required "AIRGAP_OUTPUT_DIR" "Directory for the package (will be created)" "${HOME}/instana-airgap"
-  out_dir="$AIRGAP_OUTPUT_DIR"
-  mkdir -p "$out_dir" || { err "Cannot create ${out_dir}."; return 1; }
-  free_gb=$(df -Pk "$out_dir" 2>/dev/null | awk 'NR==2 {printf "%d", $4/1024/1024}')
-  log "Free space in ${out_dir}: ${free_gb:-?} GB (IBM: at least 20-30 GB for the package)."
-  if [[ -n "$free_gb" ]] && (( free_gb < 40 )); then
-    prompt_yes_no "Less than 40 GB free. Continue anyway?" N || return 1
-  fi
+  # Output directory: IBM requires 20-30 GB free where the package is created.
+  # Below 20 GB the download would fail part-way, so the directory is re-asked.
+  while true; do
+    prompt_required "AIRGAP_OUTPUT_DIR" "Directory for the package (will be created)" "${HOME}/instana-airgap"
+    out_dir="$AIRGAP_OUTPUT_DIR"
+    mkdir -p "$out_dir" || { err "Cannot create ${out_dir}."; confirm_cancel; continue; }
+    free_gb=$(df -Pk "$out_dir" 2>/dev/null | awk 'NR==2 {printf "%d", $4/1024/1024}')
+    log "Free space in ${out_dir}: ${free_gb:-?} GB (IBM: at least 20-30 GB for the package)."
+    if [[ -n "$free_gb" ]] && (( free_gb < 20 )); then
+      err "Not enough space in ${out_dir}: ${free_gb} GB free, the package needs 20-30 GB."
+      echo "  Options: choose a directory on a larger disk, free space, or enlarge this VM's disk, e.g." >&2
+      echo "    gcloud compute disks resize <boot-disk> --size=100GB --zone=<zone>   (then: sudo growpart /dev/sda 1 && sudo resize2fs /dev/sda1)" >&2
+      prompt_yes_no "Choose another directory?" Y || return 1
+      continue
+    fi
+    if [[ -n "$free_gb" ]] && (( free_gb < 40 )); then
+      prompt_yes_no "Between 20 and 40 GB free; the package may still not fit. Continue anyway?" N || { prompt_yes_no "Choose another directory?" Y || return 1; continue; }
+    fi
+    break
+  done
   prompt_yes_no "Install stanctl here if missing and create the package in ${out_dir} now?" N ||
     { warn "Package creation skipped."; return 1; }
 
   if ! command -v stanctl >/dev/null 2>&1; then
     log "Installing stanctl on this machine from the Instana APT repository..."
+    # gpg (gnupg) is needed for the repository keyring and is not on minimal images.
+    if ! command -v gpg >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+      log "Installing gnupg, curl and ca-certificates first..."
+      sudo apt-get update -qq && sudo apt-get install -y -qq gnupg curl ca-certificates ||
+        { err "Could not install gnupg/curl on this machine."; return 1; }
+    fi
     tmp_auth=$(mktemp); chmod 600 "$tmp_auth"
     printf 'machine artifact-public.instana.io\n  login _\n  password %s\n' "$DOWNLOAD_KEY" > "$tmp_auth"
     sudo install -o root -g root -m 600 "$tmp_auth" /etc/apt/auth.conf.d/instana.conf
