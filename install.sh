@@ -272,12 +272,21 @@ prompt_choice() {
   echo "${options[$((choice - 1))]}"
 }
 
+# Yes/no questions always show both answers and which one Enter selects,
+# e.g. "[y/N]" = type y for yes, Enter or n for no.
 prompt_yes_no() {
   local prompt_text="$1" default="${2:-N}"
-  local answer
-  read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text} [${default}]: ")" answer
-  answer="${answer:-$default}"
-  [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]
+  local answer hint
+  if [[ "${default^^}" == Y ]]; then hint="[Y/n] (Enter = yes)"; else hint="[y/N] (Enter = no)"; fi
+  while true; do
+    read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text} ${hint}: ")" answer || return 1
+    answer="${answer:-$default}"
+    case "${answer,,}" in
+      y|yes) return 0 ;;
+      n|no)  return 1 ;;
+      *) echo "  Please answer y (yes) or n (no)." >&2 ;;
+    esac
+  done
 }
 
 # ── Interactive input never aborts silently ──────────────────────────────────
@@ -642,7 +651,10 @@ build_airgapped_package_locally() {
     fi
     break
   done
-  prompt_yes_no "Configure the Instana repository here, select stanctl and backend versions, and create the package in ${out_dir} now?" N ||
+  echo "" >&2
+  echo "  Next steps on THIS machine: add the Instana APT repository, let you pick the exact stanctl and" >&2
+  echo "  backend versions, then run 'stanctl air-gapped package' into ${out_dir} (long download)." >&2
+  prompt_yes_no "Type y to start creating the package now, or n to go back to the menu" N ||
     { warn "Package creation skipped."; return 1; }
 
   configure_local_instana_repository || return 1
