@@ -46,8 +46,10 @@ internetom, sadrzi i stanctl binarni fajl, vise desetina GB) i ponudi meni:
 1) postojeca arhiva na ovoj masini, 2) napravi paket sada OVDE (skripta sama
 instalira stanctl iz Instana APT repoa i pokrene pakovanje; treba internet,
 sudo, ~40 GB), 3) predji na online instalaciju, 4) otkazi. Verzije se citaju
-iz arhive i prikazuju u planu. Air-gapped tok NIJE potvrdjen stvarnim
-deploymentom; resume za air-gapped nije podrzan.
+iz arhive i prikazuju u planu. Air-gapped tok je POTVRDJEN stvarnim
+deploymentom 18.09.2026 (single-node demo, paket napravljen opcijom 2 na
+upravljackoj VM, stanctl 1.15.0 / backend 3.323.470-0, svih 12 faza).
+Resume za air-gapped i dalje nije podrzan.
 
 Single-node kernel skip jos ostaje iz working kopije i nije genericki
 installer za novu single VM.

@@ -52,3 +52,11 @@ Addendum (same day, after the first real package build on the management VM):
   chosen from 'apt-cache madison' and held, then the backend version is
   chosen from 'stanctl versions identify' and pinned into the package via
   STANCTL_INSTANA_VERSION (--instana-version). Both appear in the plan.
+
+Verified 2026-09-18: full air-gapped single-node demo deployment completed
+end to end (package built with option 2 on the management VM in
+europe-west6, copied cross-region to us-central1-a, imported, stanctl up
+--air-gapped, health checks passed). Later same-day additions: [y/N] prompts
+with Enter default, single-pass archive inspection with percentage/elapsed
+display, region/zone default from this machine's own GCE zone with a
+cross-region warning for air-gapped copies.
