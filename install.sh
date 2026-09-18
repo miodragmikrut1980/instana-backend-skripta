@@ -237,10 +237,10 @@ prompt() {
   fi
   local value
   if [[ -n "$default" ]]; then
-    read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text} [${default}]: ")" value
+    read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text} [${default}]: ")" value || return 1
     echo "${value:-$default}"
   else
-    read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text}: ")" value
+    read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text}: ")" value || return 1
     echo "$value"
   fi
 }
@@ -248,7 +248,7 @@ prompt() {
 prompt_secret() {
   local var_name="$1" prompt_text="$2"
   local value
-  read -rsp "$(echo -e "${CYAN}?${RESET} ${prompt_text}: ")" value
+  read -rsp "$(echo -e "${CYAN}?${RESET} ${prompt_text}: ")" value || { echo "" >&2; return 1; }
   echo "" >&2
   echo "$value"
 }
@@ -279,27 +279,94 @@ prompt_yes_no() {
   [[ "${answer,,}" == "y" || "${answer,,}" == "yes" ]]
 }
 
+# ── Interactive input never aborts silently ──────────────────────────────────
+# An empty answer or an invalid value re-asks the question. The installer only
+# stops when the operator explicitly confirms the cancellation, or when stdin
+# is closed (non-interactive run with no more input).
+confirm_cancel() {
+  local answer
+  read -rp "$(echo -e "${YELLOW}!${RESET} No valid value entered. Cancel the installation? [y/N]: ")" answer ||
+    die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+  case "${answer,,}" in
+    y|yes) die "Installation cancelled by the operator. Nothing was created." ;;
+  esac
+  echo "  Continuing; please answer the question again." >&2
+}
+
+# prompt_required VAR TEXT DEFAULT [VALIDATOR [LABEL]]
+# Sets the variable VAR directly in the calling shell (no command substitution),
+# so validators may print, set globals and call die normally. VALIDATOR is called
+# as: VALIDATOR VALUE LABEL and must print its own error and return non-zero.
+prompt_required() {
+  local var_name="$1" prompt_text="$2" default="${3:-}" validator="${4:-}" label="${5:-}"
+  local value
+  while true; do
+    value=$(prompt "$var_name" "$prompt_text" "$default") ||
+      die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    if [[ -z "$value" ]]; then
+      confirm_cancel
+      continue
+    fi
+    if [[ -n "$validator" ]] && ! "$validator" "$value" "$label"; then
+      confirm_cancel
+      continue
+    fi
+    printf -v "$var_name" '%s' "$value"
+    return 0
+  done
+}
+
+# prompt_secret_required VAR TEXT LABEL — same contract, hidden input.
+prompt_secret_required() {
+  local var_name="$1" prompt_text="$2" label="$3"
+  local value
+  while true; do
+    value=$(prompt_secret "$var_name" "$prompt_text") ||
+      die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    if validate_secret "$value" "$label"; then
+      printf -v "$var_name" '%s' "$value"
+      return 0
+    fi
+    confirm_cancel
+  done
+}
+
 validate_secret() {
   local value="$1" label="$2"
-  [[ -n "$value" ]] || die "${label} is required."
-  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "${label} must not contain line breaks."
+  [[ -n "$value" ]] || { err "${label} is required."; return 1; }
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || { err "${label} must not contain line breaks."; return 1; }
 }
 
 validate_tenant_unit_name() {
   # From docs: must match ^[a-z][a-z0-9]*$, max 15 chars, start with alpha, lowercase only
   local name="$1" label="$2"
   if ! [[ "$name" =~ ^[a-z][a-z0-9]*$ ]]; then
-    die "${label} '${name}' is invalid. Must match ^[a-z][a-z0-9]*$ (lowercase alphanumeric, start with letter)"
+    err "${label} '${name}' is invalid. Must match ^[a-z][a-z0-9]*$ (lowercase alphanumeric, start with letter)"
+    return 1
   fi
   if [[ ${#name} -gt 15 ]]; then
-    die "${label} '${name}' exceeds 15 characters."
+    err "${label} '${name}' exceeds 15 characters."
+    return 1
   fi
+}
+
+validate_file_exists() {
+  local path="$1" label="$2"
+  [[ -f "$path" && ! -L "$path" ]] || { err "${label} not found or is a symlink: ${path}"; return 1; }
+}
+
+validate_gcp_project_id() {
+  # https://cloud.google.com/resource-manager/docs/creating-managing-projects: 6-30 chars,
+  # lowercase letters, digits, hyphens; starts with a letter; no trailing hyphen.
+  local id="$1"
+  [[ "$id" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] ||
+    { err "Invalid GCP Project ID '${id}': 6-30 lowercase letters, digits or hyphens, starting with a letter."; return 1; }
 }
 
 validate_fqdn() {
   local fqdn="$1"
   if ! [[ "$fqdn" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
-    die "Invalid FQDN: ${fqdn}"
+    err "Invalid FQDN: ${fqdn}"; return 1
   fi
 }
 
@@ -338,22 +405,18 @@ collect_parameters() {
     "ubuntu-2204-lts")
 
   # GCP parameters
-  GCP_PROJECT=$(prompt "GCP_PROJECT" "GCP Project ID" "")
-  [[ -z "$GCP_PROJECT" ]] && die "GCP Project ID is required."
-
-  GCP_REGION=$(prompt "GCP_REGION" "GCP Region" "us-central1")
-  GCP_ZONE=$(prompt "GCP_ZONE" "GCP Zone" "${GCP_REGION}-a")
-  GCP_NETWORK=$(prompt "GCP_NETWORK" "VPC Network name" "default")
-  GCP_SUBNET=$(prompt "GCP_SUBNET" "Subnet name" "default")
-  SSH_SOURCE_CIDR=$(prompt "SSH_SOURCE_CIDR" "CIDR allowed to SSH to the VM(s)" "$(detect_public_cidr)")
-  validate_cidr "$SSH_SOURCE_CIDR"
-
+  prompt_required "GCP_PROJECT" "GCP Project ID (from 'gcloud projects list')" "$(gcloud config get-value project 2>/dev/null || true)" validate_gcp_project_id
+  prompt_required "GCP_REGION" "GCP Region" "us-central1"
+  prompt_required "GCP_ZONE" "GCP Zone" "${GCP_REGION}-a"
+  prompt_required "GCP_NETWORK" "VPC Network name" "default"
+  prompt_required "GCP_SUBNET" "Subnet name" "default"
+  prompt_required "SSH_SOURCE_CIDR" "CIDR allowed to SSH to the VM(s)" "$(detect_public_cidr)" validate_cidr
   if [[ "$TOPOLOGY" == "single-node" ]]; then
-    VM_NAME=$(prompt "VM_NAME" "VM name" "instana-backend")
+    prompt_required "VM_NAME" "VM name" "instana-backend"
   else
-    NODE0_NAME=$(prompt "NODE0_NAME" "Node 0 name (instana-0, backend)" "instana-0")
-    NODE1_NAME=$(prompt "NODE1_NAME" "Node 1 name (instana-1, data store)" "instana-1")
-    NODE2_NAME=$(prompt "NODE2_NAME" "Node 2 name (instana-2, other)" "instana-2")
+    prompt_required "NODE0_NAME" "Node 0 name (instana-0, backend)" "instana-0"
+    prompt_required "NODE1_NAME" "Node 1 name (instana-1, data store)" "instana-1"
+    prompt_required "NODE2_NAME" "Node 2 name (instana-2, other)" "instana-2"
   fi
 
   # Machine type selection
@@ -369,41 +432,31 @@ collect_parameters() {
   log "  otlp-grpc.<base_domain>"
   log "  <unit>-<tenant>.<base_domain>"
   echo ""
-  BASE_DOMAIN=$(prompt "BASE_DOMAIN" "Base domain (e.g. instana.example.com)" "")
-  [[ -z "$BASE_DOMAIN" ]] && die "Base domain is required."
-  validate_fqdn "$BASE_DOMAIN"
-
+  prompt_required "BASE_DOMAIN" "Base domain (e.g. instana.example.com)" "" validate_fqdn
   # Tenant / unit names
-  TENANT_NAME=$(prompt "TENANT_NAME" "Tenant name (max 15 chars, lowercase alphanumeric, start with letter)" "tenant0")
-  validate_tenant_unit_name "$TENANT_NAME" "Tenant name"
-
-  UNIT_NAME=$(prompt "UNIT_NAME" "Unit name (max 15 chars, lowercase alphanumeric, start with letter)" "unit0")
-  validate_tenant_unit_name "$UNIT_NAME" "Unit name"
-
+  prompt_required "TENANT_NAME" "Tenant name (max 15 chars, lowercase alphanumeric, start with letter)" "tenant0" validate_tenant_unit_name "Tenant name"
+  prompt_required "UNIT_NAME" "Unit name (max 15 chars, lowercase alphanumeric, start with letter)" "unit0" validate_tenant_unit_name "Unit name"
   # Admin password
   echo ""
   log "Instana admin password (will not be stored in any file or log)"
-  ADMIN_PASSWORD=$(prompt_secret "ADMIN_PASSWORD" "Instana admin password")
-  validate_secret "$ADMIN_PASSWORD" "Admin password"
-
+  prompt_secret_required "ADMIN_PASSWORD" "Instana admin password" "Admin password"
   # Instana keys — never logged or stored in local state/logs
   echo ""
   log "Instana license keys (will not be stored in any file or log)"
-  DOWNLOAD_KEY=$(prompt_secret "DOWNLOAD_KEY" "Instana download key")
-  validate_secret "$DOWNLOAD_KEY" "Download key"
-
-  SALES_KEY=$(prompt_secret "SALES_KEY" "Instana sales key")
-  validate_secret "$SALES_KEY" "Sales key"
-
-  AGENT_KEY=$(prompt_secret "AGENT_KEY" "Instana agent key")
-  validate_secret "$AGENT_KEY" "Agent key"
-
+  prompt_secret_required "DOWNLOAD_KEY" "Instana download key" "Download key"
+  prompt_secret_required "SALES_KEY" "Instana sales key" "Sales key"
+  prompt_secret_required "AGENT_KEY" "Instana agent key" "Agent key"
   if [[ "$INSTALL_MODE" == "air-gapped" ]]; then
     echo ""
     warn "Air-gapped installation needs the package created on a bastion host with 'stanctl air-gapped package'."
     warn "The archive already contains the matching stanctl binary; no separate .deb package is required."
-    AIRGAP_ARCHIVE=$(prompt "AIRGAP_ARCHIVE" "Local path to instana-airgapped.tar.gz" "")
-    inspect_airgapped_archive "$AIRGAP_ARCHIVE"
+    # The inspection sets BACKEND_VERSION / STANCTL_CLI_VERSION, so it runs in
+    # this shell (not inside the prompt's command substitution) and re-asks on failure.
+    while true; do
+      prompt_required "AIRGAP_ARCHIVE" "Local path to instana-airgapped.tar.gz" "$(default_airgapped_archive)" validate_file_exists "Air-gapped archive"
+      inspect_airgapped_archive "$AIRGAP_ARCHIVE" && break
+      confirm_cancel
+    done
   fi
 
   # TLS certificate
@@ -412,11 +465,22 @@ collect_parameters() {
     "provide custom certificate files")
 
   if [[ "$TLS_MODE" == "provide custom certificate files" ]]; then
-    TLS_CRT_PATH=$(prompt "TLS_CRT_PATH" "Full path to TLS certificate file (.crt)" "")
-    TLS_KEY_PATH=$(prompt "TLS_KEY_PATH" "Full path to TLS key file (.key)" "")
-    [[ -f "$TLS_CRT_PATH" ]] || die "TLS cert file not found: ${TLS_CRT_PATH}"
-    [[ -f "$TLS_KEY_PATH" ]] || die "TLS key file not found: ${TLS_KEY_PATH}"
+    prompt_required "TLS_CRT_PATH" "Full path to TLS certificate file (.crt)" "" validate_file_exists "TLS certificate file"
+    prompt_required "TLS_KEY_PATH" "Full path to TLS key file (.key)" "" validate_file_exists "TLS key file"
   fi
+}
+
+# Default for the air-gapped archive prompt: the only instana-airgapped.tar.gz
+# found in the current directory, the script folder or the home directory.
+default_airgapped_archive() {
+  local candidate
+  for candidate in "$PWD/instana-airgapped.tar.gz" "$SCRIPT_DIR/instana-airgapped.tar.gz" "$HOME/instana-airgapped.tar.gz"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 0
 }
 
 detect_public_cidr() {
@@ -431,8 +495,8 @@ detect_public_cidr() {
 
 validate_cidr() {
   local cidr="$1"
-  [[ "$cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]] || \
-    die "Invalid IPv4 CIDR: ${cidr}"
+  [[ "$cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]] ||
+    { err "Invalid IPv4 CIDR: ${cidr}"; return 1; }
   [[ "$cidr" != "0.0.0.0/0" ]] || warn "SSH will be exposed to the internet. Prefer your public IP with /32."
 }
 
@@ -1015,22 +1079,23 @@ add_instana_repository() {
 # (airgapped/buildmeta/buildmeta.yaml). The archive is inspected locally so the
 # operator sees the exact versions in the plan before anything is copied.
 inspect_airgapped_archive() {
+  # Returns 1 (after printing the reason) so the operator can correct the path.
   local archive="$1" manifest instana_yaml buildmeta_yaml
-  [[ -n "$archive" ]] || die "Air-gapped archive path is required."
-  [[ -f "$archive" && ! -L "$archive" ]] || die "Air-gapped archive not found or is a symlink: ${archive}"
-  command -v tar >/dev/null 2>&1 || die "tar is required to inspect the air-gapped archive."
+  [[ -n "$archive" ]] || { err "Air-gapped archive path is required."; return 1; }
+  [[ -f "$archive" && ! -L "$archive" ]] || { err "Air-gapped archive not found or is a symlink: ${archive}"; return 1; }
+  command -v tar >/dev/null 2>&1 || { err "tar is required to inspect the air-gapped archive."; return 1; }
   log "Inspecting air-gapped archive $(basename "$archive") (large archives take a while)..."
-  manifest=$(tar -tzf "$archive" 2>/dev/null) || die "Cannot read ${archive}; expected a gzip tar created by 'stanctl air-gapped package'."
+  manifest=$(tar -tzf "$archive" 2>/dev/null) || { err "Cannot read ${archive}; expected a gzip tar created by 'stanctl air-gapped package'."; return 1; }
   local member
   for member in airgapped/stanctl airgapped/config/instana.yaml airgapped/buildmeta/buildmeta.yaml; do
-    grep -Fxq "$member" <<< "$manifest" || die "Archive is missing ${member}; it was not created by 'stanctl air-gapped package' or is incomplete."
+    grep -Fxq "$member" <<< "$manifest" || { err "Archive is missing ${member}; it was not created by 'stanctl air-gapped package' or is incomplete."; return 1; }
   done
-  instana_yaml=$(tar -xzOf "$archive" airgapped/config/instana.yaml 2>/dev/null) || die "Cannot extract airgapped/config/instana.yaml."
-  buildmeta_yaml=$(tar -xzOf "$archive" airgapped/buildmeta/buildmeta.yaml 2>/dev/null) || die "Cannot extract airgapped/buildmeta/buildmeta.yaml."
+  instana_yaml=$(tar -xzOf "$archive" airgapped/config/instana.yaml 2>/dev/null) || { err "Cannot extract airgapped/config/instana.yaml."; return 1; }
+  buildmeta_yaml=$(tar -xzOf "$archive" airgapped/buildmeta/buildmeta.yaml 2>/dev/null) || { err "Cannot extract airgapped/buildmeta/buildmeta.yaml."; return 1; }
   BACKEND_VERSION=$(sed -nE 's/^instana-version:[[:space:]]*"?([^"[:space:]]+)"?.*$/\1/p' <<< "$instana_yaml" | head -1)
   STANCTL_CLI_VERSION=$(sed -nE 's/^version:[[:space:]]*"?v?([^"[:space:]]+)"?.*$/\1/p' <<< "$buildmeta_yaml" | head -1)
-  [[ -n "$BACKEND_VERSION" ]] || die "airgapped/config/instana.yaml does not declare instana-version."
-  [[ -n "$STANCTL_CLI_VERSION" ]] || die "airgapped/buildmeta/buildmeta.yaml does not declare the stanctl version."
+  [[ -n "$BACKEND_VERSION" ]] || { err "airgapped/config/instana.yaml does not declare instana-version."; return 1; }
+  [[ -n "$STANCTL_CLI_VERSION" ]] || { err "airgapped/buildmeta/buildmeta.yaml does not declare the stanctl version."; return 1; }
   ok "Air-gapped package: stanctl ${STANCTL_CLI_VERSION} → Instana backend ${BACKEND_VERSION}"
 }
 

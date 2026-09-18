@@ -34,6 +34,21 @@ save_parameters() {
   log "Non-secret parameters saved (permissions 600)."
 }
 
+# Secrets are re-entered on every run. An empty or invalid value re-asks; the
+# run stops only when the operator confirms the cancellation (confirm_cancel
+# from install.sh) or when input is closed.
+reask_secret() {
+  local var_name="$1" prompt_text="$2" label="$3" value
+  while true; do
+    value=$(prompt_secret "$var_name" "$prompt_text") || die "Input ended; installation cancelled. Nothing was created."
+    if validate_secret "$value" "$label"; then
+      printf -v "$var_name" '%s' "$value"
+      return 0
+    fi
+    if declare -F confirm_cancel >/dev/null; then confirm_cancel; else die "${label} is required."; fi
+  done
+}
+
 offer_saved_parameters() {
   if [[ ! -f "$CONFIG_FILE" ]]; then
     [[ "${RESUME:-false}" != true ]] || die "Resume requires the original .install-config.json alongside install.sh."
@@ -62,18 +77,14 @@ offer_saved_parameters() {
   [[ "$TOPOLOGY" == single-node || "$TOPOLOGY" == three-node ]] || die "Invalid saved topology."
   [[ "$INSTALL_MODE" == online || "$INSTALL_MODE" == air-gapped ]] || die "Invalid saved connectivity."
   [[ "$INSTALL_TYPE" == demo || "$INSTALL_TYPE" == production ]] || die "Invalid saved installation type."
-  validate_fqdn "$BASE_DOMAIN"
-  validate_tenant_unit_name "$TENANT_NAME" Tenant
-  validate_tenant_unit_name "$UNIT_NAME" Unit
-  validate_cidr "$SSH_SOURCE_CIDR"
-  ADMIN_PASSWORD=$(prompt_secret ADMIN_PASSWORD "Instana admin password")
-  DOWNLOAD_KEY=$(prompt_secret DOWNLOAD_KEY "Instana download key")
-  SALES_KEY=$(prompt_secret SALES_KEY "Instana sales key")
-  AGENT_KEY=$(prompt_secret AGENT_KEY "Instana agent key")
-  validate_secret "$ADMIN_PASSWORD" "Admin password"
-  validate_secret "$DOWNLOAD_KEY" "Download key"
-  validate_secret "$SALES_KEY" "Sales key"
-  validate_secret "$AGENT_KEY" "Agent key"
+  validate_fqdn "$BASE_DOMAIN" || die "Saved base domain is invalid."
+  validate_tenant_unit_name "$TENANT_NAME" Tenant || die "Saved tenant name is invalid."
+  validate_tenant_unit_name "$UNIT_NAME" Unit || die "Saved unit name is invalid."
+  validate_cidr "$SSH_SOURCE_CIDR" || die "Saved SSH CIDR is invalid."
+  reask_secret ADMIN_PASSWORD "Instana admin password" "Admin password"
+  reask_secret DOWNLOAD_KEY "Instana download key" "Download key"
+  reask_secret SALES_KEY "Instana sales key" "Sales key"
+  reask_secret AGENT_KEY "Instana agent key" "Agent key"
   if [[ "$TLS_MODE" == "provide custom certificate files" ]]; then
     [[ -f "$TLS_CRT_PATH" && -f "$TLS_KEY_PATH" ]] || die "Custom TLS files missing."
   else
@@ -81,7 +92,7 @@ offer_saved_parameters() {
   fi
   if [[ "$INSTALL_MODE" == air-gapped ]]; then
     # Re-inspect the saved archive so versions come from the file, not from config.
-    inspect_airgapped_archive "$AIRGAP_ARCHIVE"
+    inspect_airgapped_archive "$AIRGAP_ARCHIVE" || die "Saved air-gapped archive is missing or invalid: ${AIRGAP_ARCHIVE}"
   fi
   return 0
 }

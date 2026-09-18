@@ -1,0 +1,39 @@
+v0.5.8 — interactive input never aborts without confirmation
+
+Problem: pressing Enter on a question without a default (for example the
+air-gapped archive path or the GCP Project ID) stopped the installer with an
+error. Any typo in a domain, tenant, CIDR or file path did the same.
+
+1. Every free-text question is asked through prompt_required. An empty answer
+   or a value that fails validation prints the reason and asks:
+     No valid value entered. Cancel the installation? [y/N]
+   Enter or N repeats the question; only an explicit y stops the installer,
+   with "Installation cancelled by the operator. Nothing was created."
+
+2. Secrets (admin password, download, sales and agent key) behave the same
+   through prompt_secret_required; values are never echoed. The same re-ask
+   applies when secrets are re-entered for a saved configuration
+   (parameters.sh reask_secret).
+
+3. Validators (validate_fqdn, validate_tenant_unit_name, validate_cidr,
+   validate_secret, validate_file_exists, inspect_airgapped_archive) now
+   report and return non-zero instead of exiting, so the question can be
+   repeated. Saved-configuration checks in parameters.sh still fail closed.
+
+4. New defaults: the GCP Project ID offers the active gcloud project
+   (gcloud config get-value project) and is validated against the GCP
+   Project ID format; the air-gapped archive path offers
+   instana-airgapped.tar.gz when it is found in the current directory, the
+   script folder or the home directory.
+
+5. Closed input (non-interactive run that runs out of answers) stops with
+   "Input ended ..." instead of looping forever.
+
+6. Deliberately unchanged: numbered menus repeat on an invalid selection, and
+   the final "start the installation?" confirmation still treats Enter as N
+   (cancel without starting), as introduced in v0.5.4. Ctrl+C still stops the
+   installer immediately.
+
+7. New test-input-reask.sh covers empty answer, invalid value, confirmed
+   cancellation, closed input, secrets and the air-gapped archive re-ask.
+   All existing tests pass.

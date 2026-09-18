@@ -1,5 +1,5 @@
-Instana GCP lab v0.5.7 — documented air-gapped package flow
-CURRENT: read IZMENE_v0.5.7.txt, IZMENE_v0.5.6.txt and IZMENE_v0.5.5.txt first.
+Instana GCP lab v0.5.8 — input never aborts without confirmation
+CURRENT: read IZMENE_v0.5.8.txt, IZMENE_v0.5.7.txt and IZMENE_v0.5.6.txt first.
 
 The installer now shows a 12-phase checklist, explains every phase before it
 changes the VM or GCP project, displays overall completion percentage, and
@@ -51,7 +51,8 @@ Single-node kernel skip jos ostaje iz working kopije i nije genericki
 installer za novu single VM.
 Stari v0.2.2 tekst opisuje prethodni release, ovaj README ima prednost.
 
-Testovi: bash syntax, 4 mock dry-run toka, config persistence tests.
+Testovi: bash syntax, 4 mock dry-run toka, config persistence tests,
+test-input-reask.sh (ponovno pitanje umesto prekida).
 Stvarni GCP deploy NIJE testiran. IBM docs PDF145–154 i169–172;
 stanctl flags pregledani iz dostavljenog source. Confidential IBM source
 i PDF se NE distribuiraju u ZIP-u.
