@@ -416,8 +416,27 @@ collect_parameters() {
 
   # GCP parameters
   prompt_required "GCP_PROJECT" "GCP Project ID (from 'gcloud projects list')" "$(gcloud config get-value project 2>/dev/null || true)" validate_gcp_project_id
-  prompt_required "GCP_REGION" "GCP Region" "us-central1"
-  prompt_required "GCP_ZONE" "GCP Zone" "${GCP_REGION}-a"
+  # Default region/zone: where this machine runs when it is itself a GCE VM
+  # (metadata server), so the deployment lands close to it. That matters most
+  # for air-gapped installs, where the ~30 GB package is copied to the VM.
+  local local_zone local_region
+  local_zone=$(detect_local_gce_zone)
+  if [[ -n "$local_zone" ]]; then
+    local_region="${local_zone%-*}"
+    log "This machine is a GCE VM in zone ${local_zone}; offering region ${local_region} as the default (fastest transfer to the Instana VM)."
+  else
+    local_region="us-central1"
+  fi
+  prompt_required "GCP_REGION" "GCP Region" "$local_region"
+  if [[ -n "$local_zone" && "$GCP_REGION" == "$local_region" ]]; then
+    prompt_required "GCP_ZONE" "GCP Zone" "$local_zone"
+  else
+    prompt_required "GCP_ZONE" "GCP Zone" "${GCP_REGION}-a"
+  fi
+  if [[ -n "$local_zone" && "$GCP_REGION" != "$local_region" && "$INSTALL_MODE" == "air-gapped" ]]; then
+    warn "Air-gapped: the package (tens of GB) will be copied from ${local_region} to ${GCP_REGION}; a cross-region copy is several times slower than staying in ${local_region}."
+    prompt_yes_no "Keep region ${GCP_REGION} anyway?" N || { prompt_required "GCP_REGION" "GCP Region" "$local_region"; prompt_required "GCP_ZONE" "GCP Zone" "$([[ "$GCP_REGION" == "$local_region" ]] && echo "$local_zone" || echo "${GCP_REGION}-a")"; }
+  fi
   prompt_required "GCP_NETWORK" "VPC Network name" "default"
   prompt_required "GCP_SUBNET" "Subnet name" "default"
   prompt_required "SSH_SOURCE_CIDR" "CIDR allowed to SSH to the VM(s)" "$(detect_public_cidr)" validate_cidr
@@ -743,6 +762,17 @@ default_airgapped_archive() {
       return 0
     fi
   done
+  return 0
+}
+
+# Zone of this machine when it runs on Google Compute Engine, e.g. europe-west6-b;
+# empty elsewhere. The metadata server answers only from inside GCE.
+detect_local_gce_zone() {
+  local raw
+  raw=$(curl -fsS --max-time 2 -H 'Metadata-Flavor: Google' \
+    http://metadata.google.internal/computeMetadata/v1/instance/zone 2>/dev/null) || return 0
+  raw="${raw##*/}"
+  [[ "$raw" =~ ^[a-z]+-[a-z]+[0-9]+-[a-z]$ ]] && printf '%s\n' "$raw"
   return 0
 }
 
