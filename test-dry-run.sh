@@ -61,7 +61,13 @@ run_case() {
     grep -q 'Ready-to-copy /etc/hosts entries' output.txt
     ! grep -q "download-secret" output.txt
     ! grep -q "agent-secret" output.txt
-    if [[ "$name" == *airgapped ]]; then
+    if [[ "$name" == single_airgapped_to_online ]]; then
+      grep -q 'Air-gapped installation package' output.txt
+      grep -q 'Switched to an online installation' output.txt
+      grep -q -- "--instana-version 'DRY-RUN-COMPATIBLE-SELECTION'" output.txt
+      ! grep -q 'import backend' output.txt
+    elif [[ "$name" == *airgapped ]]; then
+      grep -q 'Air-gapped installation package' output.txt
       grep -q 'stanctl 1.10.9 → Instana backend 3.285.123-0' output.txt
       grep -q 'extract stanctl 1.10.9 from it and import backend 3.285.123-0' output.txt
       ! grep -q 'instana-version' output.txt
@@ -87,10 +93,14 @@ run_case single_online "$COMMON_SINGLE"
 COMMON_MULTI=$'2\n1\n1\ntest-project\nus-central1\nus-central1-a\ndefault\ndefault\n203.0.113.10/32\ninstana-0\ninstana-1\ninstana-2\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nsales-secret\nagent-secret\n1\ny'
 run_case multi_online "$COMMON_MULTI"
 
-AIR_SINGLE=$'1\n2\n1\n1\ntest-project\nus-central1\nus-central1-a\ndefault\ndefault\n203.0.113.10/32\ninstana-backend\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nsales-secret\nagent-secret\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n1\ny'
+AIR_SINGLE=$'1\n2\n1\n1\ntest-project\nus-central1\nus-central1-a\ndefault\ndefault\n203.0.113.10/32\ninstana-backend\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nsales-secret\nagent-secret\n1\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n1\ny'
 run_case single_airgapped "$AIR_SINGLE"
 
-AIR_MULTI=$'2\n2\n1\ntest-project\nus-central1\nus-central1-a\ndefault\ndefault\n203.0.113.10/32\ninstana-0\ninstana-1\ninstana-2\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nsales-secret\nagent-secret\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n1\ny'
+AIR_MULTI=$'2\n2\n1\ntest-project\nus-central1\nus-central1-a\ndefault\ndefault\n203.0.113.10/32\ninstana-0\ninstana-1\ninstana-2\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nsales-secret\nagent-secret\n1\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n1\ny'
 run_case multi_airgapped "$AIR_MULTI"
+
+# Air-gapped selected, no package available: the operator switches to online from the package menu.
+AIR_TO_ONLINE=$'1\n2\n1\n1\ntest-project\nus-central1\nus-central1-a\ndefault\ndefault\n203.0.113.10/32\ninstana-backend\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nsales-secret\nagent-secret\n3\n1\ny'
+run_case single_airgapped_to_online "$AIR_TO_ONLINE"
 
 echo "All dry-run smoke tests passed."

@@ -1,0 +1,42 @@
+v0.5.9 — guided air-gapped package: explain, locate, build here, or fall back
+
+Problem: the air-gapped path asked for a path to instana-airgapped.tar.gz and
+told the operator nothing about what that file is, where it comes from, or
+what to do without it.
+
+1. Choosing air-gapped now prints a short explanation: what the package is,
+   that 'stanctl air-gapped package' creates it on a machine with internet
+   (the bastion), that it already contains stanctl (no .deb), its size and the
+   IBM disk requirement (20-30 GB in the output directory), and that this
+   installer can create it here.
+
+2. A menu replaces the bare path prompt:
+     1) use an existing instana-airgapped.tar.gz on this machine
+        (a discovered archive in ., the script folder, ~ or ~/instana-airgap
+        is offered as the default);
+     2) create the package now on this machine;
+     3) switch to an ONLINE installation instead;
+     4) cancel the installation.
+   An unusable archive or a failed build returns to the menu instead of
+   stopping.
+
+3. Option 2 (build_airgapped_package_locally) checks Ubuntu/Debian, sudo,
+   reachability of artifact-public.instana.io and free space in the chosen
+   output directory (default ~/instana-airgap; warns below 40 GB), asks for
+   explicit confirmation, installs stanctl from the authenticated Instana APT
+   repository if missing (same repository, keyring and auth file as on the
+   Instana VM), and runs
+     stanctl air-gapped package --env-file <root-only temp file> --output-dir <dir>
+   The download and sales keys are passed only through the 600-mode temp env
+   file, never on the command line. stanctl itself asks for the backend
+   version. The resulting archive is inspected and used for the deployment.
+
+4. Option 3 sets INSTALL_MODE=online; the rest of the run behaves exactly as
+   an online installation (repository on the VM, exact stanctl/backend
+   selection).
+
+5. test-dry-run.sh adds single_airgapped_to_online and checks that the
+   explanation is shown; existing air-gapped cases select option 1.
+
+Not covered: a real package build or air-gapped deployment; both still need a
+first supervised run.

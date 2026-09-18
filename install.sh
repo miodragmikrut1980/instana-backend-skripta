@@ -39,6 +39,7 @@ DRY_RUN=false
 RESUME=false
 INSTALL_MODE=""
 AIRGAP_ARCHIVE=""
+AIRGAP_OUTPUT_DIR=""
 SSH_SOURCE_CIDR=""
 CONFIRMED_UI_IP=""
 STANCTL_APT_VERSION=""
@@ -447,16 +448,7 @@ collect_parameters() {
   prompt_secret_required "SALES_KEY" "Instana sales key" "Sales key"
   prompt_secret_required "AGENT_KEY" "Instana agent key" "Agent key"
   if [[ "$INSTALL_MODE" == "air-gapped" ]]; then
-    echo ""
-    warn "Air-gapped installation needs the package created on a bastion host with 'stanctl air-gapped package'."
-    warn "The archive already contains the matching stanctl binary; no separate .deb package is required."
-    # The inspection sets BACKEND_VERSION / STANCTL_CLI_VERSION, so it runs in
-    # this shell (not inside the prompt's command substitution) and re-asks on failure.
-    while true; do
-      prompt_required "AIRGAP_ARCHIVE" "Local path to instana-airgapped.tar.gz" "$(default_airgapped_archive)" validate_file_exists "Air-gapped archive"
-      inspect_airgapped_archive "$AIRGAP_ARCHIVE" && break
-      confirm_cancel
-    done
+    obtain_airgapped_archive
   fi
 
   # TLS certificate
@@ -470,11 +462,125 @@ collect_parameters() {
   fi
 }
 
+# ── Air-gapped package: explain, locate, build or fall back ──────────────────
+# IBM docs: the package is created on a bastion host with internet access by
+# 'stanctl air-gapped package', then transferred to the Instana host. This
+# machine can act as the bastion when it has internet, sudo and an APT-based OS.
+explain_airgapped_package() {
+  echo "" >&2
+  echo -e "${BOLD}Air-gapped installation package${RESET}" >&2
+  echo "  An air-gapped Instana host installs everything from one archive, instana-airgapped.tar.gz." >&2
+  echo "  The archive is produced on a machine WITH internet access (the bastion host) by:" >&2
+  echo "      stanctl air-gapped package --output-dir <directory>" >&2
+  echo "  It contains the stanctl binary, the Instana container images, Helm charts, k3s and the" >&2
+  echo "  license, pinned to one backend version. No separate stanctl .deb package is needed." >&2
+  echo "  Size: several tens of GB; IBM requires at least 20-30 GB free in the output directory," >&2
+  echo "  and creating it takes from several minutes to over an hour depending on bandwidth." >&2
+  echo "  This installer can create the package here (this machine becomes the bastion) using the" >&2
+  echo "  download and sales keys you entered, copy it to the Instana VM and import it there." >&2
+  echo "" >&2
+}
+
+obtain_airgapped_archive() {
+  local choice default
+  explain_airgapped_package
+  while true; do
+    default=$(default_airgapped_archive)
+    [[ -z "$default" ]] || log "Found an archive: ${default}"
+    choice=$(prompt_choice "How do you want to provide the air-gapped package?" \
+      "use an existing instana-airgapped.tar.gz on this machine" \
+      "create the package now on this machine (needs internet, sudo and about 40 GB free)" \
+      "switch to an ONLINE installation instead (the Instana VM downloads everything itself)" \
+      "cancel the installation") || die "Input ended; installation cancelled. Nothing was created."
+    case "$choice" in
+      "use an existing"*)
+        prompt_required "AIRGAP_ARCHIVE" "Local path to instana-airgapped.tar.gz" "$default" validate_file_exists "Air-gapped archive"
+        # inspect_airgapped_archive sets BACKEND_VERSION / STANCTL_CLI_VERSION in this shell.
+        inspect_airgapped_archive "$AIRGAP_ARCHIVE" && return 0
+        warn "That archive cannot be used; choose again."
+        ;;
+      "create the package"*)
+        if build_airgapped_package_locally; then
+          inspect_airgapped_archive "$AIRGAP_ARCHIVE" && return 0
+          warn "The created archive failed inspection; choose again."
+        else
+          warn "The package was not created; choose again."
+        fi
+        ;;
+      "switch to an ONLINE"*)
+        INSTALL_MODE="online"
+        AIRGAP_ARCHIVE=""
+        ok "Switched to an online installation. The Instana VM will use the Instana repository directly."
+        return 0
+        ;;
+      *)
+        die "Installation cancelled by the operator. Nothing was created."
+        ;;
+    esac
+  done
+}
+
+# Installs stanctl on this machine from the authenticated Instana APT repository
+# (IBM docs: "Adding Instana repository and installing stanctl tool") if it is
+# missing, then runs 'stanctl air-gapped package'. Keys are passed through a
+# root-only temporary env file, never on the command line.
+build_airgapped_package_locally() {
+  local out_dir free_gb tmp_env tmp_auth os_id
+  os_id=$(. /etc/os-release 2>/dev/null && printf '%s %s' "${ID:-}" "${ID_LIKE:-}")
+  [[ "$os_id" == *ubuntu* || "$os_id" == *debian* ]] ||
+    { err "This machine is not Ubuntu/Debian; stanctl is installed from an APT repository. Create the package on an Ubuntu bastion host."; return 1; }
+  command -v sudo >/dev/null 2>&1 || { err "sudo is required to install stanctl on this machine."; return 1; }
+  if ! curl -fsS --max-time 10 -o /dev/null https://artifact-public.instana.io/ 2>/dev/null; then
+    err "artifact-public.instana.io is not reachable from this machine; the package cannot be created here."
+    return 1
+  fi
+  prompt_required "AIRGAP_OUTPUT_DIR" "Directory for the package (will be created)" "${HOME}/instana-airgap"
+  out_dir="$AIRGAP_OUTPUT_DIR"
+  mkdir -p "$out_dir" || { err "Cannot create ${out_dir}."; return 1; }
+  free_gb=$(df -Pk "$out_dir" 2>/dev/null | awk 'NR==2 {printf "%d", $4/1024/1024}')
+  log "Free space in ${out_dir}: ${free_gb:-?} GB (IBM: at least 20-30 GB for the package)."
+  if [[ -n "$free_gb" ]] && (( free_gb < 40 )); then
+    prompt_yes_no "Less than 40 GB free. Continue anyway?" N || return 1
+  fi
+  prompt_yes_no "Install stanctl here if missing and create the package in ${out_dir} now?" N ||
+    { warn "Package creation skipped."; return 1; }
+
+  if ! command -v stanctl >/dev/null 2>&1; then
+    log "Installing stanctl on this machine from the Instana APT repository..."
+    tmp_auth=$(mktemp); chmod 600 "$tmp_auth"
+    printf 'machine artifact-public.instana.io\n  login _\n  password %s\n' "$DOWNLOAD_KEY" > "$tmp_auth"
+    sudo install -o root -g root -m 600 "$tmp_auth" /etc/apt/auth.conf.d/instana.conf
+    rm -f "$tmp_auth"
+    printf '%s\n' "$INSTANA_APT_REPO" | sudo tee /etc/apt/sources.list.d/instana-product.list >/dev/null
+    curl -fsS -u "_:${DOWNLOAD_KEY}" "$INSTANA_KEYRING_URL" | sudo gpg --dearmor --yes -o /usr/share/keyrings/instana-archive-keyring.gpg ||
+      { err "Could not download the Instana repository key; check the download key."; return 1; }
+    sudo apt-get update -qq && sudo apt-get install -y stanctl ||
+      { err "stanctl installation failed on this machine."; return 1; }
+  fi
+  ok "stanctl on this machine: $(stanctl --version 2>/dev/null | head -1)"
+
+  tmp_env=$(mktemp); chmod 600 "$tmp_env"
+  printf 'STANCTL_DOWNLOAD_KEY=%s\nSTANCTL_SALES_KEY=%s\n' "$DOWNLOAD_KEY" "$SALES_KEY" > "$tmp_env"
+  log "Creating the air-gapped package in ${out_dir}. stanctl will ask you to select the Instana backend version."
+  log "This downloads several tens of GB; do not interrupt it."
+  if stanctl air-gapped package --env-file "$tmp_env" --output-dir "$out_dir"; then
+    rm -f "$tmp_env"
+  else
+    rm -f "$tmp_env"
+    err "'stanctl air-gapped package' failed; see its output above."
+    return 1
+  fi
+  AIRGAP_ARCHIVE="${out_dir}/instana-airgapped.tar.gz"
+  [[ -f "$AIRGAP_ARCHIVE" ]] || { err "Expected ${AIRGAP_ARCHIVE} was not produced."; return 1; }
+  ok "Package created: ${AIRGAP_ARCHIVE}"
+}
+
 # Default for the air-gapped archive prompt: the only instana-airgapped.tar.gz
 # found in the current directory, the script folder or the home directory.
 default_airgapped_archive() {
   local candidate
-  for candidate in "$PWD/instana-airgapped.tar.gz" "$SCRIPT_DIR/instana-airgapped.tar.gz" "$HOME/instana-airgapped.tar.gz"; do
+  for candidate in "$PWD/instana-airgapped.tar.gz" "$SCRIPT_DIR/instana-airgapped.tar.gz" \
+                   "$HOME/instana-airgapped.tar.gz" "$HOME/instana-airgap/instana-airgapped.tar.gz"; do
     if [[ -f "$candidate" ]]; then
       printf '%s\n' "$candidate"
       return 0

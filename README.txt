@@ -1,5 +1,5 @@
-Instana GCP lab v0.5.8 — input never aborts without confirmation
-CURRENT: read IZMENE_v0.5.8.txt, IZMENE_v0.5.7.txt and IZMENE_v0.5.6.txt first.
+Instana GCP lab v0.5.9 — guided air-gapped package (explain, build or fall back)
+CURRENT: read IZMENE_v0.5.9.txt, IZMENE_v0.5.8.txt and IZMENE_v0.5.7.txt first.
 
 The installer now shows a 12-phase checklist, explains every phase before it
 changes the VM or GCP project, displays overall completion percentage, and
@@ -40,12 +40,14 @@ State belezi resurse/checkpoints, ali MULTINODE RESUME NIJE implementiran.
 Posle greske ne pokretati naslepo ponovo; sacuvati log/state za pregled.
 destroy.sh cita state iz istog foldera; brise trajno uz eksplicitnu potvrdu.
 
-Air-gapped (v0.5.7): na bastion masini sa internetom napravi paket komandom
-'stanctl air-gapped package' (trazi download i sales key, bira backend
-verziju). Skripti se daje SAMO instana-airgapped.tar.gz; stanctl binarni fajl
-je vec u arhivi, .deb paket vise nije potreban. Skripta lokalno cita verzije
-iz arhive i prikazuje ih u planu. Air-gapped tok i dalje NIJE potvrdjen
-stvarnim deploymentom; resume za air-gapped nije podrzan.
+Air-gapped (v0.5.9): kad izaberes air-gapped, skripta objasni sta je paket
+(instana-airgapped.tar.gz, pravi ga 'stanctl air-gapped package' na masini sa
+internetom, sadrzi i stanctl binarni fajl, vise desetina GB) i ponudi meni:
+1) postojeca arhiva na ovoj masini, 2) napravi paket sada OVDE (skripta sama
+instalira stanctl iz Instana APT repoa i pokrene pakovanje; treba internet,
+sudo, ~40 GB), 3) predji na online instalaciju, 4) otkazi. Verzije se citaju
+iz arhive i prikazuju u planu. Air-gapped tok NIJE potvrdjen stvarnim
+deploymentom; resume za air-gapped nije podrzan.
 
 Single-node kernel skip jos ostaje iz working kopije i nije genericki
 installer za novu single VM.
