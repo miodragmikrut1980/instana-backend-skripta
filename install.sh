@@ -597,11 +597,24 @@ build_airgapped_package_locally() {
   printf 'STANCTL_DOWNLOAD_KEY=%s\nSTANCTL_SALES_KEY=%s\n' "$DOWNLOAD_KEY" "$SALES_KEY" > "$tmp_env"
   log "Creating the air-gapped package in ${out_dir}. stanctl will ask you to select the Instana backend version."
   log "This downloads several tens of GB; do not interrupt it."
-  if stanctl air-gapped package --env-file "$tmp_env" --output-dir "$out_dir"; then
-    rm -f "$tmp_env"
-  else
-    rm -f "$tmp_env"
-    err "'stanctl air-gapped package' failed; see its output above."
+  # Long downloads can drop ("unexpected EOF"). stanctl keeps already exported
+  # images in <out_dir>/airgapped/docker and skips them on the next run, so a
+  # retry only fetches what is missing.
+  local attempt=1 max_attempts=3 packaged=false
+  while (( attempt <= max_attempts )); do
+    if stanctl air-gapped package --env-file "$tmp_env" --output-dir "$out_dir"; then
+      packaged=true
+      break
+    fi
+    if (( attempt < max_attempts )); then
+      warn "'stanctl air-gapped package' failed (attempt ${attempt}/${max_attempts}). Retrying in 30 s; already downloaded images are reused."
+      sleep 30
+    fi
+    (( attempt++ ))
+  done
+  rm -f "$tmp_env"
+  if [[ "$packaged" != true ]]; then
+    err "'stanctl air-gapped package' failed ${max_attempts} times; see its output above. Choosing option 2 again resumes from the images already downloaded."
     return 1
   fi
   AIRGAP_ARCHIVE="${out_dir}/instana-airgapped.tar.gz"
