@@ -576,7 +576,10 @@ build_airgapped_package_locally() {
     rm -f "$tmp_auth"
     # Keyring first, sources list only after it succeeds: a list without a key
     # breaks every later 'apt-get update' on this machine.
-    if ! curl -fsS -u "_:${DOWNLOAD_KEY}" "$INSTANA_KEYRING_URL" | sudo gpg --dearmor --yes -o /usr/share/keyrings/instana-archive-keyring.gpg; then
+    # chmod 644: gpg may create the keyring as 0600 and APT verifies signatures as
+    # the unprivileged _apt user, which then fails with "Permission denied".
+    if ! curl -fsS -u "_:${DOWNLOAD_KEY}" "$INSTANA_KEYRING_URL" | sudo gpg --dearmor --yes -o /usr/share/keyrings/instana-archive-keyring.gpg ||
+       ! sudo chmod 644 /usr/share/keyrings/instana-archive-keyring.gpg; then
       sudo rm -f /usr/share/keyrings/instana-archive-keyring.gpg /etc/apt/sources.list.d/instana-product.list
       err "Could not download the Instana repository key; check the download key."
       return 1
@@ -1202,7 +1205,7 @@ add_instana_repository() {
   upload_private_file "$tmp_auth" "$vm_name" "$zone" "$project" instana-apt-auth.conf
   upload_private_file "$tmp_curl" "$vm_name" "$zone" "$project" instana-curl.conf
   remote_exec "$vm_name" "$zone" "$project" \
-    "install -o root -g root -m 600 /root/instana-apt-auth.conf /etc/apt/auth.conf.d/instana.conf; printf '%s\\n' '${INSTANA_APT_REPO}' > /etc/apt/sources.list.d/instana-product.list; curl --config /root/instana-curl.conf '${INSTANA_KEYRING_URL}' | gpg --dearmor --yes -o /usr/share/keyrings/instana-archive-keyring.gpg; rm -f /root/instana-apt-auth.conf /root/instana-curl.conf"
+    "install -o root -g root -m 600 /root/instana-apt-auth.conf /etc/apt/auth.conf.d/instana.conf; printf '%s\\n' '${INSTANA_APT_REPO}' > /etc/apt/sources.list.d/instana-product.list; curl --config /root/instana-curl.conf '${INSTANA_KEYRING_URL}' | gpg --dearmor --yes -o /usr/share/keyrings/instana-archive-keyring.gpg; chmod 644 /usr/share/keyrings/instana-archive-keyring.gpg; rm -f /root/instana-apt-auth.conf /root/instana-curl.conf"
   rm -f "$tmp_auth" "$tmp_curl"
   trap - RETURN
 
