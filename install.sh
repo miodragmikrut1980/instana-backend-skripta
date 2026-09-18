@@ -524,6 +524,89 @@ obtain_airgapped_archive() {
 # (IBM docs: "Adding Instana repository and installing stanctl tool") if it is
 # missing, then runs 'stanctl air-gapped package'. Keys are passed through a
 # root-only temporary env file, never on the command line.
+# The management machine gets the same authenticated APT source as the Instana
+# VM (IBM docs: "Adding Instana repository and installing stanctl tool").
+configure_local_instana_repository() {
+  local tmp_auth
+  # gpg (gnupg) is needed for the repository keyring and is not on minimal images.
+  if ! command -v gpg >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+    log "Installing gnupg, curl and ca-certificates first..."
+    sudo rm -f /etc/apt/sources.list.d/instana-product.list
+    sudo apt-get update -qq && sudo apt-get install -y -qq gnupg curl ca-certificates ||
+      { err "Could not install gnupg/curl on this machine."; return 1; }
+  fi
+  tmp_auth=$(mktemp); chmod 600 "$tmp_auth"
+  printf 'machine artifact-public.instana.io\n  login _\n  password %s\n' "$DOWNLOAD_KEY" > "$tmp_auth"
+  sudo install -o root -g root -m 600 "$tmp_auth" /etc/apt/auth.conf.d/instana.conf
+  rm -f "$tmp_auth"
+  # Keyring first, sources list only after it succeeds: a list without a key
+  # breaks every later 'apt-get update' on this machine.
+  # chmod 644: gpg may create the keyring as 0600 and APT verifies signatures as
+  # the unprivileged _apt user, which then fails with "Permission denied".
+  if ! curl -fsS -u "_:${DOWNLOAD_KEY}" "$INSTANA_KEYRING_URL" | sudo gpg --dearmor --yes -o /usr/share/keyrings/instana-archive-keyring.gpg ||
+     ! sudo chmod 644 /usr/share/keyrings/instana-archive-keyring.gpg; then
+    sudo rm -f /usr/share/keyrings/instana-archive-keyring.gpg /etc/apt/sources.list.d/instana-product.list
+    err "Could not download the Instana repository key; check the download key."
+    return 1
+  fi
+  printf '%s\n' "$INSTANA_APT_REPO" | sudo tee /etc/apt/sources.list.d/instana-product.list >/dev/null
+  if ! sudo apt-get update -qq; then
+    sudo rm -f /etc/apt/sources.list.d/instana-product.list
+    err "apt-get update failed with the Instana repository; the repository entry was removed again."
+    return 1
+  fi
+  ok "Instana APT repository configured on this machine."
+}
+
+# Same rule as on the Instana VM: an exact stanctl package version is chosen,
+# installed and held. The archive is later packaged by exactly this CLI.
+select_and_install_local_stanctl() {
+  local installed selected
+  local -a stanctl_versions
+  mapfile -t stanctl_versions < <(apt-cache madison stanctl 2>/dev/null | awk '{print $3}' | sed '/^$/d' | sort -Vu -r | grep -E '^[0-9]+([:.+~_-]?[0-9A-Za-z]+)*$' | awk '!seen[$0]++')
+  (( ${#stanctl_versions[@]} > 0 )) || { err "The Instana repository returned no installable stanctl versions."; return 1; }
+  installed=$(dpkg-query -W -f='${Version}' stanctl 2>/dev/null || true)
+  echo "" >&2
+  echo -e "${BOLD}Available stanctl package versions (newest first)${RESET}${installed:+; currently installed: ${installed}}:" >&2
+  selected=$(prompt_choice "Select the exact stanctl version for the air-gapped package:" "${stanctl_versions[@]}") ||
+    { err "stanctl version selection was cancelled."; return 1; }
+  if [[ "$installed" != "$selected" ]]; then
+    log "Installing stanctl ${selected} on this machine..."
+    sudo apt-mark unhold stanctl >/dev/null 2>&1 || true
+    if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades "stanctl=${selected}"; then
+      err "stanctl ${selected} could not be installed on this machine."
+      return 1
+    fi
+  fi
+  sudo apt-mark hold stanctl >/dev/null 2>&1 || true
+  installed=$(dpkg-query -W -f='${Version}' stanctl 2>/dev/null || true)
+  [[ "$installed" == "$selected" ]] || { err "Installed stanctl ${installed} does not match selected ${selected}."; return 1; }
+  STANCTL_APT_VERSION="$selected"
+  STANCTL_CLI_VERSION=$(stanctl --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+([.+~-][0-9A-Za-z.-]+)?' | head -1 || true)
+  [[ -n "$STANCTL_CLI_VERSION" ]] || { err "Could not parse 'stanctl --version' output."; return 1; }
+  ok "stanctl on this machine: package ${STANCTL_APT_VERSION} (CLI ${STANCTL_CLI_VERSION}), held."
+}
+
+# The installed CLI reports the backend versions it supports; the operator
+# picks one and it is pinned into the package (--instana-version).
+select_local_backend_version() {
+  local tmp_key raw_backends selected
+  local -a backend_versions
+  tmp_key=$(mktemp); chmod 600 "$tmp_key"
+  printf 'STANCTL_DOWNLOAD_KEY=%s\n' "$DOWNLOAD_KEY" > "$tmp_key"
+  raw_backends=$(stanctl versions identify --env-file "$tmp_key" --quiet 2>/dev/null)
+  rm -f "$tmp_key"
+  mapfile -t backend_versions < <(printf '%s\n' "$raw_backends" | sed -nE 's/^[[:space:]]*-[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+[-.+~][0-9A-Za-z.-]+)[[:space:]]*$/\1/p' | awk '!seen[$0]++')
+  (( ${#backend_versions[@]} > 0 )) ||
+    { err "stanctl ${STANCTL_CLI_VERSION} returned no supported backend versions (check the download key)."; return 1; }
+  echo "" >&2
+  echo -e "${BOLD}Backend versions supported by stanctl ${STANCTL_CLI_VERSION}:${RESET}" >&2
+  selected=$(prompt_choice "Select the exact Instana backend version to package:" "${backend_versions[@]}") ||
+    { err "Backend version selection was cancelled."; return 1; }
+  BACKEND_VERSION="$selected"
+  ok "Package will pin: stanctl ${STANCTL_CLI_VERSION} → backend ${BACKEND_VERSION}"
+}
+
 build_airgapped_package_locally() {
   local out_dir free_gb tmp_env tmp_auth os_id
   os_id=$(. /etc/os-release 2>/dev/null && printf '%s %s' "${ID:-}" "${ID_LIKE:-}")
@@ -559,43 +642,16 @@ build_airgapped_package_locally() {
     fi
     break
   done
-  prompt_yes_no "Install stanctl here if missing and create the package in ${out_dir} now?" N ||
+  prompt_yes_no "Configure the Instana repository here, select stanctl and backend versions, and create the package in ${out_dir} now?" N ||
     { warn "Package creation skipped."; return 1; }
 
-  if ! command -v stanctl >/dev/null 2>&1; then
-    log "Installing stanctl on this machine from the Instana APT repository..."
-    # gpg (gnupg) is needed for the repository keyring and is not on minimal images.
-    if ! command -v gpg >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
-      log "Installing gnupg, curl and ca-certificates first..."
-      sudo apt-get update -qq && sudo apt-get install -y -qq gnupg curl ca-certificates ||
-        { err "Could not install gnupg/curl on this machine."; return 1; }
-    fi
-    tmp_auth=$(mktemp); chmod 600 "$tmp_auth"
-    printf 'machine artifact-public.instana.io\n  login _\n  password %s\n' "$DOWNLOAD_KEY" > "$tmp_auth"
-    sudo install -o root -g root -m 600 "$tmp_auth" /etc/apt/auth.conf.d/instana.conf
-    rm -f "$tmp_auth"
-    # Keyring first, sources list only after it succeeds: a list without a key
-    # breaks every later 'apt-get update' on this machine.
-    # chmod 644: gpg may create the keyring as 0600 and APT verifies signatures as
-    # the unprivileged _apt user, which then fails with "Permission denied".
-    if ! curl -fsS -u "_:${DOWNLOAD_KEY}" "$INSTANA_KEYRING_URL" | sudo gpg --dearmor --yes -o /usr/share/keyrings/instana-archive-keyring.gpg ||
-       ! sudo chmod 644 /usr/share/keyrings/instana-archive-keyring.gpg; then
-      sudo rm -f /usr/share/keyrings/instana-archive-keyring.gpg /etc/apt/sources.list.d/instana-product.list
-      err "Could not download the Instana repository key; check the download key."
-      return 1
-    fi
-    printf '%s\n' "$INSTANA_APT_REPO" | sudo tee /etc/apt/sources.list.d/instana-product.list >/dev/null
-    if ! { sudo apt-get update -qq && sudo apt-get install -y stanctl; }; then
-      sudo rm -f /etc/apt/sources.list.d/instana-product.list
-      err "stanctl installation failed on this machine; the Instana repository entry was removed again."
-      return 1
-    fi
-  fi
-  ok "stanctl on this machine: $(stanctl --version 2>/dev/null | head -1)"
+  configure_local_instana_repository || return 1
+  select_and_install_local_stanctl || return 1
+  select_local_backend_version || return 1
 
   tmp_env=$(mktemp); chmod 600 "$tmp_env"
-  printf 'STANCTL_DOWNLOAD_KEY=%s\nSTANCTL_SALES_KEY=%s\n' "$DOWNLOAD_KEY" "$SALES_KEY" > "$tmp_env"
-  log "Creating the air-gapped package in ${out_dir}. stanctl will ask you to select the Instana backend version."
+  printf 'STANCTL_DOWNLOAD_KEY=%s\nSTANCTL_SALES_KEY=%s\nSTANCTL_INSTANA_VERSION=%s\n' "$DOWNLOAD_KEY" "$SALES_KEY" "$BACKEND_VERSION" > "$tmp_env"
+  log "Creating the air-gapped package in ${out_dir}: stanctl ${STANCTL_CLI_VERSION} → backend ${BACKEND_VERSION}."
   log "This downloads several tens of GB; do not interrupt it."
   # Long downloads can drop ("unexpected EOF"). stanctl keeps already exported
   # images in <out_dir>/airgapped/docker and skips them on the next run, so a

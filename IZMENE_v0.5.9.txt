@@ -40,3 +40,15 @@ what to do without it.
 
 Not covered: a real package build or air-gapped deployment; both still need a
 first supervised run.
+
+Addendum (same day, after the first real package build on the management VM):
+- gnupg/curl/ca-certificates are installed before the repository key; the
+  APT source is written only after the keyring succeeds and removed again on
+  failure; the keyring gets mode 644 (APT verifies as user _apt).
+- Output directories with less than 20 GB free are refused (re-asked).
+- 'stanctl air-gapped package' is retried up to 3 times; stanctl reuses
+  images already exported into <dir>/airgapped/docker.
+- Option 2 now mirrors the online path: the exact stanctl package version is
+  chosen from 'apt-cache madison' and held, then the backend version is
+  chosen from 'stanctl versions identify' and pinned into the package via
+  STANCTL_INSTANA_VERSION (--instana-version). Both appear in the plan.
