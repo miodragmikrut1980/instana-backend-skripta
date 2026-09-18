@@ -471,6 +471,48 @@ collect_parameters() {
   fi
 }
 
+# run_with_read_progress FILE COMMAND... — runs COMMAND and, while it reads FILE,
+# prints "NN% · elapsed" on one line so long single-pass reads of a multi-GB
+# archive do not look hung. The position comes from /proc/<pid>/fdinfo of the
+# process that has FILE open (tar's gzip child); without /proc only elapsed
+# time is shown. Returns COMMAND's exit status.
+run_with_read_progress() {
+  local file="$1"; shift
+  local total pid start pos pct elapsed fd link d
+  total=$(stat -c %s "$file" 2>/dev/null || stat -f %z "$file" 2>/dev/null || echo 0)
+  file=$(readlink -f "$file" 2>/dev/null || printf '%s' "$file")
+  "$@" &
+  pid=$!
+  start=$SECONDS
+  [[ -t 2 ]] || { wait "$pid"; return $?; }
+  while kill -0 "$pid" 2>/dev/null; do
+    pos=""
+    if [[ -d /proc ]]; then
+      for d in "$pid" $(pgrep -P "$pid" 2>/dev/null) $(pgrep -P "$pid" 2>/dev/null | xargs -r -n1 pgrep -P 2>/dev/null); do
+        for fd in /proc/"$d"/fd/*; do
+          link=$(readlink "$fd" 2>/dev/null) || continue
+          if [[ "$link" == "$file" ]]; then
+            pos=$(awk '/^pos:/{print $2}' "/proc/$d/fdinfo/${fd##*/}" 2>/dev/null)
+            break 2
+          fi
+        done
+      done
+    fi
+    elapsed=$(( SECONDS - start ))
+    if [[ -n "$pos" && "$total" -gt 0 ]]; then
+      pct=$(( pos * 100 / total ))
+      printf '\r  reading archive: %3d%%  ·  %dm%02ds ' "$pct" $((elapsed/60)) $((elapsed%60)) >&2
+    else
+      printf '\r  reading archive ...  %dm%02ds ' $((elapsed/60)) $((elapsed%60)) >&2
+    fi
+    sleep 2
+  done
+  wait "$pid"; local rc=$?
+  elapsed=$(( SECONDS - start ))
+  printf '\r  reading archive: done in %dm%02ds          \n' $((elapsed/60)) $((elapsed%60)) >&2
+  return $rc
+}
+
 # ── Air-gapped package: explain, locate, build or fall back ──────────────────
 # IBM docs: the package is created on a bastion host with internet access by
 # 'stanctl air-gapped package', then transferred to the Instana host. This
@@ -1310,7 +1352,7 @@ inspect_airgapped_archive() {
   # whole archive is read once; listing and extracting separately would triple that.
   local tmp_dir
   tmp_dir=$(mktemp -d) || { err "Cannot create a temporary directory."; return 1; }
-  if ! tar -xzf "$archive" -C "$tmp_dir" airgapped/stanctl airgapped/config/instana.yaml airgapped/buildmeta/buildmeta.yaml 2>"$tmp_dir/tar.err"; then
+  if ! run_with_read_progress "$archive" tar -xzf "$archive" -C "$tmp_dir" airgapped/stanctl airgapped/config/instana.yaml airgapped/buildmeta/buildmeta.yaml 2>"$tmp_dir/tar.err"; then
     if grep -q "Not found in archive" "$tmp_dir/tar.err"; then
       err "Archive is missing $(grep -o 'airgapped/[^:]*' "$tmp_dir/tar.err" | sort -u | tr '\n' ' '); it was not created by 'stanctl air-gapped package' or is incomplete."
     else
