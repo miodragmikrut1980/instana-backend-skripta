@@ -530,10 +530,15 @@ build_airgapped_package_locally() {
   [[ "$os_id" == *ubuntu* || "$os_id" == *debian* ]] ||
     { err "This machine is not Ubuntu/Debian; stanctl is installed from an APT repository. Create the package on an Ubuntu bastion host."; return 1; }
   command -v sudo >/dev/null 2>&1 || { err "sudo is required to install stanctl on this machine."; return 1; }
-  if ! curl -fsS --max-time 10 -o /dev/null https://artifact-public.instana.io/ 2>/dev/null; then
-    err "artifact-public.instana.io is not reachable from this machine; the package cannot be created here."
+  # Reachability only: any HTTP status counts (the root URL answers 4xx/3xx
+  # without credentials); 000 means no connection at all.
+  local http_code
+  http_code=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' https://artifact-public.instana.io/ 2>/dev/null || true)
+  if [[ -z "$http_code" || "$http_code" == 000 ]]; then
+    err "artifact-public.instana.io is not reachable from this machine (no HTTP response); the package cannot be created here."
     return 1
   fi
+  log "artifact-public.instana.io reachable (HTTP ${http_code})."
   prompt_required "AIRGAP_OUTPUT_DIR" "Directory for the package (will be created)" "${HOME}/instana-airgap"
   out_dir="$AIRGAP_OUTPUT_DIR"
   mkdir -p "$out_dir" || { err "Cannot create ${out_dir}."; return 1; }
