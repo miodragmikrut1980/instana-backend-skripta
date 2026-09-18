@@ -574,11 +574,19 @@ build_airgapped_package_locally() {
     printf 'machine artifact-public.instana.io\n  login _\n  password %s\n' "$DOWNLOAD_KEY" > "$tmp_auth"
     sudo install -o root -g root -m 600 "$tmp_auth" /etc/apt/auth.conf.d/instana.conf
     rm -f "$tmp_auth"
+    # Keyring first, sources list only after it succeeds: a list without a key
+    # breaks every later 'apt-get update' on this machine.
+    if ! curl -fsS -u "_:${DOWNLOAD_KEY}" "$INSTANA_KEYRING_URL" | sudo gpg --dearmor --yes -o /usr/share/keyrings/instana-archive-keyring.gpg; then
+      sudo rm -f /usr/share/keyrings/instana-archive-keyring.gpg /etc/apt/sources.list.d/instana-product.list
+      err "Could not download the Instana repository key; check the download key."
+      return 1
+    fi
     printf '%s\n' "$INSTANA_APT_REPO" | sudo tee /etc/apt/sources.list.d/instana-product.list >/dev/null
-    curl -fsS -u "_:${DOWNLOAD_KEY}" "$INSTANA_KEYRING_URL" | sudo gpg --dearmor --yes -o /usr/share/keyrings/instana-archive-keyring.gpg ||
-      { err "Could not download the Instana repository key; check the download key."; return 1; }
-    sudo apt-get update -qq && sudo apt-get install -y stanctl ||
-      { err "stanctl installation failed on this machine."; return 1; }
+    if ! { sudo apt-get update -qq && sudo apt-get install -y stanctl; }; then
+      sudo rm -f /etc/apt/sources.list.d/instana-product.list
+      err "stanctl installation failed on this machine; the Instana repository entry was removed again."
+      return 1
+    fi
   fi
   ok "stanctl on this machine: $(stanctl --version 2>/dev/null | head -1)"
 
