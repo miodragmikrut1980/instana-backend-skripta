@@ -1,0 +1,27 @@
+v0.5.3 — exact resource checks and visible terminal progress
+
+1. Existing disks are now looked up with an exact zonal
+   `gcloud compute disks describe` call. The imprecise list filter was removed.
+
+2. Single-node VM reuse now uses an exact
+   `gcloud compute instances describe` call. A permission/API error is not
+   treated as a missing resource, so the installer will not create a duplicate.
+
+3. Existing disks still fail closed unless size, pd-ssd type, READY status,
+   attachment target and stable device name all match. Attachments are checked
+   again after the attach command.
+
+4. An unrecorded disk is written to installation state only after validation,
+   explicit adoption and verified attachment. A rejected or mismatched disk is
+   never claimed by the installer.
+
+5. Existing resources are never deleted automatically. A mismatched disk is
+   left untouched and the installer recommends manual inspection or another
+   deployment name.
+
+6. A 30-character progress bar now appears at startup, before and after each
+   of the 12 phases, after resume, on failure and at completion. Logs receive a
+   plain, control-sequence-free representation.
+
+7. Progress remains checkpoint-based. Long-running external operations do not
+   claim invented intermediate percentages.

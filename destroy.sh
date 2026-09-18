@@ -139,6 +139,9 @@ while IFS= read -r disk_name; do
 done < <(jq -r 'to_entries[] | select(.key | startswith("disk_")) | .key | ltrimstr("disk_")' "$STATE_FILE" 2>/dev/null)
 
 # Firewall rules
+while IFS= read -r fw; do
+  [[ -n "$fw" ]] && delete_firewall "$fw"
+done < <(jq -r 'to_entries[] | select(.key | startswith("firewall_")) | .key | ltrimstr("firewall_")' "$STATE_FILE")
 for fw in "instana-allow-ssh" "instana-allow-external" "instana-allow-k3s-subnets" "instana-allow-internal"; do
   fw_key="fw_${fw#instana-allow-}"
   if [[ "$(get_state "$fw_key")" == "created" ]]; then

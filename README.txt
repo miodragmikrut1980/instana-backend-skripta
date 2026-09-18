@@ -1,71 +1,50 @@
-INSTANA STANDARD EDITION - GCP DEPLOYER v0.2.0
-================================================
+Instana GCP lab v0.5.6 — immutable and automatic resume configuration
+CURRENT: read IZMENE_v0.5.6.txt, IZMENE_v0.5.5.txt and IZMENE_v0.5.4.txt first.
 
-STATUS
-------
-Ovo je bezbednosno doradjena PREVIEW verzija za Ubuntu na GCP-u.
-Nemoj je prvi put pokretati direktno kao produkcionu instalaciju.
-Prvo obavezno pokreni dry-run i pregledaj plan/trosak.
+The installer now shows a 12-phase checklist, explains every phase before it
+changes the VM or GCP project, displays overall completion percentage, and
+records completed phases in .install-state.json. Resource validation remains
+authoritative: a saved visual checkpoint never bypasses resume verification.
 
-POKRETANJE
-----------
-1. Instaliraj i prijavi Google Cloud CLI:
-   gcloud auth login
+Use ./install.sh for a new deployment. Use ./install.sh --resume in the same
+deployment folder when the selected topology supports continuation.
+Legacy v0.3.x resources are not adopted. Uncertain stanctl up execution
+requires inspection; never starts a second remote installer blindly.
 
-2. Pokreni proveru bez kreiranja resursa:
-   chmod +x install.sh destroy.sh
-   ./install.sh --dry-run
+Na upravljackoj Ubuntu VM v NOVEM folderu:
+chmod +x *.sh
+./install.sh --dry-run
+Po pregleda plana stvarno pokretanje: ./install.sh
 
-3. Tek nakon pregleda plana:
-   ./install.sh
+Izaberi three-node, online, SMALL, Ubuntu 24.04 ili 22.04.
+Koristi tri NOVA VM naziva i NOVI domen, npr. instana-lab.mikrut.rs.
+Postojeci single-node DNS ne menjati. Novi domen, UI i acceptore usmeri na
+external IP node0. DNS nije automatizovan. Instana production install type
+je obavezan za multi, ali ovo je interno LAB okruzenje.
 
-4. Brisanje kreiranih resursa prvo proveri ovako:
-   ./destroy.sh --dry-run
+IBM small minimum: 12 CPU/48 GB po nodu. GCP mapping: n2-standard-16
+(16 CPU/64 GB po nodu), ukupno 48 CPU/192 GB. Boot SSD270 GB po nodu;
+objects1000 na node0, data500/metrics1000/analytics1200 na node1.
+Ukupno provisioned4510 GB. Fizicka izolacija i sustained I/O nisu
+sertifikovani; ne predstavlja produkcionu preporuku.
 
-PODRZANI IZBORI U MENIJU
-------------------------
-- single-node ili three-node
-- online ili air-gapped
-- demo ili production za single-node
-- Ubuntu 24.04 ili Ubuntu 22.04
-- minimum, preporucena ili rucna velicina
-- FQDN, tenant, unit, TLS, GCP region/zona/mreza/subnet
-- skriven unos download, sales i agent kljuceva
+Posebni firewall/tag za ovaj deployment; CPU flags; OS bootstrap; kernel;
+boot ID provera restarta; root SSH node0->sva tri privateIP; UFW; blank disk
+format/mount; stanctl na node0; multi IP redosled backend/datastore/other;
+provera 3 Ready nodes. Pod check je nasledjen osnovni, ne kompletan health.
+Na novim multi VM OS Login je iskljucen radi root key SSH. Ako je to
+zabranjeno organizacionom politikom, STOP; ne zaobilaziti politiku.
 
-AIR-GAPPED NAPOMENA
--------------------
-Skripta trazi dva lokalna fajla:
-- stanctl Debian paket koji odgovara Ubuntu verziji
-- instana-airgapped.tar.gz napravljen odgovarajucom stanctl verzijom
+Pamti parametre mode600 bez tajni. Svaki deployment u zasebnom folderu.
+State belezi resurse/checkpoints, ali MULTINODE RESUME NIJE implementiran.
+Posle greske ne pokretati naslepo ponovo; sacuvati log/state za pregled.
+destroy.sh cita state iz istog foldera; brise trajno uz eksplicitnu potvrdu.
 
-Air-gapped arhiva ne mora sadrzati sve Ubuntu OS pakete. Ako dpkg prijavi
-nedostajuce zavisnosti, skripta namerno staje. Tada je potreban pripremljen
-Ubuntu image ili interni APT mirror. Skripta ne pokusava da zaobidje tu gresku.
+Single-node/airgap legacy nisu revidirani; single-node kernel skip jos
+ostaje iz working kopije i nije genericki installer za novu single VM.
+Stari v0.2.2 tekst opisuje prethodni release, ovaj README ima prednost.
 
-BEZBEDNOSNE ZASTITE
--------------------
-- nema eval izvrsavanja
-- dry-run ne ispisuje tajne
-- SSH CIDR se eksplicitno bira; preporuka je javna IP adresa /32
-- disk sa postojecim filesystemom se NE formatira
-- /etc/fstab unos se ne duplira
-- tajni env fajl ima mode 600 i uklanja se nakon stanctl up
-- destroy zahteva unos DELETE <project>/<zone>
-- stanje ne sadrzi Instana kljuceve niti admin lozinku
-
-VAZNO
------
-- DNS zapisi moraju biti napravljeni kod DNS provajdera. Skripta ih samo ispise.
-- Self-signed TLS je pogodan za laboratoriju, ne i za normalnu produkciju.
-- GCP SSD diskovi i velike VM masine mogu napraviti znacajan trosak.
-- Prvi stvarni test treba uraditi kao single-node + online + demo.
-- Multi-node i air-gapped putanje su implementirane, ali nisu potvrđene stvarnim
-  deploymentom u ovom paketu.
-
-FAJLOVI
--------
-install.sh       Interaktivno kreiranje GCP resursa i Instana instalacija
-destroy.sh       Kontrolisano uklanjanje resursa zapisanih u state fajlu
-test-dry-run.sh  Lokalni smoke test menija i cetiri kombinacije
-REVIEW_v0.2.0.txt Nalazi, ispravke i poznata ogranicenja
-
+Testovi: bash syntax, 4 mock dry-run toka, config persistence tests.
+Stvarni GCP deploy NIJE testiran. IBM docs PDF145–154 i169–172;
+stanctl flags pregledani iz dostavljenog source. Confidential IBM source
+i PDF se NE distribuiraju u ZIP-u.

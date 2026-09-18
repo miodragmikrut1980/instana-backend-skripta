@@ -1,0 +1,22 @@
+v0.5.4 — clear installation start and kubectl access
+
+1. The final plan no longer shows an unexplained N default. It now explicitly
+   says that Y starts GCP resource creation and the Instana installation, while
+   N or an empty Enter cancels without starting.
+
+2. Dry-run confirmation explicitly says that Y starts only the simulation.
+
+3. The completion report now prints the working Kubernetes checks:
+     sudo kubectl get nodes
+     sudo kubectl get pods -A
+
+4. After Kubernetes readiness succeeds, an interactive installation offers an
+   optional kubeconfig setup for the current SSH user. The default remains N
+   because accepting grants that user full cluster-administrator access.
+
+5. If accepted, the kubeconfig is copied from
+   /etc/rancher/k3s/k3s.yaml to ~/.kube/config with mode 600 and correct user
+   ownership, then both the context and node access are verified.
+
+6. Non-interactive and dry-run executions skip the optional copy and retain
+   the always-available sudo kubectl workflow.

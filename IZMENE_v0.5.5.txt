@@ -1,0 +1,39 @@
+v0.5.5 — exact stanctl and compatible backend selection (online)
+
+1. Phase 10 queries the authenticated Instana APT repository with
+   `apt-cache madison stanctl` and displays the real available package versions.
+
+2. The selected package is installed with an exact APT version constraint,
+   verified with dpkg-query, verified again with `stanctl --version`, and held
+   with apt-mark to prevent an unintended upgrade.
+
+3. Online stanctl 1.10.3 and earlier are rejected. IBM documentation requires
+   1.10.4 or later for online lifecycle commands such as stanctl up.
+
+4. The installed CLI obtains its own current compatibility data by running the
+   real `stanctl versions identify` command. No guessed or permanently embedded
+   compatibility table is used for installation decisions.
+
+5. Only backend versions returned as compatible by the selected stanctl are
+   displayed. The operator chooses one full backend build version.
+
+6. `stanctl up` receives the exact selection through the documented and
+   source-verified `--instana-version` flag. The hidden
+   `--skip-version-check` testing flag is never used.
+
+7. Selected APT, CLI and backend versions are saved in installation state.
+   Resume reuses them and fails closed if the package disappeared or the
+   compatibility data no longer includes the saved backend.
+
+8. Download credentials are provided to version discovery through a temporary
+   root-only environment file and removed immediately after the query.
+
+9. A partially completed phase 10 may resume when stanctl is present but
+   Kubernetes has not started. Resume remains blocked once the Kubernetes
+   installation has begun.
+
+10. Phase 9 now safely handles a filesystem created by the same interrupted
+    deployment. Existing ext4 is mounted read-only with journal replay disabled
+    and must be empty except for lost+found. Reuse requires explicit approval
+    and never runs mkfs. Non-empty or non-ext4 filesystems remain blocked and
+    unchanged.

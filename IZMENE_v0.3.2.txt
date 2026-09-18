@@ -1,0 +1,11 @@
+v0.3.2
+Ispravljen namespace instana-units -> instana-unit.
+Ready provera nodova i svih aktivnih podova u core/unit namespace-ovima.
+Uspesno zavrseni job podovi (Succeeded) izuzeti; prazni namespace ne prolazi.
+Greške kubectl nisu skrivene. Timeout300s po proveri.
+Ovo je Kubernetes readiness, ne kompletan UI/ingestion health test.
+Promena je lokalno testirana; stvarna instalacija v0.3.2 nije pokrenuta.
+Postojeci multinode v0.3.0 instaliran: sva tri noda i sest unit podova Ready
+prema korisnikovom izlazu. Ne ponavljati installer radi ove ispravke.
+Zadrzana ogranicenja v0.3.0: small lab, bez multinode auto-resume.
+Verzija nije automatski pushovana na GitHub.

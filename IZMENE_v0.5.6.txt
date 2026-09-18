@@ -1,0 +1,18 @@
+v0.5.6 — immutable resume configuration
+
+1. `--resume` automatically loads the original `.install-config.json` and no
+   longer offers an option to edit saved infrastructure parameters.
+
+2. Resume prints a clear message that project, zone, topology, VM/node names,
+   machine sizing, network, domain, tenant, unit, TLS mode and artifact paths
+   are locked for the interrupted deployment.
+
+3. `save_parameters` becomes read-only during resume. It refuses to recreate
+   or overwrite the config and fails closed when the original file is missing.
+
+4. Secret values are still requested again because admin password, download
+   key, sales key and agent key are intentionally never stored.
+
+5. The same locking path is tested for single-node and three-node online
+   configurations. Multi-node deployment-manifest validation remains active as
+   an additional ownership and consistency check.

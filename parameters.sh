@@ -9,11 +9,23 @@ PARAMETER_KEYS=(TOPOLOGY INSTALL_MODE INSTALL_TYPE UBUNTU_VERSION GCP_PROJECT
 
 save_parameters() {
   [[ "$DRY_RUN" == true ]] && return 0
+  if [[ "${RESUME:-false}" == true ]]; then
+    [[ -f "$CONFIG_FILE" ]] || die "Resume requires the original .install-config.json; no parameters were changed."
+    log "Resume mode: saved non-secret parameters are locked and were not rewritten."
+    return 0
+  fi
   [[ ! -L "$CONFIG_FILE" ]] || die "Refusing symlink configuration."
   local key temp json='{}'
   for key in "${PARAMETER_KEYS[@]}"; do
     json=$(jq --arg k "$key" --arg v "${!key:-}" '.[$k]=$v' <<< "$json")
   done
+  if [[ "${TOPOLOGY:-}" == three-node && "${INSTALL_MODE:-}" == online && -f "$STATE_FILE" ]]; then
+    local original
+    original=$(get_state deployment_manifest)
+    if [[ -n "$original" && "$original" != "$(jq -cS . <<< "$json")" ]]; then
+      die "Saved deployment parameters are immutable during resume; original configuration preserved."
+    fi
+  fi
   temp=$(mktemp "${CONFIG_FILE}.XXXXXX")
   chmod 600 "$temp"
   jq -n --argjson parameters "$json" \
@@ -23,7 +35,10 @@ save_parameters() {
 }
 
 offer_saved_parameters() {
-  [[ -f "$CONFIG_FILE" ]] || return 1
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    [[ "${RESUME:-false}" != true ]] || die "Resume requires the original .install-config.json alongside install.sh."
+    return 1
+  fi
   [[ ! -L "$CONFIG_FILE" && -O "$CONFIG_FILE" ]] || die "Unsafe config ownership or symlink."
   jq -e 'type=="object" and .schema_version==1 and
     (.parameters|type)=="object" and
@@ -32,8 +47,13 @@ offer_saved_parameters() {
   local key choice
   echo "Saved non-secret parameters:" >&2
   jq '.parameters' "$CONFIG_FILE" >&2
-  choice=$(prompt_choice "Previous configuration found:" \
-    "reuse saved parameters" "edit parameters (saved text values as defaults)")
+  if [[ "${RESUME:-false}" == true ]]; then
+    echo "Resume mode: automatically reusing locked saved parameters; editing is disabled." >&2
+    choice="reuse saved parameters"
+  else
+    choice=$(prompt_choice "Previous configuration found:" \
+      "reuse saved parameters" "edit parameters (saved text values as defaults)")
+  fi
   CONFIG_LOADED=true
   [[ "$choice" == "reuse saved parameters" ]] || return 1
   for key in "${PARAMETER_KEYS[@]}"; do

@@ -1,0 +1,8 @@
+v0.5.1 — copy-ready DNS/hosts output
+
+- The final report now prints complete `IPv4 hostname` rows for every required
+  Instana hostname instead of listing hostnames under one shared-IP sentence.
+- The same block can be copied directly into /etc/hosts on macOS/Linux or the
+  Windows hosts file.
+- If the operator corrects the detected public IP in the confirmation prompt,
+  the corrected value is also used in the final report.

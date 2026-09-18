@@ -1,0 +1,4 @@
+Shared custom CPU/RAM retry or cancel: single demo16/64, production28/112,
+three-node12/48, online/airgap. No minimum bypass. Other limitations remain:
+online multinode executable profile is small only; single-node resume not
+extended; GCP stockout retry not added. Local tests only. Git unchanged.

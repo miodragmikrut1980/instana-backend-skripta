@@ -31,6 +31,12 @@ run_case() {
   mkdir -p "$case_dir"
   cp "$SCRIPT_DIR/install.sh" "$case_dir/install.sh"
   cp "$SCRIPT_DIR/parameters.sh" "$case_dir/parameters.sh"
+  cp "$SCRIPT_DIR/multinode-online.sh" "$case_dir/multinode-online.sh"
+  cp "$SCRIPT_DIR/local-access.sh" "$case_dir/local-access.sh"
+  cp "$SCRIPT_DIR/multinode-resume.sh" "$case_dir/multinode-resume.sh"
+  cp "$SCRIPT_DIR/hardware-input.sh" "$case_dir/hardware-input.sh"
+  cp "$SCRIPT_DIR/capacity-fallback.sh" "$case_dir/capacity-fallback.sh"
+  cp "$SCRIPT_DIR/progress.sh" "$case_dir/progress.sh"
   (
     cd "$case_dir"
     if ! PATH="$TEST_ROOT/bin:$PATH" bash ./install.sh --dry-run <<< "$input" > output.txt 2>&1; then
@@ -39,8 +45,24 @@ run_case() {
     fi
     grep -q "Installation Plan" output.txt
     grep -q "DRY-RUN MODE" output.txt
+    grep -q '\[PHASE 1/12\]' output.txt
+    grep -q '\[PHASE 12/12\]' output.txt
+    grep -q 'Installation checklist' output.txt
+    grep -q '100% complete' output.txt
+    grep -q 'Enter Y and press Enter to run the dry-run simulation' output.txt
+    grep -q 'Enter N, or press Enter without typing anything, to cancel without starting' output.txt
+    grep -q 'sudo kubectl get nodes' output.txt
+    grep -q 'sudo kubectl get pods -A' output.txt
+    grep -q 'Ready-to-copy /etc/hosts entries' output.txt
     ! grep -q "download-secret" output.txt
     ! grep -q "agent-secret" output.txt
+    if [[ "$name" == multi_online ]]; then
+      test "$(grep -c '\[INFO\].*Creating VM:' output.txt)" -eq 3
+      test "$(grep -c '\[INFO\].*Creating disk ' output.txt)" -eq 4
+      test "$(grep -c '\[INFO\].*Formatting and mounting' output.txt)" -eq 4
+      grep -q 'lab-instana-0' output.txt
+      grep -q '270GB' output.txt
+    fi
   )
   echo "PASS: $name"
 }

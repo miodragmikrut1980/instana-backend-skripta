@@ -1,0 +1,13 @@
+Automatic first VM capacity fallback for all installer topology/mode paths.
+Only ZONE_RESOURCE_POOL_EXHAUSTED/stockout triggers relocation.
+Tries current zone, other zones of same region, then other UP zones with
+an existing subnet in the same VPC network; max13 total attempts.
+Multiple alternative subnets -> skip region unless original name matches.
+CPU/RAM unchanged; no new network/subnet. Region/pricing/latency can change.
+After success saves effective zone/region/subnet for subsequent resources.
+After ANY recorded VM/disk/firewall, never relocates: STOP on stockout.
+No auto retry on IAM, scopes, quota, image or invalid parameter failures.
+Multinode cannot guarantee capacity for all3 nodes: later stockout stops
+in the selected zone. No cleanup/rebuild or migration is attempted.
+Preview/mock tests only. New deployment recommended; existing backend and
+GitHub untouched. Legacy single-node resume limitations still remain.

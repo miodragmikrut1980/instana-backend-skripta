@@ -3,9 +3,8 @@
 # Instana Standard Edition — GCP Deployment Script
 # =============================================================================
 # Source: IBM Instana Observability documentation (instana-observability-documentation.pdf)
-# All hardware minimums, kernel parameters, firewall rules, and installation
-# commands are taken verbatim from the official documentation.
-# No values have been guessed or assumed.
+# Internal lab installer. IBM requirements are mapped to GCP resources.
+# Separate cloud disks do not prove physical storage isolation or performance.
 #
 # Supported topology:
 #   - Single-node  (demo or production)
@@ -42,13 +41,17 @@ INSTALL_MODE=""
 AIRGAP_ARCHIVE=""
 AIRGAP_STANCTL_DEB=""
 SSH_SOURCE_CIDR=""
+CONFIRMED_UI_IP=""
+STANCTL_APT_VERSION=""
+STANCTL_CLI_VERSION=""
+BACKEND_VERSION=""
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 log()  { echo -e "${CYAN}[INFO]${RESET}  $*" | tee -a "$LOG_FILE"; }
 ok()   { echo -e "${GREEN}[OK]${RESET}    $*" | tee -a "$LOG_FILE"; }
 warn() { echo -e "${YELLOW}[WARN]${RESET}  $*" | tee -a "$LOG_FILE"; }
 err()  { echo -e "${RED}[ERROR]${RESET} $*" | tee -a "$LOG_FILE"; }
-die()  { err "$*"; exit 1; }
+die()  { err "$*"; declare -F progress_fail_current >/dev/null && progress_fail_current "$*"; exit 1; }
 run()  {
   if [[ "$DRY_RUN" == true ]]; then
     printf "${YELLOW}[DRY-RUN]${RESET} " | tee -a "$LOG_FILE"
@@ -77,7 +80,7 @@ done
 check_local_tools() {
   log "Checking required local tools..."
   local missing=()
-  for tool in gcloud jq ssh-keygen curl mktemp timeout; do
+  for tool in gcloud jq ssh-keygen curl mktemp timeout flock; do
     command -v "$tool" &>/dev/null || missing+=("$tool")
   done
   if [[ ${#missing[@]} -gt 0 ]]; then
@@ -113,9 +116,9 @@ check_gcp_quota() {
     --format="json" 2>/dev/null \
     | jq -r '.quotas[] | select(.metric=="CPUS") | .usage' 2>/dev/null || echo "0")
   local available
-  available=$(echo "$quota - $used" | bc 2>/dev/null || echo "unknown")
+  available=$(jq -n --argjson limit "$quota" --argjson usage "$used" '$limit-$usage' 2>/dev/null || echo "unknown")
   log "CPU quota in ${region}: limit=${quota}, used=${used}, available=${available}"
-  if [[ "$available" != "unknown" ]] && (( $(echo "$available < $cpus" | bc -l) )); then
+  if [[ "$available" != "unknown" ]] && [[ "$(jq -n --argjson a "$available" --argjson c "$cpus" '$a<$c')" == true ]]; then
     die "Insufficient CPU quota. Need ${cpus} vCPUs, but only ${available} available in ${region}."
   fi
   ok "CPU quota sufficient."
@@ -262,7 +265,7 @@ prompt_choice() {
   done
   local choice
   while true; do
-    read -rp "$(echo -e "${CYAN}  Select [1-${#options[@]}]:${RESET} ")" choice
+    read -rp "$(echo -e "${CYAN}  Select [1-${#options[@]}]:${RESET} ")" choice || return 1
     [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )) && break
     echo "Invalid selection." >&2
   done
@@ -456,14 +459,7 @@ show_hw_requirements_and_pick_machine_type() {
       "production recommended"*)
         VM_CPUS=28; VM_RAM_GB=112 ;;
       "custom"*)
-        VM_CPUS=$(prompt "VM_CPUS" "Number of vCPUs" "$min_cpu")
-        VM_RAM_GB=$(prompt "VM_RAM_GB" "RAM in GB" "$min_ram")
-        if (( VM_CPUS < min_cpu )); then
-          die "CPU count ${VM_CPUS} is below the documented minimum of ${min_cpu}."
-        fi
-        if (( VM_RAM_GB < min_ram )); then
-          die "RAM ${VM_RAM_GB} GB is below the documented minimum of ${min_ram} GB."
-        fi
+        collect_cpu_ram VM_CPUS VM_RAM_GB "$min_cpu" "$min_ram" "single-node $INSTALL_TYPE"
         ;;
     esac
     # Map to GCP machine type
@@ -483,14 +479,7 @@ show_hw_requirements_and_pick_machine_type() {
         NODE_CPUS=24; NODE_RAM_GB=96
         warn "For instana-1 (data store), docs specify 32 vCPUs / 128 GB for large. Adjust manually if needed." ;;
       "custom"*)
-        NODE_CPUS=$(prompt "NODE_CPUS" "vCPUs per node" "12")
-        NODE_RAM_GB=$(prompt "NODE_RAM_GB" "RAM per node (GB)" "48")
-        if (( NODE_CPUS < 12 )); then
-          die "CPU count ${NODE_CPUS} is below the documented minimum of 12 for three-node."
-        fi
-        if (( NODE_RAM_GB < 48 )); then
-          die "RAM ${NODE_RAM_GB} GB is below the documented minimum of 48 GB for three-node."
-        fi
+        collect_cpu_ram NODE_CPUS NODE_RAM_GB 12 48 "three-node (per node)"
         ;;
     esac
     MACHINE_TYPE=$(gcp_machine_type_for "$NODE_CPUS" "$NODE_RAM_GB")
@@ -572,7 +561,15 @@ show_plan() {
   fi
 
   echo ""
-  prompt_yes_no "Create GCP resources and install Instana?" || { log "Aborted by user."; exit 0; }
+  echo -e "  ${BOLD}${YELLOW}CONFIRMATION REQUIRED${RESET}"
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "  Enter Y and press Enter to run the dry-run simulation."
+  else
+    echo "  Enter Y and press Enter to START creating GCP resources and installing Instana."
+  fi
+  echo "  Enter N, or press Enter without typing anything, to cancel without starting."
+  echo ""
+  prompt_yes_no "Start now? Type Y to continue or N to cancel" N || { log "Installation was not started; no action was approved from this plan."; exit 0; }
   save_state "gcp_project" "$GCP_PROJECT"
   save_state "gcp_zone" "$GCP_ZONE"
   save_state "topology" "$TOPOLOGY"
@@ -585,6 +582,8 @@ show_plan() {
 save_state() {
   local key="$1" value="$2"
   [[ "$DRY_RUN" == true ]] && return 0
+  [[ ! -L "$STATE_FILE" ]] || die "Unsafe state symlink."
+  [[ ! -f "$STATE_FILE" || -O "$STATE_FILE" ]] || die "Unexpected state ownership."
   if [[ -f "$STATE_FILE" ]]; then
     jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$STATE_FILE" > "${STATE_FILE}.tmp" \
       && mv "${STATE_FILE}.tmp" "$STATE_FILE"
@@ -598,40 +597,117 @@ get_state() {
   [[ -f "$STATE_FILE" ]] && jq -r --arg k "$key" '.[$k] // empty' "$STATE_FILE" || echo ""
 }
 
-create_vm() {
+create_vm_once() {
   local name="$1" machine_type="$2" zone="$3" project="$4" network="$5" subnet="$6" ubuntu="$7"
   log "Creating VM: ${name} (${machine_type}, zone: ${zone})..."
+  local metadata_args=()
+  local label_args=()
+  [[ "$TOPOLOGY" == three-node && "$INSTALL_MODE" == online ]] && metadata_args=(--metadata=enable-oslogin=false)
+  [[ -z "${DEPLOYMENT_ID:-}" ]] || label_args=("--labels=instana-lab-id=$DEPLOYMENT_ID")
   run gcloud compute instances create "$name" \
     --project="$project" \
     --zone="$zone" \
     --machine-type="$machine_type" \
     --image-family="$ubuntu" \
     --image-project="ubuntu-os-cloud" \
-    --boot-disk-size="100GB" \
+    --boot-disk-size="${BOOT_SIZE_GB:-100}GB" \
     --boot-disk-type="pd-ssd" \
     --network="$network" \
     --subnet="$subnet" \
-    --tags="instana-backend"
+    --tags="${DEPLOYMENT_TAG:-instana-backend}" "${metadata_args[@]}" "${label_args[@]}"
   save_state "vm_${name}" "created"
   ok "VM ${name} created."
 }
 
 create_and_attach_disk() {
   local vm_name="$1" disk_name="$2" size_gb="$3" zone="$4" project="$5" device_name="$6"
-  log "Creating disk ${disk_name} (${size_gb} GB SSD)..."
-  run gcloud compute disks create "$disk_name" \
-    --project="$project" \
-    --zone="$zone" \
-    --size="${size_gb}GB" \
-    --type="pd-ssd"
-  log "Attaching ${disk_name} to ${vm_name}..."
-  run gcloud compute instances attach-disk "$vm_name" \
-    --project="$project" \
-    --zone="$zone" \
-    --disk="$disk_name" \
-    --device-name="$device_name"
+  local info vm attached users recorded inspect_error disk_exists=false adoption_required=false
+  if [[ "$DRY_RUN" == true ]]; then
+    log "Creating disk ${disk_name} (${size_gb} GB SSD; resume would verify/reuse it if present)..."
+    run gcloud compute disks create "$disk_name" --project="$project" --zone="$zone" --size="${size_gb}GB" --type="pd-ssd"
+    run gcloud compute instances attach-disk "$vm_name" --project="$project" --zone="$zone" --disk="$disk_name" --device-name="$device_name"
+    return 0
+  fi
+
+  inspect_error=$(mktemp)
+  if info=$(gcloud compute disks describe "$disk_name" --project="$project" --zone="$zone" --format=json 2>"$inspect_error"); then
+    disk_exists=true
+  elif grep -Eqi 'was not found|not found|could not fetch resource' "$inspect_error"; then
+    disk_exists=false
+  else
+    rm -f "$inspect_error"
+    die "Cannot inspect disk ${disk_name}; access or API failure. No resource was created or changed."
+  fi
+  rm -f "$inspect_error"
+
+  if [[ "$disk_exists" != true ]]; then
+    log "Creating disk ${disk_name} (${size_gb} GB SSD)..."
+    run gcloud compute disks create "$disk_name" --project="$project" --zone="$zone" --size="${size_gb}GB" --type="pd-ssd"
+    info=$(gcloud compute disks describe "$disk_name" --project="$project" --zone="$zone" --format=json) ||
+      die "Disk ${disk_name} was created but cannot be verified; no attachment was attempted."
+  else
+    recorded=$(get_state "disk_${disk_name}")
+    if [[ "$recorded" != created && "$recorded" != attached ]]; then
+      warn "Disk '${disk_name}' exists but is not recorded in this installation state."
+      adoption_required=true
+    fi
+    phase_detail warn "Existing disk ${disk_name} found; validating it instead of creating a duplicate."
+  fi
+
+  jq -e --argjson size "$size_gb" \
+    '(.sizeGb|tonumber)==$size and (.type|endswith("/pd-ssd")) and .status=="READY"' \
+    <<< "$info" >/dev/null ||
+    die "Disk ${disk_name} has an unexpected size, type, or state; expected ${size_gb} GB pd-ssd in READY state. It was not adopted, attached, formatted, or deleted."
+  users=$(jq -r '.users[]? // empty' <<< "$info")
+  [[ -z "$users" || "$users" == */instances/"$vm_name" ]] || die "Disk ${disk_name} is attached to a different VM; no changes made."
+
+  if [[ "$adoption_required" == true ]]; then
+    prompt_yes_no "Validated ${size_gb} GB READY pd-ssd disk with no foreign attachment. Adopt it only if it belongs to this interrupted deployment? It will never be automatically deleted or reformatted when non-blank." N ||
+      die "Existing disk was not adopted. Use another deployment name or inspect it manually; no changes were made."
+  fi
+
+  vm=$(gcloud compute instances describe "$vm_name" --project="$project" --zone="$zone" --format=json) || die "Cannot inspect VM ${vm_name}."
+  attached=$(jq --arg disk "$disk_name" '[.disks[]|select(.source|endswith("/"+$disk))]' <<< "$vm")
+  if [[ "$(jq length <<< "$attached")" == 0 ]]; then
+    log "Attaching ${disk_name} to ${vm_name} as ${device_name}..."
+    run gcloud compute instances attach-disk "$vm_name" --project="$project" --zone="$zone" --disk="$disk_name" --device-name="$device_name"
+  fi
+  vm=$(gcloud compute instances describe "$vm_name" --project="$project" --zone="$zone" --format=json) ||
+    die "Cannot verify VM ${vm_name} after disk attachment attempt."
+  attached=$(jq --arg disk "$disk_name" '[.disks[]|select(.source|endswith("/"+$disk))]' <<< "$vm")
+  jq -e --arg device "$device_name" 'length==1 and .[0].deviceName==$device and .[0].boot==false' <<< "$attached" >/dev/null ||
+    die "Disk ${disk_name} attachment is missing, duplicated, uses an unexpected device name, or is marked as a boot disk."
+  phase_detail done "Attachment ${disk_name} → ${vm_name} (${device_name}) verified."
   save_state "disk_${disk_name}" "attached"
   ok "Disk ${disk_name} attached to ${vm_name}."
+}
+
+ensure_single_vm() {
+  local name="$1" machine_type="$2" zone="$3" project="$4" network="$5" subnet="$6" ubuntu="$7" info recorded inspect_error vm_exists=false
+  [[ "$DRY_RUN" != true ]] || { create_vm "$@"; return; }
+  inspect_error=$(mktemp)
+  if info=$(gcloud compute instances describe "$name" --project="$project" --zone="$zone" --format=json 2>"$inspect_error"); then
+    vm_exists=true
+  elif grep -Eqi 'was not found|not found|could not fetch resource' "$inspect_error"; then
+    vm_exists=false
+  else
+    rm -f "$inspect_error"
+    die "Cannot inspect VM ${name}; access or API failure. No replacement VM was created."
+  fi
+  rm -f "$inspect_error"
+  if [[ "$vm_exists" != true ]]; then
+    [[ -z "$(get_state "vm_${name}")" ]] || die "VM ${name} is recorded in state but no longer exists. Automatic replacement is refused."
+    create_vm "$@"
+    return
+  fi
+  recorded=$(get_state "vm_${name}")
+  [[ "$recorded" == created ]] || die "VM '${name}' already exists but is not owned by this saved installation."
+  jq -e --arg machine "$machine_type" --arg network "$network" --arg subnet "$subnet" \
+    '.status=="RUNNING" and (.machineType|endswith("/"+$machine)) and
+     (.networkInterfaces[0].network|endswith("/"+$network)) and
+     (.networkInterfaces[0].subnetwork|endswith("/"+$subnet))' <<< "$info" >/dev/null ||
+    die "Existing VM ${name} does not match the saved machine type, network, subnet, or RUNNING state."
+  ok "Reuse verified VM: ${name}"
 }
 
 create_firewall_rules() {
@@ -719,6 +795,17 @@ remote_exec_dry() {
   else
     remote_exec "$vm_name" "$zone" "$project" "$@"
   fi
+}
+
+remote_user_exec() {
+  local vm_name="$1" zone="$2" project="$3"; shift 3
+  local cmd="$*"
+  gcloud compute ssh "$vm_name" \
+    --project="$project" \
+    --zone="$zone" \
+    --command="$cmd" \
+    --ssh-flag="-o StrictHostKeyChecking=accept-new" \
+    --ssh-flag="-o ConnectTimeout=30"
 }
 
 upload_private_file() {
@@ -819,10 +906,80 @@ apply_kernel_parameters() {
 format_and_mount_disk() {
   # From docs: mkfs.ext4 then UUID-based fstab entry
   local vm_name="$1" zone="$2" project="$3" device="$4" mount_point="$5"
+  local inspection status fstype uuid
   log "Formatting and mounting ${device} → ${mount_point} on ${vm_name}..."
 
-  remote_exec_dry "$vm_name" "$zone" "$project" \
-    "set -euo pipefail; dev=/dev/disk/by-id/google-${device}; test -b \"\$dev\"; mkdir -p '${mount_point}'; if findmnt -rn '${mount_point}' >/dev/null; then echo 'Already mounted: ${mount_point}'; exit 0; fi; if blkid \"\$dev\" >/dev/null 2>&1; then echo 'STOP: disk already contains a filesystem: '${device} >&2; exit 20; fi; mkfs.ext4 -m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard \"\$dev\"; uuid=\$(blkid -s UUID -o value \"\$dev\"); grep -qF \"UUID=\$uuid  ${mount_point} \" /etc/fstab || printf 'UUID=%s  %s  ext4  discard,defaults,nofail  0 2\\n' \"\$uuid\" '${mount_point}' >> /etc/fstab; mount '${mount_point}'; findmnt -rn '${mount_point}'"
+  if [[ "$DRY_RUN" == true ]]; then
+    remote_exec_dry "$vm_name" "$zone" "$project" \
+      "Inspect ${device}; format only if blank; otherwise require verified empty ext4 and explicit adoption; mount at ${mount_point} by UUID"
+    ok "Disk ${device} mount workflow simulated for ${mount_point} on ${vm_name}."
+    return 0
+  fi
+
+  inspection=$(remote_exec "$vm_name" "$zone" "$project" \
+    "set -euo pipefail
+dev=/dev/disk/by-id/google-${device}
+target='${mount_point}'
+test -b \"\$dev\"
+mkdir -p \"\$target\"
+if findmnt -rn -M \"\$target\" >/dev/null; then
+  source=\$(findmnt -rn -M \"\$target\" -o SOURCE)
+  fstype=\$(findmnt -rn -M \"\$target\" -o FSTYPE)
+  test \"\$(readlink -f \"\$source\")\" = \"\$(readlink -f \"\$dev\")\"
+  test \"\$fstype\" = ext4
+  uuid=\$(blkid -s UUID -o value \"\$dev\")
+  printf 'MOUNTED:ext4:%s\\n' \"\$uuid\"
+  exit 0
+fi
+if ! blkid \"\$dev\" >/dev/null 2>&1; then
+  echo BLANK
+  exit 0
+fi
+fstype=\$(blkid -s TYPE -o value \"\$dev\")
+uuid=\$(blkid -s UUID -o value \"\$dev\")
+test \"\$fstype\" = ext4 || { printf 'UNSUPPORTED:%s:%s\\n' \"\$fstype\" \"\$uuid\"; exit 0; }
+probe=\$(mktemp -d)
+cleanup() { mountpoint -q \"\$probe\" && umount \"\$probe\"; rmdir \"\$probe\"; }
+trap cleanup EXIT
+mount -o ro,noload \"\$dev\" \"\$probe\"
+if find \"\$probe\" -mindepth 1 -maxdepth 1 ! -name lost+found -print -quit | grep -q .; then
+  printf 'EXISTING_NONEMPTY:ext4:%s\\n' \"\$uuid\"
+else
+  printf 'EXISTING_EMPTY:ext4:%s\\n' \"\$uuid\"
+fi") || die "Could not safely inspect ${device}; it was not formatted or mounted."
+
+  status=$(tail -n 1 <<< "$inspection")
+  case "$status" in
+    MOUNTED:ext4:*)
+      uuid=${status##*:}
+      remote_exec "$vm_name" "$zone" "$project" \
+        "grep -qF 'UUID=$uuid  ${mount_point} ' /etc/fstab || printf 'UUID=%s  %s  ext4  discard,defaults,nofail  0 2\\n' '$uuid' '${mount_point}' >> /etc/fstab; findmnt -rn -M '${mount_point}'"
+      phase_detail done "Existing verified mount ${device} → ${mount_point} retained."
+      ;;
+    BLANK)
+      remote_exec "$vm_name" "$zone" "$project" \
+        "set -euo pipefail; dev=/dev/disk/by-id/google-${device}; mkfs.ext4 -m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard \"\$dev\"; uuid=\$(blkid -s UUID -o value \"\$dev\"); grep -qF \"UUID=\$uuid  ${mount_point} \" /etc/fstab || printf 'UUID=%s  %s  ext4  discard,defaults,nofail  0 2\\n' \"\$uuid\" '${mount_point}' >> /etc/fstab; mount '${mount_point}'; findmnt -rn -M '${mount_point}'"
+      ;;
+    EXISTING_EMPTY:ext4:*)
+      uuid=${status##*:}
+      warn "${device} already contains an empty ext4 filesystem (UUID ${uuid}); it was inspected read-only."
+      prompt_yes_no "Reuse this empty filesystem only if it was created by this interrupted deployment? No formatting will occur." N ||
+        die "Existing filesystem was not adopted; ${device} remains unchanged."
+      remote_exec "$vm_name" "$zone" "$project" \
+        "set -euo pipefail; grep -qF 'UUID=$uuid  ${mount_point} ' /etc/fstab || printf 'UUID=%s  %s  ext4  discard,defaults,nofail  0 2\\n' '$uuid' '${mount_point}' >> /etc/fstab; mount '${mount_point}'; findmnt -rn -M '${mount_point}'"
+      phase_detail done "Adopted empty ext4 filesystem without formatting: ${device} → ${mount_point}."
+      ;;
+    EXISTING_NONEMPTY:ext4:*)
+      die "${device} contains files from an existing filesystem. It was inspected read-only and will not be adopted, formatted, or changed."
+      ;;
+    UNSUPPORTED:*)
+      fstype=$(cut -d: -f2 <<< "$status")
+      die "${device} contains unsupported filesystem '${fstype}'. It will not be adopted, formatted, or changed."
+      ;;
+    *)
+      die "Unexpected filesystem inspection result for ${device}; no change was made."
+      ;;
+  esac
 
   ok "Disk ${device} mounted at ${mount_point} on ${vm_name}."
 }
@@ -868,15 +1025,94 @@ install_stanctl_airgapped() {
 }
 
 install_stanctl() {
-  # From docs: apt update -y && apt install -y stanctl && apt-mark hold stanctl
+  # IBM docs: install an exact stanctl package and hold it. The installed CLI
+  # then queries IBM release metadata for backend versions compatible with it.
   local vm_name="$1" zone="$2" project="$3"
-  log "Installing stanctl on ${vm_name}..."
+  local raw_versions raw_backends selected saved installed cli_output tmp_key
+  local -a stanctl_versions backend_versions
+  log "Selecting and installing an exact stanctl version on ${vm_name}..."
 
   remote_exec_dry "$vm_name" "$zone" "$project" "apt update -y"
-  remote_exec_dry "$vm_name" "$zone" "$project" "apt install -y stanctl"
-  remote_exec_dry "$vm_name" "$zone" "$project" "apt-mark hold stanctl"
 
-  ok "stanctl installed on ${vm_name}."
+  if [[ "$DRY_RUN" == true ]]; then
+    phase_detail active "Would list authenticated APT versions, install one exact stanctl version, and hold it."
+    phase_detail active "Would run 'stanctl versions identify' and require selection of a compatible full backend version."
+    STANCTL_APT_VERSION="DRY-RUN-SELECTION"
+    BACKEND_VERSION="DRY-RUN-COMPATIBLE-SELECTION"
+    return 0
+  fi
+
+  raw_versions=$(remote_exec "$vm_name" "$zone" "$project" \
+    "apt-cache madison stanctl | awk '{print \$3}' | sed '/^$/d' | sort -Vu -r") ||
+    die "Cannot retrieve stanctl package versions from the authenticated Instana repository."
+  mapfile -t stanctl_versions < <(printf '%s\n' "$raw_versions" | grep -E '^[0-9]+([:.+~_-]?[0-9A-Za-z]+)*$' | awk '!seen[$0]++')
+  (( ${#stanctl_versions[@]} > 0 )) || die "The Instana repository returned no installable stanctl versions."
+
+  saved=$(get_state stanctl_apt_version)
+  if [[ -n "$saved" ]]; then
+    printf '%s\n' "${stanctl_versions[@]}" | grep -Fxq "$saved" ||
+      die "Saved stanctl version ${saved} is no longer available from the configured repository."
+    selected="$saved"
+    phase_detail done "Reusing saved stanctl package selection: ${selected}"
+  else
+    echo ""
+    echo -e "${BOLD}Available stanctl package versions (newest first):${RESET}" >&2
+    selected=$(prompt_choice "Select the exact stanctl version to install:" "${stanctl_versions[@]}") ||
+      die "stanctl version selection was cancelled."
+  fi
+  STANCTL_APT_VERSION="$selected"
+
+  installed=$(remote_exec "$vm_name" "$zone" "$project" "dpkg-query -W -f='\${Version}' stanctl 2>/dev/null || true")
+  if [[ "$installed" != "$STANCTL_APT_VERSION" ]]; then
+    remote_exec "$vm_name" "$zone" "$project" \
+      "apt-mark unhold stanctl >/dev/null 2>&1 || true; if ! DEBIAN_FRONTEND=noninteractive apt-get install -y 'stanctl=$STANCTL_APT_VERSION'; then apt-mark hold stanctl >/dev/null 2>&1 || true; exit 1; fi; apt-mark hold stanctl"
+  else
+    remote_exec "$vm_name" "$zone" "$project" "apt-mark hold stanctl"
+  fi
+  installed=$(remote_exec "$vm_name" "$zone" "$project" "dpkg-query -W -f='\${Version}' stanctl")
+  [[ "$installed" == "$STANCTL_APT_VERSION" ]] ||
+    die "Installed stanctl package ${installed} does not match selected ${STANCTL_APT_VERSION}."
+  cli_output=$(remote_exec "$vm_name" "$zone" "$project" "stanctl --version") || die "Installed stanctl cannot report its version."
+  STANCTL_CLI_VERSION=$(grep -Eo '[0-9]+\.[0-9]+\.[0-9]+([.+~-][0-9A-Za-z.-]+)?' <<< "$cli_output" | head -1 || true)
+  [[ -n "$STANCTL_CLI_VERSION" ]] || die "Could not parse 'stanctl --version' output; no backend selection attempted."
+  remote_exec "$vm_name" "$zone" "$project" \
+    "dpkg --compare-versions '$STANCTL_CLI_VERSION' ge '1.10.4' || { echo 'Online lifecycle operations require stanctl 1.10.4 or later.' >&2; exit 24; }" ||
+    die "Installed stanctl CLI ${STANCTL_CLI_VERSION} is unsafe for online lifecycle operations; rerun and choose 1.10.4 or later."
+  save_state stanctl_apt_version "$STANCTL_APT_VERSION"
+  save_state stanctl_cli_version "$STANCTL_CLI_VERSION"
+  phase_detail done "Verified stanctl package ${STANCTL_APT_VERSION} (CLI ${STANCTL_CLI_VERSION}); package is held."
+
+  tmp_key=$(mktemp)
+  chmod 600 "$tmp_key"
+  trap 'rm -f "${tmp_key:-}"' RETURN
+  printf 'STANCTL_DOWNLOAD_KEY=%s\n' "$DOWNLOAD_KEY" > "$tmp_key"
+  upload_private_file "$tmp_key" "$vm_name" "$zone" "$project" .stanctl-version.env
+  rm -f "$tmp_key"
+  trap - RETURN
+  raw_backends=$(remote_exec "$vm_name" "$zone" "$project" \
+    "set -a; . /root/.stanctl-version.env; set +a; trap 'rm -f /root/.stanctl-version.env' EXIT; stanctl versions identify --quiet") ||
+    die "stanctl ${STANCTL_CLI_VERSION} could not retrieve its compatible backend versions."
+  mapfile -t backend_versions < <(printf '%s\n' "$raw_backends" | sed -nE 's/^[[:space:]]*-[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+[-.+~][0-9A-Za-z.-]+)[[:space:]]*$/\1/p' | awk '!seen[$0]++')
+  (( ${#backend_versions[@]} > 0 )) ||
+    die "stanctl returned no selectable compatible backend versions; no backend installation was started."
+
+  saved=$(get_state backend_version)
+  if [[ -n "$saved" ]]; then
+    printf '%s\n' "${backend_versions[@]}" | grep -Fxq "$saved" ||
+      die "Saved backend ${saved} is not compatible with stanctl ${STANCTL_CLI_VERSION}."
+    selected="$saved"
+    phase_detail done "Reusing saved compatible backend selection: ${selected}"
+  else
+    echo ""
+    echo -e "${BOLD}Backend versions compatible with stanctl ${STANCTL_CLI_VERSION}:${RESET}" >&2
+    selected=$(prompt_choice "Select the exact Instana backend version to install:" "${backend_versions[@]}") ||
+      die "Backend version selection was cancelled."
+    save_state backend_version "$selected"
+  fi
+  BACKEND_VERSION="$selected"
+  phase_detail done "Selected verified compatible pair: stanctl ${STANCTL_CLI_VERSION} → backend ${BACKEND_VERSION}"
+
+  ok "Exact stanctl and compatible backend versions selected on ${vm_name}."
 }
 
 configure_ufw_single_node() {
@@ -985,7 +1221,7 @@ run_stanctl_up_single_node() {
   fi
 
   remote_exec_dry "$vm_name" "$zone" "$project" \
-    "trap 'rm -f /root/.stanctl.env' EXIT; stanctl up --env-file /root/.stanctl.env ${tls_flags} --quiet"
+    "trap 'rm -f /root/.stanctl.env' EXIT; stanctl up --env-file /root/.stanctl.env --instana-version '${BACKEND_VERSION}' ${tls_flags} --quiet"
 
   ok "stanctl up completed on ${vm_name}."
 }
@@ -1008,7 +1244,7 @@ run_stanctl_up_multi_node() {
   fi
 
   remote_exec_dry "$node0_name" "$zone" "$project" \
-    "trap 'rm -f /root/.stanctl.env' EXIT; stanctl up --env-file /root/.stanctl.env ${tls_flags} --quiet"
+    "trap 'rm -f /root/.stanctl.env' EXIT; stanctl up --env-file /root/.stanctl.env --instana-version '${BACKEND_VERSION}' ${tls_flags} --quiet"
 
   ok "stanctl up completed on ${node0_name}."
 }
@@ -1025,19 +1261,41 @@ post_install_health_check() {
     return
   fi
 
-  # Check that K3s is running
   remote_exec "$vm_name" "$zone" "$project" \
-    "kubectl get nodes 2>/dev/null | grep -q 'Ready' || (echo 'K3s nodes not Ready' && exit 1)"
+    "set -e; kubectl wait --for=condition=Ready nodes --all --timeout=300s"
 
-  # Check instana-core namespace
-  remote_exec "$vm_name" "$zone" "$project" \
-    "kubectl get pods -n instana-core 2>/dev/null | grep -v '0/0' | grep -q 'Running' || (echo 'instana-core pods not running' && exit 1)"
+  local namespace
+  for namespace in instana-core instana-unit; do
+    remote_exec "$vm_name" "$zone" "$project" \
+      "set -e; kubectl get namespace '$namespace' >/dev/null; pods=\$(kubectl get pods -n '$namespace' --field-selector=status.phase!=Succeeded -o name); test -n \"\$pods\" || { echo 'No active pods in $namespace' >&2; exit 1; }; kubectl wait --for=condition=Ready pod --all --field-selector=status.phase!=Succeeded -n '$namespace' --timeout=300s"
+  done
 
-  # Check instana-units namespace
-  remote_exec "$vm_name" "$zone" "$project" \
-    "kubectl get pods -n instana-units 2>/dev/null | grep -q 'Running' || (echo 'instana-units pods not running' && exit 1)"
+  ok "Node/core/unit readiness check passed (UI and ingestion still require testing)."
+}
 
-  ok "Health check passed."
+configure_kubectl_user_access() {
+  local vm_name="$1" zone="$2" project="$3"
+  echo ""
+  echo -e "  ${BOLD}Kubernetes administration${RESET}"
+  echo "  Kubernetes is ready. Commands always available on ${vm_name}:"
+  echo "    sudo kubectl get nodes"
+  echo "    sudo kubectl get pods -A"
+  echo ""
+  echo -e "  ${YELLOW}Optional:${RESET} copy the cluster-admin kubeconfig to the current SSH user's home directory."
+  echo "  This lets that user run kubectl without sudo and grants that user full cluster administration."
+
+  if [[ "$DRY_RUN" == true || ! -t 0 ]]; then
+    phase_detail warn "Skipped optional user kubeconfig setup; sudo kubectl remains available."
+    return 0
+  fi
+  if ! prompt_yes_no "Allow the current SSH user on ${vm_name} to run kubectl without sudo?" N; then
+    phase_detail warn "User kubeconfig setup skipped; use sudo kubectl."
+    return 0
+  fi
+
+  remote_user_exec "$vm_name" "$zone" "$project" \
+    'set -e; mkdir -p "$HOME/.kube"; chmod 700 "$HOME/.kube"; uid=$(id -u); gid=$(id -g); sudo install -o "$uid" -g "$gid" -m 600 /etc/rancher/k3s/k3s.yaml "$HOME/.kube/config"; KUBECONFIG="$HOME/.kube/config" kubectl config current-context >/dev/null; KUBECONFIG="$HOME/.kube/config" kubectl get nodes >/dev/null'
+  phase_detail done "kubectl configured for the current SSH user on ${vm_name}."
 }
 
 # =============================================================================
@@ -1045,6 +1303,8 @@ post_install_health_check() {
 # =============================================================================
 print_final_report() {
   local external_ip="$1"
+  print_local_access "$external_ip"
+  [[ -n "${CONFIRMED_UI_IP:-}" ]] && external_ip="$CONFIRMED_UI_IP"
   echo ""
   echo -e "${BOLD}${GREEN}════════════════════════════════════════════════════════════════${RESET}"
   echo -e "${BOLD}${GREEN}  Installation Complete!${RESET}"
@@ -1054,16 +1314,20 @@ print_final_report() {
   echo -e "  ${BOLD}Admin user:${RESET}      admin@instana.local"
   echo -e "  ${BOLD}External IP:${RESET}     ${external_ip}"
   echo ""
-  echo -e "  ${YELLOW}DNS entries required (all → ${external_ip}):${RESET}"
-  echo -e "    ${BASE_DOMAIN}"
-  echo -e "    agent-acceptor.${BASE_DOMAIN}"
-  echo -e "    opamp-acceptor.${BASE_DOMAIN}"
-  echo -e "    otlp-http.${BASE_DOMAIN}"
-  echo -e "    otlp-grpc.${BASE_DOMAIN}"
-  echo -e "    ${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}"
+  echo -e "  ${YELLOW}Ready-to-copy /etc/hosts entries:${RESET}"
+  printf '    %s %s\n' "$external_ip" "$BASE_DOMAIN" \
+    "$external_ip" "${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}" \
+    "$external_ip" "agent-acceptor.${BASE_DOMAIN}" \
+    "$external_ip" "opamp-acceptor.${BASE_DOMAIN}" \
+    "$external_ip" "otlp-http.${BASE_DOMAIN}" \
+    "$external_ip" "otlp-grpc.${BASE_DOMAIN}"
   echo ""
   echo -e "  ${BOLD}State file:${RESET}  ${STATE_FILE}"
   echo -e "  ${BOLD}Log file:${RESET}    ${LOG_FILE}"
+  echo ""
+  echo -e "  ${BOLD}Kubernetes checks on the backend VM:${RESET}"
+  echo "    sudo kubectl get nodes"
+  echo "    sudo kubectl get pods -A"
   echo ""
   echo -e "  To destroy all resources: ${CYAN}./destroy.sh${RESET}"
   echo ""
@@ -1073,15 +1337,16 @@ print_final_report() {
 # SECTION 11 — MAIN ORCHESTRATION
 # =============================================================================
 main_single_node() {
-  if [[ "$RESUME" != true ]]; then
+  phase_start 3 "Check regional CPU quota, detect name collisions, and create the Ubuntu VM. If GCP reports a stockout, the capacity fallback may select another compatible location before any dependent resource exists."
   check_gcp_quota "$GCP_PROJECT" "$GCP_ZONE" "$VM_CPUS"
-  check_duplicate_vms "$GCP_PROJECT" "$GCP_ZONE" "$VM_NAME"
 
-  # Create VM
-  create_vm "$VM_NAME" "$MACHINE_TYPE" "$GCP_ZONE" "$GCP_PROJECT" \
+  # Create a missing VM, or verify the VM recorded by this installation.
+  ensure_single_vm "$VM_NAME" "$MACHINE_TYPE" "$GCP_ZONE" "$GCP_PROJECT" \
     "$GCP_NETWORK" "$GCP_SUBNET" "$UBUNTU_VERSION"
+  phase_done 3 "VM is available in ${GCP_ZONE}."
 
   # Create and attach disks (dedicated per directory — required by documentation)
+  phase_start 4 "Create separate SSD persistent disks and attach each with a stable device name. Formatting happens later, only after SSH validation."
   case "$INSTALL_TYPE" in
     demo)
       create_and_attach_disk "$VM_NAME" "${VM_NAME}-analytics" 500  "$GCP_ZONE" "$GCP_PROJECT" "disk-analytics"
@@ -1096,36 +1361,52 @@ main_single_node() {
       create_and_attach_disk "$VM_NAME" "${VM_NAME}-data"      500  "$GCP_ZONE" "$GCP_PROJECT" "disk-data"
       ;;
   esac
+  phase_done 4 "All required data disks are attached."
 
+  phase_start 5 "Create VPC ingress rules for SSH, public Instana endpoints, and required internal traffic. Host-level UFW is configured separately."
   create_firewall_rules "$GCP_PROJECT" "$GCP_NETWORK"
-  fi
+  phase_done 5 "GCP firewall rules are present."
 
+  phase_start 6 "Wait until the VM accepts non-interactive SSH and verify that remote administration is possible."
   [[ "$DRY_RUN" != true ]] && wait_for_ssh "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
+  phase_done 6 "SSH is ready."
 
   # Kernel parameters (verbatim from documentation)
-# Kernel already configured:   apply_kernel_parameters "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
+  phase_start 7 "Apply Instana sysctl and Transparent Huge Pages settings, reboot, and verify both a new boot ID and THP=never."
+  lab_kernel "$VM_NAME"
+  phase_done 7 "Kernel settings and reboot were verified."
 
   # UFW firewall rules (single-node, from documentation)
+  phase_start 8 "Enable the Ubuntu firewall while preserving SSH and allowing documented Instana service ports."
   configure_ufw_single_node "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
+  phase_done 8 "UFW rules were applied."
 
   # Format and mount disks (from documentation)
+  phase_start 9 "Format only blank attached disks, mount them at the documented Instana paths, and persist mounts in /etc/fstab."
   format_and_mount_disk "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT" "disk-analytics" "/mnt/instana/stanctl/analytics"
   format_and_mount_disk "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT" "disk-metrics"   "/mnt/instana/stanctl/metrics"
   format_and_mount_disk "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT" "disk-objects"   "/mnt/instana/stanctl/objects"
   format_and_mount_disk "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT" "disk-data"      "/mnt/instana/stanctl/data"
+  phase_done 9 "Instana storage paths are mounted."
 
+  phase_start 10 "Configure the authenticated Instana package source and install stanctl, or import the selected air-gapped artifacts. Credentials are used in memory and are not written to state or log files."
   if [[ "$INSTALL_MODE" == "online" ]]; then
     add_instana_repository "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
     install_stanctl "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
   else
     install_stanctl_airgapped "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
   fi
+  phase_done 10 "stanctl is installed and ready."
 
   # Run stanctl up
+  phase_start 11 "Run stanctl up with the selected topology, tenant, unit, domain and TLS settings. This is normally the longest phase."
   run_stanctl_up_single_node "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
+  phase_done 11 "Instana backend installation command completed."
 
   # Health check
+  phase_start 12 "Wait for Kubernetes nodes and Instana workloads, then print exact DNS or hosts-file entries for macOS, Linux and Windows."
   post_install_health_check "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
+  configure_kubectl_user_access "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
 
   # Get external IP
   local ext_ip=""
@@ -1136,9 +1417,12 @@ main_single_node() {
   fi
 
   print_final_report "${ext_ip:-DRY-RUN}"
+  phase_done 12 "Health checks and access instructions completed."
+  progress_summary
 }
 
-main_three_node() {
+legacy_main_three_node() {
+  phase_start 3 "Check quota and create the three VMs required by the selected multi-node profile."
   check_gcp_quota "$GCP_PROJECT" "$GCP_ZONE" $(( NODE_CPUS * 3 ))
   check_duplicate_vms "$GCP_PROJECT" "$GCP_ZONE" \
     "$NODE0_NAME" "$NODE1_NAME" "$NODE2_NAME"
@@ -1150,19 +1434,25 @@ main_three_node() {
     "$GCP_NETWORK" "$GCP_SUBNET" "$UBUNTU_VERSION"
   create_vm "$NODE2_NAME" "$MACHINE_TYPE" "$GCP_ZONE" "$GCP_PROJECT" \
     "$GCP_NETWORK" "$GCP_SUBNET" "$UBUNTU_VERSION"
+  phase_done 3 "All three VMs were created."
 
   # Disks — layout from documentation:
   # node0: objects disk (1000 GB)
   # node1: data (500), metrics (1000), analytics (1200)
   # node2: no extra disk
+  phase_start 4 "Create and attach the documented dedicated SSD data disks using stable device names."
   create_and_attach_disk "$NODE0_NAME" "${NODE0_NAME}-objects"   1000 "$GCP_ZONE" "$GCP_PROJECT" "disk-objects"
   create_and_attach_disk "$NODE1_NAME" "${NODE1_NAME}-data"       500 "$GCP_ZONE" "$GCP_PROJECT" "disk-data"
   create_and_attach_disk "$NODE1_NAME" "${NODE1_NAME}-metrics"   1000 "$GCP_ZONE" "$GCP_PROJECT" "disk-metrics"
   create_and_attach_disk "$NODE1_NAME" "${NODE1_NAME}-analytics" 1200 "$GCP_ZONE" "$GCP_PROJECT" "disk-analytics"
+  phase_done 4 "All multi-node data disks are attached."
 
+  phase_start 5 "Create GCP VPC rules for SSH, public Instana endpoints, and node-to-node cluster communication."
   create_firewall_rules "$GCP_PROJECT" "$GCP_NETWORK"
+  phase_done 5 "GCP firewall rules are present."
 
   # Get private IPs
+  phase_start 6 "Record private IP addresses and wait until every node accepts non-interactive SSH."
   local node0_ip node1_ip node2_ip
   if [[ "$DRY_RUN" != true ]]; then
     node0_ip=$(gcloud compute instances describe "$NODE0_NAME" \
@@ -1188,19 +1478,25 @@ main_three_node() {
     wait_for_ssh "$NODE1_NAME" "$GCP_ZONE" "$GCP_PROJECT"
     wait_for_ssh "$NODE2_NAME" "$GCP_ZONE" "$GCP_PROJECT"
   fi
+  phase_done 6 "All nodes are reachable over SSH."
 
   # Kernel parameters on ALL nodes (from documentation)
+  phase_start 7 "Apply documented sysctl and THP settings on every node, reboot, and verify the settings."
   for node in "$NODE0_NAME" "$NODE1_NAME" "$NODE2_NAME"; do
     apply_kernel_parameters "$node" "$GCP_ZONE" "$GCP_PROJECT"
   done
+  phase_done 7 "Kernel configuration completed on all nodes."
 
   # UFW on ALL nodes (multi-node rules from documentation)
+  phase_start 8 "Configure Ubuntu UFW on every node while retaining SSH and required Instana cluster ports."
   for node in "$NODE0_NAME" "$NODE1_NAME" "$NODE2_NAME"; do
     configure_ufw_multi_node "$node" "$GCP_ZONE" "$GCP_PROJECT" \
       "$node0_ip" "$node1_ip" "$node2_ip"
   done
+  phase_done 8 "UFW configuration completed on all nodes."
 
   # Format and mount disks
+  phase_start 9 "Format blank disks, persist their mounts, and configure the documented node0-to-node SSH relationship."
   format_and_mount_disk "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" "disk-objects"   "/mnt/instana/stanctl/objects"
   format_and_mount_disk "$NODE1_NAME" "$GCP_ZONE" "$GCP_PROJECT" "disk-data"      "/mnt/instana/stanctl/data"
   format_and_mount_disk "$NODE1_NAME" "$GCP_ZONE" "$GCP_PROJECT" "disk-metrics"   "/mnt/instana/stanctl/metrics"
@@ -1209,21 +1505,28 @@ main_three_node() {
   # SSH setup (from documentation)
   setup_ssh_keys_multi_node "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" \
     "$node1_ip" "$node2_ip"
+  phase_done 9 "Storage mounts and inter-node SSH are ready."
 
   # Install stanctl on node0 only (from docs: multi-node, run commands on node0)
+  phase_start 10 "Install stanctl on node0 from the authenticated online repository or selected air-gapped package."
   if [[ "$INSTALL_MODE" == "online" ]]; then
     add_instana_repository "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
     install_stanctl "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
   else
     install_stanctl_airgapped "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
   fi
+  phase_done 10 "stanctl is available on node0."
 
   # Run stanctl up from node0
+  phase_start 11 "Run the multi-node stanctl installation from node0 and wait for backend deployment."
   run_stanctl_up_multi_node "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" \
     "${node0_ip},${node1_ip},${node2_ip}"
+  phase_done 11 "Instana multi-node installation command completed."
 
   # Health check on node0
+  phase_start 12 "Check Kubernetes and Instana workload readiness, then print local access instructions for each operating system."
   post_install_health_check "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
+  configure_kubectl_user_access "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
 
   # Get external IP of node0 (base domain points to node0 in multi-node)
   local ext_ip=""
@@ -1234,6 +1537,8 @@ main_three_node() {
   fi
 
   print_final_report "${ext_ip:-DRY-RUN}"
+  phase_done 12 "Health checks and local access instructions completed."
+  progress_summary
 }
 
 # =============================================================================
@@ -1251,62 +1556,57 @@ validate_vm_names() {
 
 validate_resume() {
   [[ "$DRY_RUN" != true ]] || die "--resume cannot be combined with --dry-run."
-  [[ "$TOPOLOGY" == single-node && "$INSTALL_TYPE" == demo && "$INSTALL_MODE" == online ]] ||
-    die "Resume is currently supported only for single-node online demo."
+  [[ "$TOPOLOGY" == single-node ]] || die "This resume validator is for single-node deployments."
   [[ -f "$STATE_FILE" ]] || die "Copy the original .install-state.json alongside this script first."
   [[ "$(get_state gcp_project)" == "$GCP_PROJECT" && "$(get_state gcp_zone)" == "$GCP_ZONE" && "$(get_state "vm_${VM_NAME}")" == created ]] ||
     die "Project, zone or VM differs from the saved state. No changes made."
-  local vm disk role size info
+  local vm
   vm=$(gcloud compute instances describe "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --format=json)
   [[ "$(jq -r .status <<< "$vm")" == RUNNING ]] || die "Existing VM must be RUNNING."
   [[ "$(jq -r '.machineType | split("/")[-1]' <<< "$vm")" == "$MACHINE_TYPE" ]] || die "Machine type differs from your selection."
-  for role in analytics metrics objects data; do
-    disk="${VM_NAME}-${role}"
-    case "$role" in analytics) size=500;; metrics) size=300;; objects) size=250;; data) size=150;; esac
-    [[ "$(get_state "disk_${disk}")" == attached ]] || die "Disk not recorded as attached: $disk"
-    jq -e --arg d "$disk" --arg device "disk-$role" \
-      'any(.disks[]; (.source | split("/")[-1]) == $d and .deviceName == $device and .boot == false)' <<< "$vm" >/dev/null || die "Unexpected disk attachment: $disk"
-    info=$(gcloud compute disks describe "$disk" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --format=json)
-    jq -e --argjson size "$size" '(.sizeGb | tonumber) == $size and (.type | endswith("/pd-ssd"))' <<< "$info" >/dev/null || die "Unexpected disk size/type: $disk"
-  done
   wait_for_ssh "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
   remote_exec "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT" '
     set -e
-    if command -v stanctl >/dev/null || test -e /etc/rancher/k3s/k3s.yaml; then
-      echo "STOP: installation already started; fresh-disk resume is not appropriate." >&2; exit 1
+    if test -e /etc/rancher/k3s/k3s.yaml; then
+      echo "STOP: Kubernetes installation already started; automatic single-node continuation is refused." >&2; exit 1
     fi
-    for role in analytics metrics objects data; do
-      device=/dev/disk/by-id/google-disk-$role
-      test -b "$device" || exit 1
-      if lsblk -nr -o MOUNTPOINT "$device" | grep -q "[^[:space:]]"; then exit 1; fi
-      if test -n "$(wipefs -n --noheadings -o TYPE "$device")"; then
-        echo "STOP: existing disk signature on $device" >&2; exit 1
-      fi
-      test "$(lsblk -nr -o NAME "$device" | wc -l)" -eq 1 || exit 1
-    done
   '
-  warn "Resume validated. Infrastructure creation will be skipped; four blank data disks will be formatted and the VM rebooted."
+  warn "Partial single-node resume validated. VM and every disk will be checked individually; only missing resources will be created."
 }
 
 main() {
   echo ""
   log "Log file: ${LOG_FILE}"
 
+  progress_init
+  phase_start 1 "Verify required command-line tools, acquire the installer lock, authenticate to GCP, and collect or reuse saved non-secret parameters."
   check_local_tools
+  exec 9>"${SCRIPT_DIR}/.install.lock"
+  flock -n 9 || die "Another installer is running from this deployment folder."
   check_gcp_login
   if ! offer_saved_parameters; then
     collect_parameters
   fi
   save_parameters
   validate_vm_names
+  phase_done 1 "Local prerequisites and non-secret parameters are ready."
+  if [[ "$TOPOLOGY" == three-node && "$INSTALL_MODE" == online ]]; then
+    if [[ -f "$STATE_FILE" && "$RESUME" != true ]]; then
+      prompt_yes_no "Existing deployment found. Resume with verified saved state?" Y || die "Resume declined."
+      RESUME=true
+    fi
+    prepare_multinode_lab
+  fi
+  phase_start 2 "Validate project, region, zone, VPC, subnet and Ubuntu image, then display the complete plan before resources are changed."
   check_gcp_configuration
-  if [[ "$RESUME" == true ]]; then
+  if [[ "$RESUME" == true && "$TOPOLOGY" != three-node ]]; then
     validate_resume
   else
     gcloud compute images describe-from-family "$UBUNTU_VERSION" \
       --project=ubuntu-os-cloud >/dev/null || die "Ubuntu image family unavailable."
   fi
   show_plan
+  phase_done 2 "GCP configuration and installation plan were validated."
 
   case "$TOPOLOGY" in
     single-node)  main_single_node ;;
@@ -1314,6 +1614,13 @@ main() {
     *)            die "Unknown topology: $TOPOLOGY" ;;
   esac
 }
+
+source "${SCRIPT_DIR}/multinode-online.sh"
+source "${SCRIPT_DIR}/local-access.sh"
+source "${SCRIPT_DIR}/multinode-resume.sh"
+source "${SCRIPT_DIR}/hardware-input.sh"
+source "${SCRIPT_DIR}/capacity-fallback.sh"
+source "${SCRIPT_DIR}/progress.sh"
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   main "$@"

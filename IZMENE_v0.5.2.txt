@@ -1,0 +1,13 @@
+v0.5.2 — safe partial single-node continuation
+
+- Single-node resume now supports failures between individual disk creations.
+- Existing VM is reused only when recorded in the state file and its status,
+  machine type, network and subnet match the saved installation.
+- Every disk is handled independently: missing disks are created; existing
+  disks are checked for expected zone, size, pd-ssd type, target VM and device.
+- A matching but previously unrecorded disk requires an explicit adoption
+  confirmation. The script does not delete or format it during adoption.
+- Filesystem creation still stops on any pre-existing signature, preventing
+  accidental formatting of a non-blank adopted disk.
+- Partial resume is available for all single-node profiles and connectivity
+  modes, provided stanctl/Kubernetes installation has not already started.

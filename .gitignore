@@ -1,4 +1,5 @@
 .install-state.json*
+.install.lock
 .install-config.json*
 *.log
 *.before-*

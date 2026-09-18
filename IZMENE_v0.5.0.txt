@@ -1,0 +1,16 @@
+v0.5.0 — visible installation phases and resumable checkpoints
+
+- Added a 12-phase checklist with an overall completion percentage.
+- Every phase explains what is being changed and why before it starts.
+- Substeps use visible status markers: active, completed, warning and failed.
+- Completed phases are recorded in .install-state.json and shown after resume.
+- Added the same progress model to single-node and three-node, online and
+  air-gapped paths.
+- Multi-node online now separates OS checks, verified kernel reboots, UFW,
+  mounts, stanctl installation, cluster installation and health checks.
+- Single-node kernel setup is again executed and verified rather than being
+  silently assumed.
+- Passwords and Instana keys remain excluded from state, config and log files.
+
+Progress is informational and does not bypass resource validation. Resume still
+verifies existing cloud resources before continuing.

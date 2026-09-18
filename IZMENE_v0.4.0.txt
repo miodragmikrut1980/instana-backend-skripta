@@ -1,0 +1,29 @@
+v0.4.0 PREVIEW — verified multinode online continuation
+
+Novi deployment koristi install.sh. Posle prekida u ISTOM folderu:
+./install.sh --resume
+I obican ./install.sh nudi resume ako postoji state. Ucitaj saved parameters;
+ponovo unesi tajne. Potvrda plana ostaje obavezna. Ne menjaj parametre
+deploymenta pri nastavku. Cuvaj .install-config.json i .install-state.json.
+
+Proverava identitet resursa, masinu/mrezu, diskove/prikljucenja, firewall
+pravila. Kreira samo nedostajuce jos neevidentirane resurse. Evidentirani
+resurs koji je nestao -> STOP, bez automatskog rebuild-a ili brisanja.
+Resurs kreiran pre prekida upisa u state prepoznaje se ownership labelom.
+Preskace potvrđene kernel/reboot i stanctl installation korake uz provere.
+Vec formatirani ext4 data disk se NE formatira ponovo, vec proverava i
+montira. Pogresan mount/device, partition, filesystem ili fstab -> STOP.
+Kljucni koraci SSH/UFW/bootstrap proveravaju se ili idempotentno ponavljaju.
+Uspešan stanctl up -> nastavak samo readiness i final report, bez reinstala.
+Lock sprecava paralelne install.sh procese iz istog foldera na istom hostu.
+
+GRANICA: ako je prekid bio unutar stanctl up, outcome se vodi kao running:
+automatski nastavak STANE za pregled. Ne zna pouzdano da li remote installer
+jos radi ili je dovrsen; ne lansira drugi installer naslepo. To nije potpuno
+automatsko pokrivanje svih mogucih prekida.
+
+State v0.3.x nema ownership id/labels i ne usvaja se automatski. Tvoj vec
+instalirani lab ostaje netaknut; ovaj resume testirati na novom v0.4.0 labu.
+Single-node i airgap resume nisu prosireni. Ostala lab ogranicenja ostaju.
+Lokalni mock testovi nisu zamena za stvarni GCP fault-injection test.
+GitHub nije izmenjen.
