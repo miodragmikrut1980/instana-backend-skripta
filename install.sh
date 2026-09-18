@@ -39,7 +39,6 @@ DRY_RUN=false
 RESUME=false
 INSTALL_MODE=""
 AIRGAP_ARCHIVE=""
-AIRGAP_STANCTL_DEB=""
 SSH_SOURCE_CIDR=""
 CONFIRMED_UI_IP=""
 STANCTL_APT_VERSION=""
@@ -401,11 +400,10 @@ collect_parameters() {
 
   if [[ "$INSTALL_MODE" == "air-gapped" ]]; then
     echo ""
-    warn "Air-gapped installation needs a matching stanctl Debian package and an air-gapped archive."
-    AIRGAP_STANCTL_DEB=$(prompt "AIRGAP_STANCTL_DEB" "Local path to stanctl .deb" "")
-    [[ -f "$AIRGAP_STANCTL_DEB" ]] || die "stanctl .deb not found: ${AIRGAP_STANCTL_DEB}"
+    warn "Air-gapped installation needs the package created on a bastion host with 'stanctl air-gapped package'."
+    warn "The archive already contains the matching stanctl binary; no separate .deb package is required."
     AIRGAP_ARCHIVE=$(prompt "AIRGAP_ARCHIVE" "Local path to instana-airgapped.tar.gz" "")
-    [[ -f "$AIRGAP_ARCHIVE" ]] || die "Air-gapped archive not found: ${AIRGAP_ARCHIVE}"
+    inspect_airgapped_archive "$AIRGAP_ARCHIVE"
   fi
 
   # TLS certificate
@@ -1010,17 +1008,53 @@ add_instana_repository() {
   ok "Instana APT repository added on ${vm_name}."
 }
 
+# IBM docs (Installing Standard Edition in an air-gapped environment): the
+# package produced by 'stanctl air-gapped package' on the bastion host carries
+# the stanctl binary (airgapped/stanctl), the pinned Instana backend version
+# (airgapped/config/instana.yaml) and the stanctl build metadata
+# (airgapped/buildmeta/buildmeta.yaml). The archive is inspected locally so the
+# operator sees the exact versions in the plan before anything is copied.
+inspect_airgapped_archive() {
+  local archive="$1" manifest instana_yaml buildmeta_yaml
+  [[ -n "$archive" ]] || die "Air-gapped archive path is required."
+  [[ -f "$archive" && ! -L "$archive" ]] || die "Air-gapped archive not found or is a symlink: ${archive}"
+  command -v tar >/dev/null 2>&1 || die "tar is required to inspect the air-gapped archive."
+  log "Inspecting air-gapped archive $(basename "$archive") (large archives take a while)..."
+  manifest=$(tar -tzf "$archive" 2>/dev/null) || die "Cannot read ${archive}; expected a gzip tar created by 'stanctl air-gapped package'."
+  local member
+  for member in airgapped/stanctl airgapped/config/instana.yaml airgapped/buildmeta/buildmeta.yaml; do
+    grep -Fxq "$member" <<< "$manifest" || die "Archive is missing ${member}; it was not created by 'stanctl air-gapped package' or is incomplete."
+  done
+  instana_yaml=$(tar -xzOf "$archive" airgapped/config/instana.yaml 2>/dev/null) || die "Cannot extract airgapped/config/instana.yaml."
+  buildmeta_yaml=$(tar -xzOf "$archive" airgapped/buildmeta/buildmeta.yaml 2>/dev/null) || die "Cannot extract airgapped/buildmeta/buildmeta.yaml."
+  BACKEND_VERSION=$(sed -nE 's/^instana-version:[[:space:]]*"?([^"[:space:]]+)"?.*$/\1/p' <<< "$instana_yaml" | head -1)
+  STANCTL_CLI_VERSION=$(sed -nE 's/^version:[[:space:]]*"?v?([^"[:space:]]+)"?.*$/\1/p' <<< "$buildmeta_yaml" | head -1)
+  [[ -n "$BACKEND_VERSION" ]] || die "airgapped/config/instana.yaml does not declare instana-version."
+  [[ -n "$STANCTL_CLI_VERSION" ]] || die "airgapped/buildmeta/buildmeta.yaml does not declare the stanctl version."
+  ok "Air-gapped package: stanctl ${STANCTL_CLI_VERSION} → Instana backend ${BACKEND_VERSION}"
+}
+
 install_stanctl_airgapped() {
   local vm_name="$1" zone="$2" project="$3"
-  log "Copying air-gapped artifacts to ${vm_name}..."
+  log "Copying air-gapped package to ${vm_name}..."
   if [[ "$DRY_RUN" == true ]]; then
-    warn "Dry-run: would copy $(basename "$AIRGAP_STANCTL_DEB") and $(basename "$AIRGAP_ARCHIVE")."
+    warn "Dry-run: would copy $(basename "$AIRGAP_ARCHIVE"), extract stanctl ${STANCTL_CLI_VERSION} from it and import backend ${BACKEND_VERSION}."
     return
   fi
-  gcloud compute scp "$AIRGAP_STANCTL_DEB" "${vm_name}:/tmp/stanctl.deb" --project="$project" --zone="$zone"
   gcloud compute scp "$AIRGAP_ARCHIVE" "${vm_name}:/tmp/instana-airgapped.tar.gz" --project="$project" --zone="$zone"
+  # Documented sequence: extract the bundled stanctl binary to /usr/local/bin,
+  # then import the package. The archive stays until import succeeds so a
+  # failed import can be retried without another transfer.
   remote_exec "$vm_name" "$zone" "$project" \
-    "dpkg -i /tmp/stanctl.deb || { echo 'STOP: stanctl .deb has unresolved OS dependencies; provide a prepared Ubuntu image or local APT mirror.' >&2; exit 21; }; stanctl air-gapped import --file /tmp/instana-airgapped.tar.gz; rm -f /tmp/stanctl.deb /tmp/instana-airgapped.tar.gz"
+    "set -e; tar -xzf /tmp/instana-airgapped.tar.gz -C /usr/local/bin --strip-components 1 airgapped/stanctl; chmod 0755 /usr/local/bin/stanctl; hash -r; stanctl --version; stanctl air-gapped import --file /tmp/instana-airgapped.tar.gz; rm -f /tmp/instana-airgapped.tar.gz" ||
+    die "Air-gapped import failed on ${vm_name}; the archive remains in /tmp on the VM for inspection."
+  local cli_output
+  cli_output=$(remote_exec "$vm_name" "$zone" "$project" "stanctl --version" 2>/dev/null || true)
+  grep -Fq "$STANCTL_CLI_VERSION" <<< "$cli_output" ||
+    die "Installed stanctl reports '${cli_output}', expected ${STANCTL_CLI_VERSION} from the archive build metadata."
+  save_state stanctl_cli_version "$STANCTL_CLI_VERSION"
+  save_state backend_version "$BACKEND_VERSION"
+  phase_detail done "Imported air-gapped package: stanctl ${STANCTL_CLI_VERSION} → backend ${BACKEND_VERSION}"
   ok "Air-gapped stanctl package imported on ${vm_name}."
 }
 
@@ -1201,6 +1235,16 @@ setup_ssh_keys_multi_node() {
 # =============================================================================
 # SECTION 8 — INSTANA INSTALLATION
 # =============================================================================
+# Online: the operator-selected backend version is passed explicitly. Air-gapped:
+# 'stanctl air-gapped import' already wrote the packaged instana-version into the
+# stanctl configuration and STANCTL_AIR_GAPPED=true is set in the env file, so no
+# version flag is passed (a mismatching value would only make stanctl up fail).
+stanctl_version_flag() {
+  if [[ "$INSTALL_MODE" != "air-gapped" ]]; then
+    [[ -n "$BACKEND_VERSION" ]] || die "No backend version selected for the online installation."
+    printf -- "--instana-version '%s'" "$BACKEND_VERSION"
+  fi
+}
 run_stanctl_up_single_node() {
   local vm_name="$1" zone="$2" project="$3"
   log "Running stanctl up on ${vm_name}..."
@@ -1221,7 +1265,7 @@ run_stanctl_up_single_node() {
   fi
 
   remote_exec_dry "$vm_name" "$zone" "$project" \
-    "trap 'rm -f /root/.stanctl.env' EXIT; stanctl up --env-file /root/.stanctl.env --instana-version '${BACKEND_VERSION}' ${tls_flags} --quiet"
+    "trap 'rm -f /root/.stanctl.env' EXIT; stanctl up --env-file /root/.stanctl.env $(stanctl_version_flag) ${tls_flags} --quiet"
 
   ok "stanctl up completed on ${vm_name}."
 }
@@ -1244,7 +1288,7 @@ run_stanctl_up_multi_node() {
   fi
 
   remote_exec_dry "$node0_name" "$zone" "$project" \
-    "trap 'rm -f /root/.stanctl.env' EXIT; stanctl up --env-file /root/.stanctl.env --instana-version '${BACKEND_VERSION}' ${tls_flags} --quiet"
+    "trap 'rm -f /root/.stanctl.env' EXIT; stanctl up --env-file /root/.stanctl.env $(stanctl_version_flag) ${tls_flags} --quiet"
 
   ok "stanctl up completed on ${node0_name}."
 }

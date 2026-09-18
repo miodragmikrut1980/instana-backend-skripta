@@ -9,6 +9,7 @@ cp "$(dirname "$0")"/{install.sh,parameters.sh,multinode-online.sh,local-access.
   cd "$TEST_DIR"
   source ./install.sh
   DRY_RUN=false
+  INSTALL_MODE=online
   DOWNLOAD_KEY='test-secret-not-for-log'
   TLS_MODE='auto-generate (self-signed)'
   : > calls

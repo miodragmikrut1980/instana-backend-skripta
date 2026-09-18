@@ -1,0 +1,40 @@
+v0.5.7 — air-gapped flow aligned with IBM documentation
+
+1. The air-gapped path previously required a separate stanctl .deb package and
+   installed it with dpkg. IBM documentation ("Installing Standard Edition in
+   an air-gapped environment") does not use a .deb at all: the package created
+   by 'stanctl air-gapped package' on the bastion host already contains the
+   stanctl binary. The .deb prompt, the dpkg step and the AIRGAP_STANCTL_DEB
+   parameter are removed. Old .install-config.json files still load; the
+   obsolete key is simply ignored.
+
+2. The operator now provides only instana-airgapped.tar.gz. Before any GCP
+   resource is created the archive is inspected locally: it must contain
+   airgapped/stanctl, airgapped/config/instana.yaml and
+   airgapped/buildmeta/buildmeta.yaml (verified against the stanctl source:
+   pkg/airgapped/stanctl, config and buildmeta packagers). The pinned backend
+   version (instana-version) and the stanctl build version are read from the
+   archive and shown in the plan and the dry-run output.
+
+3. On the Instana host the documented sequence is executed:
+     tar -xzf instana-airgapped.tar.gz -C /usr/local/bin --strip-components 1 airgapped/stanctl
+     stanctl air-gapped import --file instana-airgapped.tar.gz
+   The installed CLI is checked against the archive build version and both
+   versions are saved to installation state. If the import fails the archive
+   is left in /tmp on the VM for retry and the installer stops.
+
+4. stanctl up no longer receives --instana-version in air-gapped mode. The
+   import step writes the packaged instana-version into the stanctl
+   configuration and STANCTL_AIR_GAPPED=true in the env file maps to the
+   --air-gapped flag (stanctl maps STANCTL_<FLAG> env names). Previously the
+   air-gapped path passed an empty --instana-version '' which would have
+   failed. Online installations still pass the operator-selected version.
+
+5. test-dry-run.sh now builds a minimal archive with the real layout and
+   asserts that air-gapped runs show the detected versions, contain no dpkg or
+   .deb step and pass no --instana-version. test-version-selection.sh sets
+   INSTALL_MODE=online explicitly.
+
+Not covered: creating the package (runs on the bastion, needs internet and
+keys), air-gapped resume, and a real air-gapped deployment. The GCP VM used
+for an air-gapped test still has outbound internet unless you block it.

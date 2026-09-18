@@ -1,5 +1,5 @@
-Instana GCP lab v0.5.6 — immutable and automatic resume configuration
-CURRENT: read IZMENE_v0.5.6.txt, IZMENE_v0.5.5.txt and IZMENE_v0.5.4.txt first.
+Instana GCP lab v0.5.7 — documented air-gapped package flow
+CURRENT: read IZMENE_v0.5.7.txt, IZMENE_v0.5.6.txt and IZMENE_v0.5.5.txt first.
 
 The installer now shows a 12-phase checklist, explains every phase before it
 changes the VM or GCP project, displays overall completion percentage, and
@@ -40,8 +40,15 @@ State belezi resurse/checkpoints, ali MULTINODE RESUME NIJE implementiran.
 Posle greske ne pokretati naslepo ponovo; sacuvati log/state za pregled.
 destroy.sh cita state iz istog foldera; brise trajno uz eksplicitnu potvrdu.
 
-Single-node/airgap legacy nisu revidirani; single-node kernel skip jos
-ostaje iz working kopije i nije genericki installer za novu single VM.
+Air-gapped (v0.5.7): na bastion masini sa internetom napravi paket komandom
+'stanctl air-gapped package' (trazi download i sales key, bira backend
+verziju). Skripti se daje SAMO instana-airgapped.tar.gz; stanctl binarni fajl
+je vec u arhivi, .deb paket vise nije potreban. Skripta lokalno cita verzije
+iz arhive i prikazuje ih u planu. Air-gapped tok i dalje NIJE potvrdjen
+stvarnim deploymentom; resume za air-gapped nije podrzan.
+
+Single-node kernel skip jos ostaje iz working kopije i nije genericki
+installer za novu single VM.
 Stari v0.2.2 tekst opisuje prethodni release, ovaj README ima prednost.
 
 Testovi: bash syntax, 4 mock dry-run toka, config persistence tests.

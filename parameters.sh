@@ -5,7 +5,7 @@ PARAMETER_KEYS=(TOPOLOGY INSTALL_MODE INSTALL_TYPE UBUNTU_VERSION GCP_PROJECT
   GCP_REGION GCP_ZONE GCP_NETWORK GCP_SUBNET SSH_SOURCE_CIDR VM_NAME
   NODE0_NAME NODE1_NAME NODE2_NAME VM_CPUS VM_RAM_GB NODE_CPUS NODE_RAM_GB
   MACHINE_TYPE BASE_DOMAIN TENANT_NAME UNIT_NAME TLS_MODE TLS_CRT_PATH
-  TLS_KEY_PATH AIRGAP_STANCTL_DEB AIRGAP_ARCHIVE)
+  TLS_KEY_PATH AIRGAP_ARCHIVE)
 
 save_parameters() {
   [[ "$DRY_RUN" == true ]] && return 0
@@ -80,7 +80,8 @@ offer_saved_parameters() {
     [[ "$TLS_MODE" == "auto-generate (self-signed)" ]] || die "Invalid TLS mode."
   fi
   if [[ "$INSTALL_MODE" == air-gapped ]]; then
-    [[ -f "$AIRGAP_STANCTL_DEB" && -f "$AIRGAP_ARCHIVE" ]] || die "Air-gap files missing."
+    # Re-inspect the saved archive so versions come from the file, not from config.
+    inspect_airgapped_archive "$AIRGAP_ARCHIVE"
   fi
   return 0
 }

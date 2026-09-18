@@ -23,7 +23,12 @@ echo 203.0.113.10
 CURL
 chmod +x "$TEST_ROOT/bin/curl"
 
-touch "$TEST_ROOT/stanctl.deb" "$TEST_ROOT/instana-airgapped.tar.gz"
+# Minimal archive with the layout produced by 'stanctl air-gapped package'.
+mkdir -p "$TEST_ROOT/pkg/airgapped/config" "$TEST_ROOT/pkg/airgapped/buildmeta"
+printf '#!/bin/sh\necho stanctl version 1.10.9\n' > "$TEST_ROOT/pkg/airgapped/stanctl"
+printf 'instana-version: 3.285.123-0\nregistry:\n  url: artifact-public.instana.io\n' > "$TEST_ROOT/pkg/airgapped/config/instana.yaml"
+printf 'version: 1.10.9\ncommitDate: 2026-01-01\ncommitHash: abc\n' > "$TEST_ROOT/pkg/airgapped/buildmeta/buildmeta.yaml"
+tar -czf "$TEST_ROOT/instana-airgapped.tar.gz" -C "$TEST_ROOT/pkg" airgapped
 
 run_case() {
   local name="$1" input="$2"
@@ -56,6 +61,15 @@ run_case() {
     grep -q 'Ready-to-copy /etc/hosts entries' output.txt
     ! grep -q "download-secret" output.txt
     ! grep -q "agent-secret" output.txt
+    if [[ "$name" == *airgapped ]]; then
+      grep -q 'stanctl 1.10.9 → Instana backend 3.285.123-0' output.txt
+      grep -q 'extract stanctl 1.10.9 from it and import backend 3.285.123-0' output.txt
+      ! grep -q 'instana-version' output.txt
+      ! grep -q 'dpkg' output.txt
+      ! grep -q '\.deb' output.txt
+    else
+      grep -q -- "--instana-version 'DRY-RUN-COMPATIBLE-SELECTION'" output.txt
+    fi
     if [[ "$name" == multi_online ]]; then
       test "$(grep -c '\[INFO\].*Creating VM:' output.txt)" -eq 3
       test "$(grep -c '\[INFO\].*Creating disk ' output.txt)" -eq 4
@@ -73,10 +87,10 @@ run_case single_online "$COMMON_SINGLE"
 COMMON_MULTI=$'2\n1\n1\ntest-project\nus-central1\nus-central1-a\ndefault\ndefault\n203.0.113.10/32\ninstana-0\ninstana-1\ninstana-2\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nsales-secret\nagent-secret\n1\ny'
 run_case multi_online "$COMMON_MULTI"
 
-AIR_SINGLE=$'1\n2\n1\n1\ntest-project\nus-central1\nus-central1-a\ndefault\ndefault\n203.0.113.10/32\ninstana-backend\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nsales-secret\nagent-secret\n'"$TEST_ROOT/stanctl.deb"$'\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n1\ny'
+AIR_SINGLE=$'1\n2\n1\n1\ntest-project\nus-central1\nus-central1-a\ndefault\ndefault\n203.0.113.10/32\ninstana-backend\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nsales-secret\nagent-secret\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n1\ny'
 run_case single_airgapped "$AIR_SINGLE"
 
-AIR_MULTI=$'2\n2\n1\ntest-project\nus-central1\nus-central1-a\ndefault\ndefault\n203.0.113.10/32\ninstana-0\ninstana-1\ninstana-2\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nsales-secret\nagent-secret\n'"$TEST_ROOT/stanctl.deb"$'\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n1\ny'
+AIR_MULTI=$'2\n2\n1\ntest-project\nus-central1\nus-central1-a\ndefault\ndefault\n203.0.113.10/32\ninstana-0\ninstana-1\ninstana-2\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nsales-secret\nagent-secret\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n1\ny'
 run_case multi_airgapped "$AIR_MULTI"
 
 echo "All dry-run smoke tests passed."
