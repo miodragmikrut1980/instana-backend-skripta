@@ -1301,18 +1301,27 @@ add_instana_repository() {
 # operator sees the exact versions in the plan before anything is copied.
 inspect_airgapped_archive() {
   # Returns 1 (after printing the reason) so the operator can correct the path.
-  local archive="$1" manifest instana_yaml buildmeta_yaml
+  local archive="$1" instana_yaml buildmeta_yaml
   [[ -n "$archive" ]] || { err "Air-gapped archive path is required."; return 1; }
   [[ -f "$archive" && ! -L "$archive" ]] || { err "Air-gapped archive not found or is a symlink: ${archive}"; return 1; }
   command -v tar >/dev/null 2>&1 || { err "tar is required to inspect the air-gapped archive."; return 1; }
-  log "Inspecting air-gapped archive $(basename "$archive") (large archives take a while)..."
-  manifest=$(tar -tzf "$archive" 2>/dev/null) || { err "Cannot read ${archive}; expected a gzip tar created by 'stanctl air-gapped package'."; return 1; }
-  local member
-  for member in airgapped/stanctl airgapped/config/instana.yaml airgapped/buildmeta/buildmeta.yaml; do
-    grep -Fxq "$member" <<< "$manifest" || { err "Archive is missing ${member}; it was not created by 'stanctl air-gapped package' or is incomplete."; return 1; }
-  done
-  instana_yaml=$(tar -xzOf "$archive" airgapped/config/instana.yaml 2>/dev/null) || { err "Cannot extract airgapped/config/instana.yaml."; return 1; }
-  buildmeta_yaml=$(tar -xzOf "$archive" airgapped/buildmeta/buildmeta.yaml 2>/dev/null) || { err "Cannot extract airgapped/buildmeta/buildmeta.yaml."; return 1; }
+  log "Inspecting air-gapped archive $(basename "$archive") ($(du -h "$archive" 2>/dev/null | cut -f1 || echo '?'), one pass through the archive, a few minutes)..."
+  # One pass: extract only the three small members. gzip cannot be seeked, so the
+  # whole archive is read once; listing and extracting separately would triple that.
+  local tmp_dir
+  tmp_dir=$(mktemp -d) || { err "Cannot create a temporary directory."; return 1; }
+  if ! tar -xzf "$archive" -C "$tmp_dir" airgapped/stanctl airgapped/config/instana.yaml airgapped/buildmeta/buildmeta.yaml 2>"$tmp_dir/tar.err"; then
+    if grep -q "Not found in archive" "$tmp_dir/tar.err"; then
+      err "Archive is missing $(grep -o 'airgapped/[^:]*' "$tmp_dir/tar.err" | sort -u | tr '\n' ' '); it was not created by 'stanctl air-gapped package' or is incomplete."
+    else
+      err "Cannot read ${archive}; expected a gzip tar created by 'stanctl air-gapped package'. $(head -1 "$tmp_dir/tar.err")"
+    fi
+    rm -rf "$tmp_dir"; return 1
+  fi
+  [[ -s "$tmp_dir/airgapped/stanctl" ]] || { err "airgapped/stanctl in the archive is empty."; rm -rf "$tmp_dir"; return 1; }
+  instana_yaml=$(cat "$tmp_dir/airgapped/config/instana.yaml")
+  buildmeta_yaml=$(cat "$tmp_dir/airgapped/buildmeta/buildmeta.yaml")
+  rm -rf "$tmp_dir"
   BACKEND_VERSION=$(sed -nE 's/^instana-version:[[:space:]]*"?([^"[:space:]]+)"?.*$/\1/p' <<< "$instana_yaml" | head -1)
   STANCTL_CLI_VERSION=$(sed -nE 's/^version:[[:space:]]*"?v?([^"[:space:]]+)"?.*$/\1/p' <<< "$buildmeta_yaml" | head -1)
   [[ -n "$BACKEND_VERSION" ]] || { err "airgapped/config/instana.yaml does not declare instana-version."; return 1; }
