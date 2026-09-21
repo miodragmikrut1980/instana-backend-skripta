@@ -12,6 +12,9 @@ Started without options from a terminal, install.sh shows a start menu:
 install / dry-run / resume (if a deployment is recorded) / destroy preview /
 destroy / exit. ./install.sh --destroy (optionally with --dry-run) runs the
 cleanup directly; destroy.sh still exists but need not be called by hand.
+Without a state file the menu offers "clean up" instead: it asks project,
+zone and VM name, lists the VM, its <vm>-* disks and instana-allow-* rules,
+and deletes only after DELETE <project>/<zone> is typed.
 Legacy v0.3.x resources are not adopted. Uncertain stanctl up execution
 requires inspection; never starts a second remote installer blindly.
 

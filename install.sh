@@ -124,11 +124,83 @@ done
 run_destroy() {
   local -a args=()
   [[ "$DRY_RUN" == true ]] && args+=(--dry-run)
-  if [[ ! -f "$STATE_FILE" ]]; then
-    err "Nothing to destroy: no .install-state.json in ${SCRIPT_DIR}. Only deployments started from this folder are recorded here."
-    exit 1
+  if [[ -f "$STATE_FILE" ]]; then
+    exec bash "${SCRIPT_DIR}/destroy.sh" "${args[@]}"
   fi
-  exec bash "${SCRIPT_DIR}/destroy.sh" "${args[@]}"
+  # No state file here (fresh clone, state already removed, or the deployment
+  # was made from another folder): find the resources by VM name instead.
+  destroy_by_name
+}
+
+# Cleanup without a state file: the operator names the project, zone and VM;
+# the installer lists the VM, the disks named <vm>-* and the instana-allow-*
+# firewall rules, shows them, and deletes only after an explicit confirmation.
+destroy_by_name() {
+  local project zone vm confirm vm_found disks fws expected
+  echo "" >&2
+  echo -e "${BOLD}Clean up GCP resources by VM name${RESET}" >&2
+  echo "  No deployment is recorded in this folder, so tell me which VM to look for." >&2
+  echo "  Disks created by this installer are named <vm-name>-analytics/-metrics/-objects/-data." >&2
+  command -v gcloud >/dev/null 2>&1 || die "gcloud is required."
+  check_gcp_login
+  prompt_required GCP_PROJECT "GCP Project ID" "$(gcloud config get-value project 2>/dev/null || true)" validate_gcp_project_id
+  local local_zone; local_zone=$(detect_local_gce_zone)
+  prompt_required GCP_ZONE "GCP Zone of the deployment" "${local_zone:-us-central1-a}"
+  prompt_required VM_NAME "VM name to clean up (e.g. mikrut-air; for three-node the node0 name, e.g. instana-0)" ""
+  project="$GCP_PROJECT"; zone="$GCP_ZONE"; vm="$VM_NAME"
+  local base="${vm%-0}"   # three-node: instana-0 -> also instana-1, instana-2
+
+  log "Searching ${project}/${zone} for resources of '${vm}'..."
+  vm_found=$(gcloud compute instances list --project="$project" --zones="$zone" \
+    --filter="name~^(${vm}|${base}-[0-9])$" --format="value(name,status,machineType.basename())" 2>/dev/null || true)
+  disks=$(gcloud compute disks list --project="$project" --zones="$zone" \
+    --filter="name~^(${vm}|${base}-[0-9])(-[a-z]+)?$" --format="value(name,sizeGb,type.basename(),users.basename())" 2>/dev/null || true)
+  fws=$(gcloud compute firewall-rules list --project="$project" \
+    --filter="name~^instana-allow-" --format="value(name,sourceRanges.list())" 2>/dev/null || true)
+
+  echo "" >&2
+  echo -e "${BOLD}Found:${RESET}" >&2
+  echo "  VMs:" >&2;    if [[ -n "$vm_found" ]]; then sed 's/^/    /' <<< "$vm_found" >&2; else echo "    (none)" >&2; fi
+  echo "  Disks:" >&2;  if [[ -n "$disks" ]]; then sed 's/^/    /' <<< "$disks" >&2; else echo "    (none)" >&2; fi
+  echo "  Firewall rules (shared by every Instana deployment in this project):" >&2
+  if [[ -n "$fws" ]]; then sed 's/^/    /' <<< "$fws" >&2; else echo "    (none)" >&2; fi
+  echo "" >&2
+  if [[ -z "$vm_found" && -z "$disks" ]]; then
+    ok "Nothing named '${vm}' exists in ${project}/${zone}; nothing to delete."
+    exit 0
+  fi
+  if [[ "$DRY_RUN" == true ]]; then
+    warn "Preview only. Run the destroy option again (without preview) to delete the VMs and disks listed above."
+    exit 0
+  fi
+  local delete_fw=false
+  if [[ -n "$fws" ]]; then
+    prompt_yes_no "Also delete the instana-allow-* firewall rules? Only say yes if no other Instana deployment in this project uses them" N && delete_fw=true
+  fi
+  expected="DELETE ${project}/${zone}"
+  echo -e "${BOLD}${RED}  This permanently deletes the VMs and disks listed above (data on the disks is lost).${RESET}" >&2
+  read -rp "$(echo -e "${CYAN}?${RESET} Type '${expected}' to confirm: ")" confirm || exit 1
+  [[ "$confirm" == "$expected" ]] || die "Confirmation did not match; nothing was deleted."
+
+  local name
+  while read -r name _; do
+    [[ -n "$name" ]] || continue
+    log "Deleting VM ${name}..."
+    gcloud compute instances delete "$name" --project="$project" --zone="$zone" --quiet && ok "VM ${name} deleted."
+  done <<< "$vm_found"
+  while read -r name _; do
+    [[ -n "$name" ]] || continue
+    log "Deleting disk ${name}..."
+    gcloud compute disks delete "$name" --project="$project" --zone="$zone" --quiet && ok "Disk ${name} deleted."
+  done <<< "$disks"
+  if [[ "$delete_fw" == true ]]; then
+    while read -r name _; do
+      [[ -n "$name" ]] || continue
+      gcloud compute firewall-rules delete "$name" --project="$project" --quiet && ok "Firewall rule ${name} deleted."
+    done <<< "$fws"
+  fi
+  ok "Cleanup of '${vm}' in ${project}/${zone} finished."
+  exit 0
 }
 
 # Interactive start menu when run without options from a terminal.
@@ -137,19 +209,28 @@ start_menu() {
   local -a options=("install: start a new Instana deployment" \
                     "dry-run: show the plan and simulate all phases, create nothing")
   [[ -f "$STATE_FILE" ]] && options+=("resume: continue the interrupted deployment recorded in this folder")
-  options+=("destroy (preview): list the GCP resources of this folder's deployment that would be deleted" \
-            "destroy: DELETE the GCP resources of this folder's deployment (VM, disks, firewall rules)" \
-            "exit")
+  if [[ -f "$STATE_FILE" ]]; then
+    options+=("destroy (preview): list the GCP resources of this folder's deployment that would be deleted" \
+              "destroy: DELETE the GCP resources of this folder's deployment (VM, disks, firewall rules)")
+  else
+    options+=("clean up (preview): find leftover GCP resources by VM name and list them" \
+              "clean up: find leftover GCP resources by VM name and DELETE them")
+  fi
+  options+=("exit")
   echo ""
   echo -e "${BOLD}Instana Standard Edition — GCP installer${RESET}"
-  [[ -f "$STATE_FILE" ]] && log "A deployment is recorded in this folder: $(jq -r '[.gcp_project, .gcp_zone, .topology] | map(. // "?") | join(" / ")' "$STATE_FILE" 2>/dev/null)"
+  if [[ -f "$STATE_FILE" ]]; then
+    log "A deployment is recorded in this folder: $(jq -r '[.gcp_project, .gcp_zone, .topology] | map(. // "?") | join(" / ")' "$STATE_FILE" 2>/dev/null)"
+  else
+    log "No deployment is recorded in this folder (no .install-state.json)."
+  fi
   choice=$(prompt_choice "What do you want to do?" "${options[@]}") || exit 0
   case "$choice" in
     install:*) ;;
     dry-run:*) DRY_RUN=true; warn "Dry-run mode — no GCP resources will be created." ;;
     resume:*) RESUME=true ;;
-    "destroy (preview)"*) DRY_RUN=true; run_destroy ;;
-    destroy:*) run_destroy ;;
+    "destroy (preview)"*|"clean up (preview)"*) DRY_RUN=true; run_destroy ;;
+    destroy:*|"clean up:"*) run_destroy ;;
     *) exit 0 ;;
   esac
 }
