@@ -1051,7 +1051,9 @@ ensure_single_vm() {
   fi
   rm -f "$inspect_error"
   if [[ "$vm_exists" != true ]]; then
-    [[ -z "$(get_state "vm_${name}")" ]] || die "VM ${name} is recorded in state but no longer exists. Automatic replacement is refused."
+    [[ -z "$(get_state "vm_${name}")" ]] || die "VM ${name} is recorded in .install-state.json but no longer exists in GCP (deleted outside this installer). Automatic replacement is refused.
+To resolve: from this folder run './destroy.sh --dry-run' to see what is left (disks, firewall rules), then './destroy.sh' to remove the leftovers and the stale state file, and finally start a fresh deployment with './install.sh'.
+If you need to keep the leftover disks, move .install-state.json away instead (e.g. mv .install-state.json .install-state.json.old) and use a NEW VM name."
     create_vm "$@"
     return
   fi
