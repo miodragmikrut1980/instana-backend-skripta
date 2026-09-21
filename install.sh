@@ -1012,13 +1012,16 @@ create_and_attach_disk() {
   jq -e --argjson size "$size_gb" \
     '(.sizeGb|tonumber)==$size and (.type|endswith("/pd-ssd")) and .status=="READY"' \
     <<< "$info" >/dev/null ||
-    die "Disk ${disk_name} has an unexpected size, type, or state; expected ${size_gb} GB pd-ssd in READY state. It was not adopted, attached, formatted, or deleted."
+    die "Disk ${disk_name} has an unexpected size, type, or state; expected ${size_gb} GB pd-ssd in READY state. It was not adopted, attached, formatted, or deleted.
+To resolve: a disk with this name exists from another deployment. Use a different VM/deployment name, or delete the old disk (gcloud compute disks delete ${disk_name} --zone=${GCP_ZONE} --project=${GCP_PROJECT}) after checking it holds nothing you need, then rerun './install.sh'."
   users=$(jq -r '.users[]? // empty' <<< "$info")
-  [[ -z "$users" || "$users" == */instances/"$vm_name" ]] || die "Disk ${disk_name} is attached to a different VM; no changes made."
+  [[ -z "$users" || "$users" == */instances/"$vm_name" ]] || die "Disk ${disk_name} is attached to a different VM (${users##*/}); no changes made.
+To resolve: use a different VM/deployment name so new disk names do not collide, or detach/delete that disk manually if it belongs to an old lab, then rerun './install.sh'."
 
   if [[ "$adoption_required" == true ]]; then
     prompt_yes_no "Validated ${size_gb} GB READY pd-ssd disk with no foreign attachment. Adopt it only if it belongs to this interrupted deployment? It will never be automatically deleted or reformatted when non-blank." N ||
-      die "Existing disk was not adopted. Use another deployment name or inspect it manually; no changes were made."
+      die "Existing disk was not adopted; no changes were made.
+To resolve: rerun './install.sh' with another VM/deployment name, or delete the leftover disk (gcloud compute disks delete ${disk_name} --zone=${GCP_ZONE} --project=${GCP_PROJECT}) if it belongs to an old lab."
   fi
 
   vm=$(gcloud compute instances describe "$vm_name" --project="$project" --zone="$zone" --format=json) || die "Cannot inspect VM ${vm_name}."
@@ -1058,12 +1061,14 @@ If you need to keep the leftover disks, move .install-state.json away instead (e
     return
   fi
   recorded=$(get_state "vm_${name}")
-  [[ "$recorded" == created ]] || die "VM '${name}' already exists but is not owned by this saved installation."
+  [[ "$recorded" == created ]] || die "VM '${name}' already exists in ${GCP_ZONE} but was not created by this installation (no record in .install-state.json).
+To resolve: choose a different VM name for this deployment, or, if that VM is an old lab you no longer need, delete it first (gcloud compute instances delete ${name} --zone=${GCP_ZONE} --project=${GCP_PROJECT}) and rerun './install.sh'. This installer never deletes or reuses a VM it did not create."
   jq -e --arg machine "$machine_type" --arg network "$network" --arg subnet "$subnet" \
     '.status=="RUNNING" and (.machineType|endswith("/"+$machine)) and
      (.networkInterfaces[0].network|endswith("/"+$network)) and
      (.networkInterfaces[0].subnetwork|endswith("/"+$subnet))' <<< "$info" >/dev/null ||
-    die "Existing VM ${name} does not match the saved machine type, network, subnet, or RUNNING state."
+    die "Existing VM ${name} does not match the saved machine type, network, subnet, or RUNNING state.
+To resolve: if the VM is only stopped, start it (gcloud compute instances start ${name} --zone=${GCP_ZONE} --project=${GCP_PROJECT}) and rerun with --resume; if it was resized or moved, restore the original settings or remove the whole deployment with './destroy.sh' and start again with './install.sh'."
   ok "Reuse verified VM: ${name}"
 }
 
