@@ -8,6 +8,10 @@ authoritative: a saved visual checkpoint never bypasses resume verification.
 
 Use ./install.sh for a new deployment. Use ./install.sh --resume in the same
 deployment folder when the selected topology supports continuation.
+Started without options from a terminal, install.sh shows a start menu:
+install / dry-run / resume (if a deployment is recorded) / destroy preview /
+destroy / exit. ./install.sh --destroy (optionally with --dry-run) runs the
+cleanup directly; destroy.sh still exists but need not be called by hand.
 Legacy v0.3.x resources are not adopted. Uncertain stanctl up execution
 requires inspection; never starts a second remote installer blindly.
 

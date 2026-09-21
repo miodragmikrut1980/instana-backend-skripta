@@ -94,13 +94,65 @@ run()  {
 }
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
+usage() {
+  cat <<USAGE
+Usage: ./install.sh [option]
+
+  (no option)   interactive start menu: install, dry-run, resume, destroy
+  --dry-run     show the full plan and simulate every phase; creates nothing
+  --resume      continue an interrupted deployment recorded in this folder
+  --destroy     delete the GCP resources recorded in this folder (runs destroy.sh);
+                combine with --dry-run to only preview what would be deleted
+  --help        this text
+USAGE
+}
+
+DESTROY=false
 for arg in "$@"; do
   case "$arg" in
     --resume) RESUME=true ;;
-    --dry-run) DRY_RUN=true; warn "Dry-run mode — no GCP resources will be created." ;;
-    *) die "Unknown argument: $arg" ;;
+    --dry-run) DRY_RUN=true ;;
+    --destroy) DESTROY=true ;;
+    -h|--help) usage; exit 0 ;;
+    *) err "Unknown argument: $arg"; usage; exit 1 ;;
   esac
 done
+[[ "$DRY_RUN" != true || "$DESTROY" == true ]] || warn "Dry-run mode — no GCP resources will be created."
+
+# --destroy hands over to destroy.sh (same folder, same state file) so the
+# operator never has to remember a second script.
+run_destroy() {
+  local -a args=()
+  [[ "$DRY_RUN" == true ]] && args+=(--dry-run)
+  if [[ ! -f "$STATE_FILE" ]]; then
+    err "Nothing to destroy: no .install-state.json in ${SCRIPT_DIR}. Only deployments started from this folder are recorded here."
+    exit 1
+  fi
+  exec bash "${SCRIPT_DIR}/destroy.sh" "${args[@]}"
+}
+
+# Interactive start menu when run without options from a terminal.
+start_menu() {
+  local choice
+  local -a options=("install: start a new Instana deployment" \
+                    "dry-run: show the plan and simulate all phases, create nothing")
+  [[ -f "$STATE_FILE" ]] && options+=("resume: continue the interrupted deployment recorded in this folder")
+  options+=("destroy (preview): list the GCP resources of this folder's deployment that would be deleted" \
+            "destroy: DELETE the GCP resources of this folder's deployment (VM, disks, firewall rules)" \
+            "exit")
+  echo ""
+  echo -e "${BOLD}Instana Standard Edition — GCP installer${RESET}"
+  [[ -f "$STATE_FILE" ]] && log "A deployment is recorded in this folder: $(jq -r '[.gcp_project, .gcp_zone, .topology] | map(. // "?") | join(" / ")' "$STATE_FILE" 2>/dev/null)"
+  choice=$(prompt_choice "What do you want to do?" "${options[@]}") || exit 0
+  case "$choice" in
+    install:*) ;;
+    dry-run:*) DRY_RUN=true; warn "Dry-run mode — no GCP resources will be created." ;;
+    resume:*) RESUME=true ;;
+    "destroy (preview)"*) DRY_RUN=true; run_destroy ;;
+    destroy:*) run_destroy ;;
+    *) exit 0 ;;
+  esac
+}
 
 # =============================================================================
 # SECTION 1 — PREREQUISITES CHECK
@@ -1089,8 +1141,8 @@ ensure_single_vm() {
   rm -f "$inspect_error"
   if [[ "$vm_exists" != true ]]; then
     [[ -z "$(get_state "vm_${name}")" ]] || die_with_steps "VM ${name} is recorded in .install-state.json but no longer exists in GCP (it was deleted outside this installer). Automatic replacement is refused." \
-      "See what is left of the old deployment (disks, firewall rules):|./destroy.sh --dry-run" \
-      "Remove the leftovers and the stale state file:|./destroy.sh" \
+      "See what is left of the old deployment (disks, firewall rules):|./install.sh --destroy --dry-run" \
+      "Remove the leftovers and the stale state file:|./install.sh --destroy" \
       "Start a fresh deployment:|./install.sh" \
       "*Alternative, if you must keep the old disks: move the state file away and use a NEW VM name:" \
       "*    mv .install-state.json .install-state.json.old"
@@ -1108,7 +1160,7 @@ ensure_single_vm() {
      (.networkInterfaces[0].subnetwork|endswith("/"+$subnet))' <<< "$info" >/dev/null ||
     die_with_steps "Existing VM ${name} does not match the saved machine type, network, subnet, or RUNNING state." \
       "If the VM is only stopped, start it and resume:|gcloud compute instances start ${name} --zone=${GCP_ZONE} --project=${GCP_PROJECT} && ./install.sh --resume" \
-      "If it was resized or moved, remove the whole deployment and start again:|./destroy.sh && ./install.sh"
+      "If it was resized or moved, remove the whole deployment and start again:|./install.sh --destroy && ./install.sh"
   ok "Reuse verified VM: ${name}"
 }
 
@@ -2033,6 +2085,12 @@ validate_resume() {
 }
 
 main() {
+  if [[ "$DESTROY" == true ]]; then
+    run_destroy
+  fi
+  if [[ $# -eq 0 && -t 0 ]]; then
+    start_menu
+  fi
   echo ""
   log "Log file: ${LOG_FILE}"
 
