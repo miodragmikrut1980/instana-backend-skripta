@@ -680,11 +680,11 @@ collect_parameters() {
   echo ""
   log "Instana license keys (will not be stored in any file or log)"
   hint "The three keys come from your Instana/IBM entitlement (Instana portal or the IBM license center):" \
-       "download key = access to the software repository; sales key = your license; agent key = lets agents connect." \
+       "download key = access to the software repository; agent key = lets agents connect; sales key = your license." \
        "Paste each one (typing shows • per character)."
   prompt_secret_required "DOWNLOAD_KEY" "Instana download key" "Download key"
-  prompt_secret_required "SALES_KEY" "Instana sales key" "Sales key"
   prompt_secret_required "AGENT_KEY" "Instana agent key" "Agent key"
+  prompt_secret_required "SALES_KEY" "Instana sales key" "Sales key"
   if [[ "$INSTALL_MODE" == "air-gapped" ]]; then
     obtain_airgapped_archive
   fi
