@@ -33,6 +33,7 @@ readonly INSTANA_KEYRING_URL="https://artifact-public.instana.io/artifactory/api
 # ── Colours ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+readonly DIM='\033[2m'
 
 # ── State ─────────────────────────────────────────────────────────────────────
 DRY_RUN=false
@@ -143,7 +144,7 @@ destroy_by_name() {
   echo "  Disks created by this installer are named <vm-name>-analytics/-metrics/-objects/-data." >&2
   command -v gcloud >/dev/null 2>&1 || die "gcloud is required."
   check_gcp_login
-  prompt_required GCP_PROJECT "GCP Project ID" "$(gcloud config get-value project 2>/dev/null || true)" validate_gcp_project_id
+  prompt_required GCP_PROJECT "GCP Project ID" "$(default_gcp_project)" validate_gcp_project_id
   local local_zone; local_zone=$(detect_local_gce_zone)
   prompt_required GCP_ZONE "GCP Zone of the deployment" "${local_zone:-us-central1-a}"
   prompt_required VM_NAME "VM name to clean up (e.g. mikrut-air; for three-node the node0 name, e.g. instana-0)" ""
@@ -407,10 +408,25 @@ prompt() {
   fi
 }
 
+# Hidden input that still gives feedback: one • per typed character,
+# Backspace removes the last one. Nothing typed is ever echoed or logged.
 prompt_secret() {
   local var_name="$1" prompt_text="$2"
-  local value
-  read -rsp "$(echo -e "${CYAN}?${RESET} ${prompt_text}: ")" value || { echo "" >&2; return 1; }
+  local value="" ch
+  if [[ ! -t 0 ]]; then
+    read -rs value || return 1
+    echo "$value"; return 0
+  fi
+  printf '%b' "${CYAN}?${RESET} ${prompt_text}: " >&2
+  while IFS= read -rs -n1 ch; do
+    if [[ -z "$ch" ]]; then break; fi                      # Enter
+    if [[ "$ch" == $'\x7f' || "$ch" == $'\x08' ]]; then     # Backspace
+      if [[ -n "$value" ]]; then value="${value%?}"; printf '\b \b' >&2; fi
+      continue
+    fi
+    value+="$ch"
+    printf '•' >&2
+  done || { echo "" >&2; return 1; }
   echo "" >&2
   echo "$value"
 }
@@ -447,6 +463,15 @@ prompt_yes_no() {
       n|no)  return 1 ;;
       *) echo "  Please answer y (yes) or n (no)." >&2 ;;
     esac
+  done
+}
+
+# hint TEXT... — one or more short explanation lines shown before a question,
+# for operators who see the installer for the first time.
+hint() {
+  local line
+  for line in "$@"; do
+    echo -e "    ${DIM:-}${line}${RESET}" >&2
   done
 }
 
@@ -552,16 +577,21 @@ collect_parameters() {
   echo ""
 
   # Topology
+  hint "single-node: everything on one VM (labs, demos, small setups)." \
+       "three-node: Instana spread over three VMs, IBM 'production' type, needs 3x n2-standard-16."
   TOPOLOGY=$(prompt_choice "Select deployment topology:" \
     "single-node" \
     "three-node")
 
+  hint "online: the Instana VM downloads stanctl and images from the Instana repository itself (simplest)." \
+       "air-gapped: everything comes from one instana-airgapped.tar.gz package; you will be guided to obtain or build it."
   INSTALL_MODE=$(prompt_choice "Select installation connectivity mode:" \
     "online" \
     "air-gapped")
 
   # Install type
   if [[ "$TOPOLOGY" == "single-node" ]]; then
+    hint "demo: smaller disks/resources for evaluation. production: IBM-sized disks (larger, more expensive)."
     INSTALL_TYPE=$(prompt_choice "Select installation type:" \
       "demo" \
       "production")
@@ -571,12 +601,15 @@ collect_parameters() {
   fi
 
   # Ubuntu version — from docs: Ubuntu 24.04 and 22.04 only
+  hint "Operating system image for the new VM(s). 24.04 is the current IBM-supported default."
   UBUNTU_VERSION=$(prompt_choice "Select Ubuntu version (supported: 24.04, 22.04):" \
     "ubuntu-2404-lts-amd64" \
     "ubuntu-2204-lts")
 
   # GCP parameters
-  prompt_required "GCP_PROJECT" "GCP Project ID (from 'gcloud projects list')" "$(gcloud config get-value project 2>/dev/null || true)" validate_gcp_project_id
+  hint "The Google Cloud project that will own and pay for the VM(s). It is the project ID (lowercase, e.g. instana-support-test-account)," \
+       "not the display name. Enter accepts the default; 'gcloud projects list' shows the projects your account can use."
+  prompt_required "GCP_PROJECT" "GCP Project ID" "$(default_gcp_project)" validate_gcp_project_id
   # Default region/zone: where this machine runs when it is itself a GCE VM
   # (metadata server), so the deployment lands close to it. That matters most
   # for air-gapped installs, where the ~30 GB package is copied to the VM.
@@ -588,6 +621,8 @@ collect_parameters() {
   else
     local_region="us-central1"
   fi
+  hint "Region = geographic area (e.g. europe-west6 = Zurich, us-central1 = Iowa); zone = a data center inside it (suffix -a/-b/-c)." \
+       "Keep the defaults unless you need another location."
   prompt_required "GCP_REGION" "GCP Region" "$local_region"
   if [[ -n "$local_zone" && "$GCP_REGION" == "$local_region" ]]; then
     prompt_required "GCP_ZONE" "GCP Zone" "$local_zone"
@@ -598,12 +633,18 @@ collect_parameters() {
     warn "Air-gapped: the package (tens of GB) will be copied from ${local_region} to ${GCP_REGION}; a cross-region copy is several times slower than staying in ${local_region}."
     prompt_yes_no "Keep region ${GCP_REGION} anyway?" N || { prompt_required "GCP_REGION" "GCP Region" "$local_region"; prompt_required "GCP_ZONE" "GCP Zone" "$([[ "$GCP_REGION" == "$local_region" ]] && echo "$local_zone" || echo "${GCP_REGION}-a")"; }
   fi
+  hint "VPC network and subnet the VM(s) attach to. Every project has one called 'default'; keep it unless your admin gave you another."
   prompt_required "GCP_NETWORK" "VPC Network name" "default"
   prompt_required "GCP_SUBNET" "Subnet name" "default"
+  hint "Which public IP address may open SSH to the VM(s). Default = this machine's own public IP with /32 (only this machine)." \
+       "0.0.0.0/0 would allow the whole internet; avoid it."
   prompt_required "SSH_SOURCE_CIDR" "CIDR allowed to SSH to the VM(s)" "$(detect_public_cidr)" validate_cidr
   if [[ "$TOPOLOGY" == "single-node" ]]; then
+    hint "Name of the new VM in GCP; the four data disks will be named <vm>-analytics/-metrics/-objects/-data." \
+         "Lowercase letters, digits and hyphens. Must not already exist in the zone."
     prompt_required "VM_NAME" "VM name" "instana-backend"
   else
+    hint "Names of the three new VMs. Node 0 runs the backend and stanctl, node 1 the data stores, node 2 the rest."
     prompt_required "NODE0_NAME" "Node 0 name (instana-0, backend)" "instana-0"
     prompt_required "NODE1_NAME" "Node 1 name (instana-1, data store)" "instana-1"
     prompt_required "NODE2_NAME" "Node 2 name (instana-2, other)" "instana-2"
@@ -622,17 +663,25 @@ collect_parameters() {
   log "  otlp-grpc.<base_domain>"
   log "  <unit>-<tenant>.<base_domain>"
   echo ""
+  hint "Domain under which Instana will be reached, e.g. instana.example.com. You must own it and be able to add DNS records;" \
+       "for a lab you can instead put the entries printed at the end into /etc/hosts on your computer."
   prompt_required "BASE_DOMAIN" "Base domain (e.g. instana.example.com)" "" validate_fqdn
   # Tenant / unit names
+  hint "Tenant and unit are Instana's two-level naming; they form the UI address <unit>-<tenant>.<domain>." \
+       "Any short lowercase names are fine (e.g. company name and 'prod' or 'lab')."
   prompt_required "TENANT_NAME" "Tenant name (max 15 chars, lowercase alphanumeric, start with letter)" "tenant0" validate_tenant_unit_name "Tenant name"
   prompt_required "UNIT_NAME" "Unit name (max 15 chars, lowercase alphanumeric, start with letter)" "unit0" validate_tenant_unit_name "Unit name"
   # Admin password
   echo ""
   log "Instana admin password (will not be stored in any file or log)"
+  hint "Password you choose now for the first UI user admin@instana.local. Typing shows • per character."
   prompt_secret_required "ADMIN_PASSWORD" "Instana admin password" "Admin password"
   # Instana keys — never logged or stored in local state/logs
   echo ""
   log "Instana license keys (will not be stored in any file or log)"
+  hint "The three keys come from your Instana/IBM entitlement (Instana portal or the IBM license center):" \
+       "download key = access to the software repository; sales key = your license; agent key = lets agents connect." \
+       "Paste each one (typing shows • per character)."
   prompt_secret_required "DOWNLOAD_KEY" "Instana download key" "Download key"
   prompt_secret_required "SALES_KEY" "Instana sales key" "Sales key"
   prompt_secret_required "AGENT_KEY" "Instana agent key" "Agent key"
@@ -641,6 +690,8 @@ collect_parameters() {
   fi
 
   # TLS certificate
+  hint "HTTPS certificate for the UI. Self-signed is generated automatically (browser will warn; fine for a lab)." \
+       "Custom = you provide a certificate and key file for the domain (needed for production)."
   TLS_MODE=$(prompt_choice "TLS certificate:" \
     "auto-generate (self-signed)" \
     "provide custom certificate files")
@@ -924,6 +975,15 @@ default_airgapped_archive() {
     fi
   done
   return 0
+}
+
+# Default project: the active gcloud project; otherwise the lab project this
+# installer is normally used with (adjust here if you use another one).
+readonly FALLBACK_GCP_PROJECT="instana-support-test-account"
+default_gcp_project() {
+  local p
+  p=$(gcloud config get-value project 2>/dev/null || true)
+  [[ -n "$p" && "$p" != "(unset)" ]] && printf '%s\n' "$p" || printf '%s\n' "$FALLBACK_GCP_PROJECT"
 }
 
 # Zone of this machine when it runs on Google Compute Engine, e.g. europe-west6-b;
