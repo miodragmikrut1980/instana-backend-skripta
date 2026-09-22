@@ -2165,6 +2165,38 @@ validate_resume() {
   warn "Partial single-node resume validated. VM and every disk will be checked individually; only missing resources will be created."
 }
 
+# A new three-node deployment was requested but this folder already holds a
+# state file. Only a three-node state with a deployment identity can be
+# resumed; anything else (a single-node lab, an older layout, a different
+# project/zone) is explained and the operator chooses what to do with it.
+handle_existing_state_for_new_deployment() {
+  local st_topology st_project st_zone st_vms st_id choice backup
+  st_topology=$(get_state topology); st_project=$(get_state gcp_project); st_zone=$(get_state gcp_zone)
+  st_id=$(get_state deployment_id)
+  st_vms=$(jq -r 'to_entries[] | select(.key | startswith("vm_")) | .key | ltrimstr("vm_")' "$STATE_FILE" 2>/dev/null | paste -sd, -)
+  echo "" >&2
+  warn "This folder already contains .install-state.json from another deployment:"
+  echo "    project/zone: ${st_project:-?}/${st_zone:-?}   topology: ${st_topology:-unknown}   VMs: ${st_vms:-none recorded}" >&2
+  if [[ "$st_topology" == three-node && "$st_id" =~ ^[a-f0-9]{32}$ ]]; then
+    prompt_yes_no "It is a resumable three-node deployment. Resume it with verified saved state?" Y && { RESUME=true; return 0; }
+  else
+    echo "    It cannot be resumed as a three-node deployment (single-node or older state without a deployment identity)." >&2
+  fi
+  choice=$(prompt_choice "What do you want to do with it?" \
+    "delete the GCP resources of that old deployment first (VM, disks, firewall rules), then rerun" \
+    "keep those resources, set the old state file aside and continue with this NEW deployment" \
+    "cancel") || die "Installation cancelled by the operator. Nothing was created."
+  case "$choice" in
+    delete*) exec bash "${SCRIPT_DIR}/destroy.sh" ;;
+    keep*)
+      backup="${STATE_FILE}.$(date +%Y%m%d-%H%M%S).old"
+      mv "$STATE_FILE" "$backup" || die "Could not move the old state file aside."
+      ok "Old state set aside as $(basename "$backup"). Its GCP resources still exist and can be removed later with the clean-up menu option."
+      ;;
+    *) die "Installation cancelled by the operator. Nothing was created." ;;
+  esac
+}
+
 main() {
   if [[ "$DESTROY" == true ]]; then
     run_destroy
@@ -2189,8 +2221,7 @@ main() {
   phase_done 1 "Local prerequisites and non-secret parameters are ready."
   if [[ "$TOPOLOGY" == three-node && "$INSTALL_MODE" == online ]]; then
     if [[ -f "$STATE_FILE" && "$RESUME" != true ]]; then
-      prompt_yes_no "Existing deployment found. Resume with verified saved state?" Y || die "Resume declined."
-      RESUME=true
+      handle_existing_state_for_new_deployment
     fi
     prepare_multinode_lab
   fi

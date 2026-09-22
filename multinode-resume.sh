@@ -4,7 +4,9 @@ validate_multinode_resume() {
   [[ "$DRY_RUN" != true ]] || die "Resume requires actual state validation, not --dry-run."
   [[ -f "$STATE_FILE" && ! -L "$STATE_FILE" && -O "$STATE_FILE" ]] || die "Missing or unsafe state file."
   DEPLOYMENT_ID=$(get_state deployment_id)
-  [[ "$DEPLOYMENT_ID" =~ ^[a-f0-9]{32}$ ]] || die "Legacy state has no deployment identity; automatic adoption is refused."
+  [[ "$DEPLOYMENT_ID" =~ ^[a-f0-9]{32}$ ]] || die_with_steps "The state file in this folder is not a resumable three-node deployment (no deployment identity; probably a single-node or older state)." \
+    "Run the installer without --resume and choose what to do with the old state when asked:|./install.sh" \
+    "*Or remove that old deployment first: ./install.sh --destroy"
   local manifest
   manifest=$(jq -cS .parameters "$CONFIG_FILE")
   [[ "$(get_state deployment_manifest)" == "$manifest" ]] || die "Parameters differ from original deployment. Restore its saved config; no resources changed."
