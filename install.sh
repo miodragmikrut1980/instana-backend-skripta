@@ -466,6 +466,22 @@ prompt_yes_no() {
   done
 }
 
+# waiting_notice WHAT EXPECTED — tells the operator that a silent wait is
+# normal and how long it usually takes, so a quiet screen is not mistaken for
+# a hang. wait_with_countdown SECONDS WHAT — the same, with a live counter.
+waiting_notice() {
+  echo -e "  ${YELLOW}⏳ Waiting: $1 — usually $2. The screen may stay quiet; this is normal. Do NOT press Ctrl+C.${RESET}" | tee -a "$LOG_FILE" >&2
+}
+wait_with_countdown() {
+  local secs="$1" what="$2" i
+  echo "  ⏳ $what (${secs}s)" >> "$LOG_FILE"
+  for (( i=secs; i>0; i-- )); do
+    printf '\r  ⏳ %s — %3ds remaining   ' "$what" "$i" >&2
+    sleep 1
+  done
+  printf '\r%-80s\r' '' >&2
+}
+
 # hint TEXT... — one or more short explanation lines shown before a question,
 # for operators who see the installer for the first time.
 hint() {
@@ -1450,8 +1466,10 @@ upload_stanctl_env() {
 wait_for_ssh() {
   local vm_name="$1" zone="$2" project="$3"
   log "Waiting for SSH on ${vm_name}..."
+  waiting_notice "SSH on ${vm_name} to answer (up to 30 attempts, 10 s apart)" "1-3 minutes after a VM start or reboot"
   local attempt=0
   while (( attempt < 30 )); do
+    (( attempt == 0 )) || printf '  ⏳ SSH attempt %d/30 on %s...\n' "$((attempt + 1))" "$vm_name" >&2
     if timeout 30s gcloud compute ssh "$vm_name" \
         --project="$project" \
         --zone="$zone" \
@@ -1488,8 +1506,8 @@ apply_kernel_parameters() {
   if [[ "$DRY_RUN" != true ]]; then
     remote_exec "$vm_name" "$zone" "$project" "shutdown -r +1"
     log "Graceful reboot scheduled in one minute."
-    sleep 45
-    sleep 30
+    waiting_notice "VM ${vm_name} reboots and comes back" "2-3 minutes"
+    wait_with_countdown 75 "reboot of ${vm_name} in progress"
     wait_for_ssh "$vm_name" "$zone" "$project"
     # Verify THP disabled — from docs: expected output is: always madvise [never]
     remote_exec "$vm_name" "$zone" "$project" \
@@ -1648,7 +1666,9 @@ install_stanctl_airgapped() {
     warn "Dry-run: would copy $(basename "$AIRGAP_ARCHIVE"), extract stanctl ${STANCTL_CLI_VERSION} from it and import backend ${BACKEND_VERSION}."
     return
   fi
+  waiting_notice "copying $(du -h "$AIRGAP_ARCHIVE" 2>/dev/null | cut -f1) to ${vm_name} (scp shows its own progress)" "5-30 minutes depending on distance and bandwidth"
   gcloud compute scp "$AIRGAP_ARCHIVE" "${vm_name}:/tmp/instana-airgapped.tar.gz" --project="$project" --zone="$zone"
+  waiting_notice "extracting stanctl and importing the package (stanctl air-gapped import)" "5-15 minutes; stanctl prints its own progress lines"
   # Documented sequence: extract the bundled stanctl binary to /usr/local/bin,
   # then import the package. The archive stays until import succeeds so a
   # failed import can be retried without another transfer.
@@ -1855,6 +1875,7 @@ stanctl_version_flag() {
 run_stanctl_up_single_node() {
   local vm_name="$1" zone="$2" project="$3"
   log "Running stanctl up on ${vm_name}..."
+  waiting_notice "stanctl up installs Kubernetes, data stores and the Instana backend" "30-60 minutes; stanctl prints its own progress lines"
 
   upload_stanctl_env "$vm_name" "$zone" "$project"
 
@@ -1880,6 +1901,7 @@ run_stanctl_up_single_node() {
 run_stanctl_up_multi_node() {
   local node0_name="$1" zone="$2" project="$3" node_ips="$4"
   log "Running stanctl up --multi-node-enable on ${node0_name}..."
+  waiting_notice "stanctl up installs Kubernetes on all three nodes, data stores and the backend" "45-90 minutes; stanctl prints its own progress lines"
 
   upload_stanctl_env "$node0_name" "$zone" "$project" "$node_ips"
 
@@ -1911,6 +1933,7 @@ post_install_health_check() {
     warn "Dry-run: skipping health check."
     return
   fi
+  waiting_notice "Kubernetes nodes and all Instana pods to become Ready" "up to 5 minutes per check"
 
   remote_exec "$vm_name" "$zone" "$project" \
     "set -e; kubectl wait --for=condition=Ready nodes --all --timeout=300s"
