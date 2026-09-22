@@ -2264,6 +2264,24 @@ handle_existing_state_for_new_deployment() {
   esac
 }
 
+# After a dropped connection the operator simply runs ./install.sh again: if an
+# installer is still running inside a screen session, offer to jump back to it.
+offer_reattach_running_installer() {
+  command -v screen >/dev/null 2>&1 || return 0
+  local -a sessions=()
+  mapfile -t sessions < <(screen -ls 2>/dev/null | sed -nE 's/^[[:space:]]+([0-9]+\.instana-[0-9]+)[[:space:]].*$/\1/p')
+  (( ${#sessions[@]} > 0 )) || return 0
+  echo "" >&2
+  log "An installer session is still running in screen: ${sessions[*]}"
+  local choice
+  choice=$(prompt_choice "Reattach to it (recommended after a lost connection) or start something new?" \
+    "reattach to the running installer ${sessions[0]}" \
+    "continue with a new start (the running one keeps working in the background)") || exit 0
+  case "$choice" in
+    reattach*) exec screen -d -r "${sessions[0]}" ;;
+  esac
+}
+
 # A lost SSH connection kills a plain foreground installer (SIGHUP), and with
 # it a running stanctl up. When started interactively outside screen/tmux the
 # installer therefore offers to re-launch itself inside a screen session.
@@ -2271,6 +2289,7 @@ ensure_detachable_session() {
   [[ -t 0 && -t 1 ]] || return 0                  # non-interactive: nothing to protect
   [[ -z "${STY:-}" && -z "${TMUX:-}" ]] || return 0   # already inside screen/tmux
   [[ "${INSTANA_NO_SCREEN:-}" != 1 ]] || return 0
+  offer_reattach_running_installer
   echo "" >&2
   warn "You are not inside a screen/tmux session. If your SSH connection drops, the installer and stanctl up die with it."
   if ! command -v screen >/dev/null 2>&1; then
