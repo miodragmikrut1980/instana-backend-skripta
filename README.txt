@@ -6,6 +6,9 @@ changes the VM or GCP project, displays overall completion percentage, and
 records completed phases in .install-state.json. Resource validation remains
 authoritative: a saved visual checkpoint never bypasses resume verification.
 
+Started outside screen/tmux, install.sh offers to re-launch itself inside a
+screen session (installing screen if needed) so a dropped SSH connection cannot
+kill a running installation; reattach with 'screen -d -r <name>'.
 Use ./install.sh for a new deployment. Use ./install.sh --resume in the same
 deployment folder when the selected topology supports continuation.
 Started without options from a terminal, install.sh shows a start menu:
