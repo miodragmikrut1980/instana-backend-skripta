@@ -83,8 +83,8 @@ offer_saved_parameters() {
   validate_cidr "$SSH_SOURCE_CIDR" || die "Saved SSH CIDR is invalid."
   reask_secret ADMIN_PASSWORD "Instana admin password" "Admin password"
   reask_secret DOWNLOAD_KEY "Instana download key" "Download key"
-  reask_secret SALES_KEY "Instana sales key" "Sales key"
   reask_secret AGENT_KEY "Instana agent key" "Agent key"
+  reask_secret SALES_KEY "Instana sales key" "Sales key"
   if [[ "$TLS_MODE" == "provide custom certificate files" ]]; then
     [[ -f "$TLS_CRT_PATH" && -f "$TLS_KEY_PATH" ]] || die "Custom TLS files missing."
   else
