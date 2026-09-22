@@ -2165,6 +2165,13 @@ validate_resume() {
   warn "Partial single-node resume validated. VM and every disk will be checked individually; only missing resources will be created."
 }
 
+# True when the state file holds nothing but progress checkpoints of the
+# current run (no project, topology, VMs, disks or deployment identity).
+state_is_only_progress() {
+  [[ -f "$STATE_FILE" ]] || return 1
+  jq -e 'keys | all(startswith("progress_"))' "$STATE_FILE" >/dev/null 2>&1
+}
+
 # A new three-node deployment was requested but this folder already holds a
 # state file. Only a three-node state with a deployment identity can be
 # resumed; anything else (a single-node lab, an older layout, a different
@@ -2220,7 +2227,9 @@ main() {
   validate_vm_names
   phase_done 1 "Local prerequisites and non-secret parameters are ready."
   if [[ "$TOPOLOGY" == three-node && "$INSTALL_MODE" == online ]]; then
-    if [[ -f "$STATE_FILE" && "$RESUME" != true ]]; then
+    # Phase 1 has just written its own progress checkpoint into the state file;
+    # that is not an existing deployment. Only a state with resources/identity is.
+    if [[ -f "$STATE_FILE" && "$RESUME" != true ]] && ! state_is_only_progress; then
       handle_existing_state_for_new_deployment
     fi
     prepare_multinode_lab
