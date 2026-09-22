@@ -2273,6 +2273,8 @@ offer_reattach_running_installer() {
   (( ${#sessions[@]} > 0 )) || return 0
   echo "" >&2
   log "An installer session is still running in screen: ${sessions[*]}"
+  hint "It survived because it runs inside screen. Reattaching shows its live output exactly where it left off;" \
+       "nothing is restarted. Detach again at any time with Ctrl+A then D."
   local choice
   choice=$(prompt_choice "Reattach to it (recommended after a lost connection) or start something new?" \
     "reattach to the running installer ${sessions[0]}" \
@@ -2291,7 +2293,12 @@ ensure_detachable_session() {
   [[ "${INSTANA_NO_SCREEN:-}" != 1 ]] || return 0
   offer_reattach_running_installer
   echo "" >&2
-  warn "You are not inside a screen/tmux session. If your SSH connection drops, the installer and stanctl up die with it."
+  warn "You are not inside a screen/tmux session."
+  hint "Why this matters: this installer runs for 1-2 hours and drives 'stanctl up' on the Instana VM through an SSH" \
+       "connection from THIS terminal. If your own connection to this machine drops (Wi-Fi, VPN, laptop sleep), Linux" \
+       "closes the terminal and kills everything started from it, including stanctl up in the middle of the installation." \
+       "'screen' keeps the installer running on this machine independent of your connection: you can disconnect at any" \
+       "time, reconnect later, run ./install.sh again and jump straight back to the live screen where it left off."
   if ! command -v screen >/dev/null 2>&1; then
     if command -v apt-get >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
       prompt_yes_no "Install 'screen' now (sudo apt-get install screen) so the installer can run detached?" Y &&
