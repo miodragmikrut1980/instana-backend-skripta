@@ -223,6 +223,11 @@ destroy_by_name() {
   done <<< "$vm_found"
   while read -r name _; do
     [[ -n "$name" ]] || continue
+    # Boot disks carry the VM's name and are removed together with the VM.
+    if ! gcloud compute disks describe "$name" --project="$project" --zone="$zone" >/dev/null 2>&1; then
+      log "Disk ${name} is already gone (boot disk deleted with its VM)."
+      continue
+    fi
     log "Deleting disk ${name}..."
     gcloud compute disks delete "$name" --project="$project" --zone="$zone" --quiet && ok "Disk ${name} deleted."
   done <<< "$disks"
