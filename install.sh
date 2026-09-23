@@ -125,8 +125,11 @@ done
 run_destroy() {
   local -a args=()
   [[ "$DRY_RUN" == true ]] && args+=(--dry-run)
-  if [[ -f "$STATE_FILE" ]]; then
+  if [[ -f "$STATE_FILE" ]] && ! state_is_only_progress; then
     exec bash "${SCRIPT_DIR}/destroy.sh" "${args[@]}"
+  fi
+  if [[ -f "$STATE_FILE" ]]; then
+    warn "The state file here holds only a phase-1 checkpoint, no resources; switching to clean-up by VM name."
   fi
   # No state file here (fresh clone, state already removed, or the deployment
   # was made from another folder): find the resources by VM name instead.
@@ -209,8 +212,8 @@ start_menu() {
   local choice
   local -a options=("install: start a new Instana deployment" \
                     "dry-run: show the plan and simulate all phases, create nothing")
-  [[ -f "$STATE_FILE" ]] && options+=("resume: continue the interrupted deployment recorded in this folder")
-  if [[ -f "$STATE_FILE" ]]; then
+  [[ -f "$STATE_FILE" ]] && ! state_is_only_progress && options+=("resume: continue the interrupted deployment recorded in this folder")
+  if [[ -f "$STATE_FILE" ]] && ! state_is_only_progress; then
     options+=("destroy (preview): list the GCP resources of this folder's deployment that would be deleted" \
               "destroy: DELETE the GCP resources of this folder's deployment (VM, disks, firewall rules)")
   else
@@ -220,7 +223,7 @@ start_menu() {
   options+=("exit")
   echo ""
   echo -e "${BOLD}Instana Standard Edition — GCP installer${RESET}"
-  if [[ -f "$STATE_FILE" ]]; then
+  if [[ -f "$STATE_FILE" ]] && ! state_is_only_progress; then
     log "A deployment is recorded in this folder: $(jq -r '[.gcp_project, .gcp_zone, .topology] | map(. // "?") | join(" / ")' "$STATE_FILE" 2>/dev/null)"
   else
     log "No deployment is recorded in this folder (no .install-state.json)."
@@ -2309,7 +2312,20 @@ ensure_detachable_session() {
     local name="instana-$(date +%H%M%S)"
     if prompt_yes_no "Run the installer inside screen session '${name}' now? (reconnect later with: screen -d -r ${name})" Y; then
       log "Re-launching inside screen. Detach with Ctrl+A then D; reattach with: screen -d -r ${name}"
-      exec screen -S "$name" bash "$0" "$@"
+      # Everything shown inside screen is also logged, so if the inner installer
+      # dies at once (screen then closes before anyone can read the error) the
+      # last lines are printed here instead of vanishing.
+      local logf="${SCRIPT_DIR}/screen-${name}.log" started=$SECONDS rc=0
+      screen -L -Logfile "$logf" -S "$name" bash "${SCRIPT_DIR}/install.sh" "$@" || rc=$?
+      if (( SECONDS - started < 5 )); then
+        err "The installer inside screen ended immediately (exit code ${rc}). Its last output:"
+        sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$logf" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -15 >&2
+        echo "  Full screen log: ${logf}" >&2
+        echo "  To run without screen: INSTANA_NO_SCREEN=1 ./install.sh" >&2
+      else
+        rm -f "$logf"
+      fi
+      exit "$rc"
     fi
   else
     warn "screen is not available; continuing in the foreground. Do not close this terminal until the installer finishes."

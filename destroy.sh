@@ -55,13 +55,22 @@ get_state() {
 GCP_PROJECT=$(get_state "gcp_project" 2>/dev/null || echo "")
 GCP_ZONE=$(get_state "gcp_zone" 2>/dev/null || echo "")
 
-# If state file was written by install.sh, re-read project/zone from it
-# (install.sh saves them via save_state)
-if [[ -z "$GCP_PROJECT" || -z "$GCP_ZONE" ]]; then
-  # Fall back to prompting
-  read -rp "$(echo -e "${CYAN}?${RESET} GCP Project ID: ")" GCP_PROJECT
-  read -rp "$(echo -e "${CYAN}?${RESET} GCP Zone: ")" GCP_ZONE
+# The state file must actually record resources. A file holding only progress
+# checkpoints (an interrupted phase 1) or nothing usable is refused with a
+# pointer to the name-based clean-up in install.sh, instead of pretending that
+# "all resources were deleted".
+recorded=$(jq -r 'to_entries[] | select(.key | test("^(vm_|disk_|firewall_|fw_)")) | .key' "$STATE_FILE" 2>/dev/null | wc -l)
+if [[ -z "$GCP_PROJECT" || -z "$GCP_ZONE" || "$recorded" -eq 0 ]]; then
+  err "The state file records no GCP resources (project: '${GCP_PROJECT:-?}', zone: '${GCP_ZONE:-?}', recorded resources: ${recorded})."
+  echo "  Nothing can be deleted from it. If VMs or disks still exist in GCP, remove them by VM name:" >&2
+  echo "      ./install.sh   ->  'clean up (preview)' / 'clean up'   (asks project, zone and VM name, e.g. instana-0)" >&2
+  if [[ "$DRY_RUN" != true ]]; then
+    mv -f "$STATE_FILE" "${STATE_FILE}.$(date +%Y%m%d-%H%M%S).empty" 2>/dev/null &&
+      warn "The unusable state file was set aside as $(basename "${STATE_FILE}").*.empty."
+  fi
+  exit 1
 fi
+[[ "$GCP_PROJECT" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || die "State file holds an invalid GCP project ID '${GCP_PROJECT}'."
 
 echo ""
 echo -e "${BOLD}${RED}════════════════════════════════════════════════════════════════${RESET}"
@@ -78,6 +87,7 @@ read -rp "$(echo -e "${RED}?${RESET} Type '${expected}' to confirm deletion: ")"
 
 echo ""
 
+DELETED=0; MISSING=0
 # Delete VMs
 delete_vm() {
   local name="$1"
@@ -88,9 +98,9 @@ delete_vm() {
       --project="$GCP_PROJECT" \
       --zone="$GCP_ZONE" \
       --quiet
-    ok "VM ${name} deleted."
+    ok "VM ${name} deleted."; (( DELETED++ )) || true
   else
-    warn "VM ${name} not found — skipping."
+    warn "VM ${name} not found — skipping."; (( MISSING++ )) || true
   fi
 }
 
@@ -104,9 +114,9 @@ delete_disk() {
       --project="$GCP_PROJECT" \
       --zone="$GCP_ZONE" \
       --quiet
-    ok "Disk ${name} deleted."
+    ok "Disk ${name} deleted."; (( DELETED++ )) || true
   else
-    warn "Disk ${name} not found — skipping."
+    warn "Disk ${name} not found — skipping."; (( MISSING++ )) || true
   fi
 }
 
@@ -119,9 +129,9 @@ delete_firewall() {
     run gcloud compute firewall-rules delete "$name" \
       --project="$GCP_PROJECT" \
       --quiet
-    ok "Firewall rule ${name} deleted."
+    ok "Firewall rule ${name} deleted."; (( DELETED++ )) || true
   else
-    warn "Firewall rule ${name} not found — skipping."
+    warn "Firewall rule ${name} not found — skipping."; (( MISSING++ )) || true
   fi
 }
 
@@ -156,6 +166,12 @@ if [[ "$DRY_RUN" != true ]]; then
 fi
 
 echo ""
-ok "All Instana GCP resources have been deleted."
+if [[ "$DRY_RUN" == true ]]; then
+  ok "Preview finished: ${DELETED} resource(s) would be deleted, ${MISSING} recorded resource(s) no longer exist."
+elif (( DELETED > 0 )); then
+  ok "Deleted ${DELETED} resource(s); ${MISSING} recorded resource(s) no longer existed."
+else
+  warn "Nothing was deleted: none of the ${MISSING} recorded resource(s) exist any more."
+fi
 echo -e "  Log: ${LOG_FILE}"
 echo ""
