@@ -2341,15 +2341,21 @@ ensure_detachable_session() {
       # Everything shown inside screen is also logged, so if the inner installer
       # dies at once (screen then closes before anyone can read the error) the
       # last lines are printed here instead of vanishing.
-      local logf="${SCRIPT_DIR}/screen-${name}.log" started=$SECONDS rc=0
-      screen -L -Logfile "$logf" -S "$name" bash "${SCRIPT_DIR}/install.sh" "$@" || rc=$?
-      if (( SECONDS - started < 5 )); then
-        err "The installer inside screen ended immediately (exit code ${rc}). Its last output:"
-        sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$logf" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -15 >&2
+      # screen flushes its log only every 10 s by default; a private screenrc
+      # makes it immediate so nothing is lost when the inner script dies fast.
+      local logf="${SCRIPT_DIR}/screen-${name}.log" started=$SECONDS rc=0 rcfile
+      rcfile=$(mktemp); printf 'logfile "%s"\nlogfile flush 0\ndeflog on\n' "$logf" > "$rcfile"
+      screen -c "$rcfile" -S "$name" bash -c 'exec bash "$0" "$@"' "${SCRIPT_DIR}/install.sh" "$@" || rc=$?
+      rm -f "$rcfile"
+      if (( SECONDS - started < 60 )); then
+        err "The installer inside screen ended after $(( SECONDS - started )) s (screen exit code ${rc}). Its last output:"
+        if [[ -s "$logf" ]]; then
+          sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$logf" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -20 >&2 || true
+        else
+          echo "  (the screen log ${logf} is empty or missing)" >&2
+        fi
         echo "  Full screen log: ${logf}" >&2
         echo "  To run without screen: INSTANA_NO_SCREEN=1 ./install.sh" >&2
-      else
-        rm -f "$logf"
       fi
       exit "$rc"
     fi
