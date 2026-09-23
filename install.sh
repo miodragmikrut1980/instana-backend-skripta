@@ -158,14 +158,28 @@ destroy_by_name() {
   echo "  Disks created by this installer are named <vm-name>-analytics/-metrics/-objects/-data." >&2
   command -v gcloud >/dev/null 2>&1 || die "gcloud is required."
   check_gcp_login
+  OPERATION_NAME="clean-up"
   prompt_required GCP_PROJECT "GCP Project ID" "$(default_gcp_project)" validate_gcp_project_id
-  local local_zone; local_zone=$(detect_local_gce_zone)
-  prompt_required GCP_ZONE "GCP Zone of the deployment" "${local_zone:-us-central1-a}"
+  hint "The zone is found automatically from the VM name."
   prompt_required VM_NAME "VM name to clean up (e.g. mikrut-air; for three-node the node0 name, e.g. instana-0)" ""
-  project="$GCP_PROJECT"; zone="$GCP_ZONE"; vm="$VM_NAME"
+  project="$GCP_PROJECT"; vm="$VM_NAME"
   local base="${vm%-0}"   # three-node: instana-0 -> also instana-1, instana-2
 
-  log "Searching ${project}/${zone} for resources of '${vm}'..."
+  log "Searching project ${project} (all zones) for resources of '${vm}'..."
+  local zones
+  zones=$( { gcloud compute instances list --project="$project" --filter="name~^(${vm}|${base}-[0-9])$" --format="value(zone.basename())";
+             gcloud compute disks list --project="$project" --filter="name~^(${vm}|${base}-[0-9])(-[a-z]+)?$" --format="value(zone.basename())"; } 2>/dev/null | sed '/^$/d' | sort -u)
+  if [[ -z "$zones" ]]; then
+    ok "Nothing named '${vm}' (VM or disks) exists in project ${project}; nothing to delete."
+    exit 0
+  fi
+  if (( $(wc -l <<< "$zones") > 1 )); then
+    zone=$(prompt_choice "Resources named '${vm}' exist in several zones; which one?" $zones) || die "Clean-up cancelled."
+  else
+    zone="$zones"
+  fi
+  GCP_ZONE="$zone"
+  log "Found them in zone ${zone}."
   vm_found=$(gcloud compute instances list --project="$project" --zones="$zone" \
     --filter="name~^(${vm}|${base}-[0-9])$" --format="value(name,status,machineType.basename())" 2>/dev/null || true)
   disks=$(gcloud compute disks list --project="$project" --zones="$zone" \
@@ -495,10 +509,11 @@ hint() {
 # is closed (non-interactive run with no more input).
 confirm_cancel() {
   local answer
-  read -rp "$(echo -e "${YELLOW}!${RESET} No valid value entered. Cancel the installation? [y/N]: ")" answer ||
-    die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+  local op="${OPERATION_NAME:-installation}"
+  read -rp "$(echo -e "${YELLOW}!${RESET} No valid value entered. Cancel the ${op}? [y/N]: ")" answer ||
+    die "Input ended before the answers were complete; ${op} cancelled. Nothing was changed."
   case "${answer,,}" in
-    y|yes) die "Installation cancelled by the operator. Nothing was created." ;;
+    y|yes) die "${op^} cancelled by the operator. Nothing was changed." ;;
   esac
   echo "  Continuing; please answer the question again." >&2
 }
