@@ -174,9 +174,10 @@ destroy_by_name() {
     exit 0
   fi
   if [[ "$DRY_RUN" == true ]]; then
-    warn "Preview only. Run the destroy option again (without preview) to delete the VMs and disks listed above."
+    warn "Preview only (--dry-run). Nothing was deleted."
     exit 0
   fi
+  prompt_yes_no "Delete the VMs and disks listed above?" N || { log "Nothing was deleted."; exit 0; }
   local delete_fw=false
   if [[ -n "$fws" ]]; then
     prompt_yes_no "Also delete the instana-allow-* firewall rules? Only say yes if no other Instana deployment in this project uses them" N && delete_fw=true
@@ -217,8 +218,7 @@ start_menu() {
     options+=("destroy (preview): list the GCP resources of this folder's deployment that would be deleted" \
               "destroy: DELETE the GCP resources of this folder's deployment (VM, disks, firewall rules)")
   else
-    options+=("clean up (preview): find leftover GCP resources by VM name and list them" \
-              "clean up: find leftover GCP resources by VM name and DELETE them")
+    options+=("clean up: find leftover GCP resources by VM name, show them, delete only after confirmation")
   fi
   options+=("exit")
   echo ""
@@ -233,7 +233,7 @@ start_menu() {
     install:*) ;;
     dry-run:*) DRY_RUN=true; warn "Dry-run mode — no GCP resources will be created." ;;
     resume:*) RESUME=true ;;
-    "destroy (preview)"*|"clean up (preview)"*) DRY_RUN=true; run_destroy ;;
+    "destroy (preview)"*) DRY_RUN=true; run_destroy ;;
     destroy:*|"clean up:"*) run_destroy ;;
     *) exit 0 ;;
   esac
