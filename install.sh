@@ -25,6 +25,17 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly STATE_FILE="${SCRIPT_DIR}/.install-state.json"
 readonly CONFIG_FILE="${SCRIPT_DIR}/.install-config.json"
 umask 077
+# The installer is split over several files; a missing one (partial copy,
+# accidental delete) must produce a clear fix instead of a bash source error.
+for _companion in parameters.sh progress.sh multinode-online.sh local-access.sh multinode-resume.sh hardware-input.sh capacity-fallback.sh; do
+  if [[ ! -f "${SCRIPT_DIR}/${_companion}" ]]; then
+    echo "[ERROR] ${_companion} is missing from ${SCRIPT_DIR}; the installer needs all its files side by side." >&2
+    echo "  Restore them from git in that folder:   git checkout -- . && git pull origin main" >&2
+    echo "  Or clone again:  git clone https://github.com/miodragmikrut1980/instana-backend-skripta.git" >&2
+    exit 1
+  fi
+done
+unset _companion
 source "${SCRIPT_DIR}/parameters.sh"
 readonly LOG_FILE="${SCRIPT_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
 readonly INSTANA_APT_REPO="deb [signed-by=/usr/share/keyrings/instana-archive-keyring.gpg] https://artifact-public.instana.io/artifactory/rel-debian-public-virtual generic main"
