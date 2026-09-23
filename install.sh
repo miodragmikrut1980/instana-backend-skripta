@@ -137,7 +137,8 @@ run_destroy() {
   local -a args=()
   [[ "$DRY_RUN" == true ]] && args+=(--dry-run)
   if [[ -f "$STATE_FILE" ]] && ! state_is_only_progress; then
-    exec bash "${SCRIPT_DIR}/destroy.sh" "${args[@]}"
+    bash "${SCRIPT_DIR}/destroy.sh" "${args[@]}"
+    exit $?
   fi
   if [[ -f "$STATE_FILE" ]]; then
     warn "The state file here holds only a phase-1 checkpoint, no resources; switching to clean-up by VM name."
@@ -167,8 +168,10 @@ destroy_by_name() {
 
   log "Searching project ${project} (all zones) for resources of '${vm}'..."
   local zones
-  zones=$( { gcloud compute instances list --project="$project" --filter="name~^(${vm}|${base}-[0-9])$" --format="value(zone.basename())";
-             gcloud compute disks list --project="$project" --filter="name~^(${vm}|${base}-[0-9])(-[a-z]+)?$" --format="value(zone.basename())"; } 2>/dev/null | sed '/^$/d' | sort -u)
+  # Regexes are quoted inside the filter expression; unquoted ( | ) confuse the gcloud filter parser.
+  local vm_re="^(${vm}|${base}-[0-9])\$" disk_re="^(${vm}|${base}-[0-9])(-[a-z]+)?\$"
+  zones=$( { gcloud compute instances list --project="$project" --filter="name~\"${vm_re}\"" --format="value(zone.basename())";
+             gcloud compute disks list --project="$project" --filter="name~\"${disk_re}\"" --format="value(zone.basename())"; } 2>/dev/null | sed '/^$/d' | sort -u)
   if [[ -z "$zones" ]]; then
     ok "Nothing named '${vm}' (VM or disks) exists in project ${project}; nothing to delete."
     exit 0
@@ -181,11 +184,11 @@ destroy_by_name() {
   GCP_ZONE="$zone"
   log "Found them in zone ${zone}."
   vm_found=$(gcloud compute instances list --project="$project" --zones="$zone" \
-    --filter="name~^(${vm}|${base}-[0-9])$" --format="value(name,status,machineType.basename())" 2>/dev/null || true)
+    --filter="name~\"${vm_re}\"" --format="value(name,status,machineType.basename())" 2>/dev/null || true)
   disks=$(gcloud compute disks list --project="$project" --zones="$zone" \
-    --filter="name~^(${vm}|${base}-[0-9])(-[a-z]+)?$" --format="value(name,sizeGb,type.basename(),users.basename())" 2>/dev/null || true)
+    --filter="name~\"${disk_re}\"" --format="value(name,sizeGb,type.basename(),users.basename())" 2>/dev/null || true)
   fws=$(gcloud compute firewall-rules list --project="$project" \
-    --filter="name~^instana-allow-" --format="value(name,sourceRanges.list())" 2>/dev/null || true)
+    --filter="name~\"^instana-allow-\"" --format="value(name,sourceRanges.list())" 2>/dev/null || true)
 
   echo "" >&2
   echo -e "${BOLD}Found:${RESET}" >&2
@@ -2345,19 +2348,25 @@ ensure_detachable_session() {
       # makes it immediate so nothing is lost when the inner script dies fast.
       local logf="${SCRIPT_DIR}/screen-${name}.log" started=$SECONDS rc=0 rcfile
       rcfile=$(mktemp); printf 'logfile "%s"\nlogfile flush 0\ndeflog on\n' "$logf" > "$rcfile"
-      screen -c "$rcfile" -S "$name" bash -c 'exec bash "$0" "$@"' "${SCRIPT_DIR}/install.sh" "$@" || rc=$?
+      # The inner installer records its own exit code in a marker file; screen
+      # itself always exits 0. Diagnostics are shown only for a non-zero exit.
+      local marker="${logf%.log}.exit"
+      INSTANA_EXIT_MARKER="$marker" screen -c "$rcfile" -S "$name" bash -c 'exec bash "$0" "$@"' "${SCRIPT_DIR}/install.sh" "$@" || rc=$?
       rm -f "$rcfile"
-      if (( SECONDS - started < 60 )); then
-        err "The installer inside screen ended after $(( SECONDS - started )) s (screen exit code ${rc}). Its last output:"
-        if [[ -s "$logf" ]]; then
-          sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$logf" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -20 >&2 || true
-        else
-          echo "  (the screen log ${logf} is empty or missing)" >&2
-        fi
-        echo "  Full screen log: ${logf}" >&2
-        echo "  To run without screen: INSTANA_NO_SCREEN=1 ./install.sh" >&2
+      local inner_rc; inner_rc=$(cat "$marker" 2>/dev/null || echo unknown); rm -f "$marker"
+      if [[ "$inner_rc" == 0 ]]; then
+        rm -f "$logf"
+        exit 0
       fi
-      exit "$rc"
+      err "The installer inside screen ended after $(( SECONDS - started )) s (exit code ${inner_rc}). Its last output:"
+      if [[ -s "$logf" ]]; then
+        sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$logf" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -20 >&2 || true
+      else
+        echo "  (the screen log ${logf} is empty or missing)" >&2
+      fi
+      echo "  Full screen log: ${logf}" >&2
+      echo "  To run without screen: INSTANA_NO_SCREEN=1 ./install.sh" >&2
+      [[ "$inner_rc" =~ ^[0-9]+$ ]] && exit "$inner_rc" || exit 1
     fi
   else
     warn "screen is not available; continuing in the foreground. Do not close this terminal until the installer finishes."
@@ -2365,6 +2374,9 @@ ensure_detachable_session() {
 }
 
 main() {
+  if [[ -n "${INSTANA_EXIT_MARKER:-}" ]]; then
+    trap 'echo $? > "$INSTANA_EXIT_MARKER"' EXIT
+  fi
   if [[ "$DESTROY" == true ]]; then
     run_destroy
   fi
