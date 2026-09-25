@@ -19,6 +19,14 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
    (git checkout -- . vraca eventualno obrisane/izmenjene fajlove pre pull-a;
    ako install.sh javi da fali neki .sh fajl, ispise istu ovu komandu.)
 
+2b) SVEZ POCETAK kad folder vec postoji (brise se lokalni state, config i
+    izvestaj poslednje instalacije — GCP resursi ostaju netaknuti; ako
+    postoje, kasnije ih brises kroz "clean up" po imenu VM-a):
+     cd ~ && rm -rf ~/instana-backend-skripta
+     git clone https://github.com/miodragmikrut1980/instana-backend-skripta.git
+     cd instana-backend-skripta && ./install.sh
+    Uvek pisati punu putanju (rm -rf ~/instana-backend-skripta), nikad rm -r *.
+
 3) POSLE PREKIDA VEZE dok instalacija radi:
      cd ~/instana-backend-skripta && ./install.sh
    Skripta prepozna aktivnu screen sesiju i ponudi "reattach". Rucno:
