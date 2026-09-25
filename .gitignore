@@ -11,3 +11,5 @@
 *.zip
 *.tar*
 .DS_Store
+.install-report.txt
+screen-*.log

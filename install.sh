@@ -24,6 +24,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly STATE_FILE="${SCRIPT_DIR}/.install-state.json"
 readonly CONFIG_FILE="${SCRIPT_DIR}/.install-config.json"
+readonly REPORT_FILE="${SCRIPT_DIR}/.install-report.txt"
 umask 077
 # The installer is split over several files; a missing one (partial copy,
 # accidental delete) must produce a clear fix instead of a bash source error.
@@ -115,6 +116,8 @@ Usage: ./install.sh [option]
   --resume      continue an interrupted deployment recorded in this folder
   --destroy     delete the GCP resources recorded in this folder (runs destroy.sh);
                 combine with --dry-run to only preview what would be deleted
+  --report      print the final report (UI URL, IP, hosts entries) of the last
+                successful installation from this folder
   --help        this text
 USAGE
 }
@@ -125,6 +128,9 @@ for arg in "$@"; do
     --resume) RESUME=true ;;
     --dry-run) DRY_RUN=true ;;
     --destroy) DESTROY=true ;;
+    --report)
+      if [[ -f "${SCRIPT_DIR}/.install-report.txt" ]]; then cat "${SCRIPT_DIR}/.install-report.txt"; exit 0
+      else echo "No report yet: no installation from this folder has completed." >&2; exit 1; fi ;;
     -h|--help) usage; exit 0 ;;
     *) err "Unknown argument: $arg"; usage; exit 1 ;;
   esac
@@ -253,6 +259,7 @@ start_menu() {
   else
     options+=("clean up: find leftover GCP resources by VM name, show them, delete only after confirmation")
   fi
+  [[ -f "$REPORT_FILE" ]] && options+=("show report: UI URL, IP and hosts entries of the last installation from this folder")
   options+=("exit")
   echo ""
   echo -e "${BOLD}Instana Standard Edition — GCP installer${RESET}"
@@ -268,6 +275,7 @@ start_menu() {
     resume:*) RESUME=true ;;
     "destroy (preview)"*) DRY_RUN=true; run_destroy ;;
     destroy:*|"clean up:"*) run_destroy ;;
+    "show report"*) echo ""; cat "$REPORT_FILE"; echo ""; exit 0 ;;
     *) exit 0 ;;
   esac
 }
@@ -1993,6 +2001,24 @@ print_final_report() {
   local external_ip="$1"
   print_local_access "$external_ip"
   [[ -n "${CONFIRMED_UI_IP:-}" ]] && external_ip="$CONFIRMED_UI_IP"
+  # The same report is written to REPORT_FILE so it survives the end of a
+  # screen session and can be re-read later (./install.sh --report).
+  {
+    echo "Instana installation report — $(date '+%Y-%m-%d %H:%M')"
+    echo "  Instana UI URL:  https://${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}"
+    echo "  Admin user:      admin@instana.local"
+    echo "  External IP:     ${external_ip}"
+    echo "  /etc/hosts entries:"
+    printf '    %s %s\n' "$external_ip" "$BASE_DOMAIN" \
+      "$external_ip" "${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}" \
+      "$external_ip" "agent-acceptor.${BASE_DOMAIN}" \
+      "$external_ip" "opamp-acceptor.${BASE_DOMAIN}" \
+      "$external_ip" "otlp-http.${BASE_DOMAIN}" \
+      "$external_ip" "otlp-grpc.${BASE_DOMAIN}"
+    echo "  Kubernetes checks on the VM: sudo kubectl get nodes; sudo kubectl get pods -A"
+    echo "  Destroy: ./install.sh --destroy"
+  } > "$REPORT_FILE" 2>/dev/null || true
+  [[ "$DRY_RUN" != true ]] || rm -f "$REPORT_FILE"
   echo ""
   echo -e "${BOLD}${GREEN}════════════════════════════════════════════════════════════════${RESET}"
   echo -e "${BOLD}${GREEN}  Installation Complete!${RESET}"
@@ -2351,7 +2377,7 @@ ensure_detachable_session() {
       # last lines are printed here instead of vanishing.
       # screen flushes its log only every 10 s by default; a private screenrc
       # makes it immediate so nothing is lost when the inner script dies fast.
-      local logf="${SCRIPT_DIR}/screen-${name}.log" started=$SECONDS rc=0 rcfile
+      local logf="${SCRIPT_DIR}/screen-${name}.log" started=$SECONDS started_epoch=$(date +%s) rc=0 rcfile
       rcfile=$(mktemp); printf 'logfile "%s"\nlogfile flush 0\ndeflog on\n' "$logf" > "$rcfile"
       # The inner installer records its own exit code in a marker file; screen
       # itself always exits 0. Diagnostics are shown only for a non-zero exit.
@@ -2361,6 +2387,12 @@ ensure_detachable_session() {
       local inner_rc; inner_rc=$(cat "$marker" 2>/dev/null || echo unknown); rm -f "$marker"
       if [[ "$inner_rc" == 0 ]]; then
         rm -f "$logf"
+        if [[ -f "$REPORT_FILE" ]] && (( $(stat -c %Y "$REPORT_FILE" 2>/dev/null || echo 0) >= started_epoch )); then
+          echo "" >&2
+          ok "The installer finished inside screen. Its final report (also kept in ${REPORT_FILE}):"
+          sed 's/^/  /' "$REPORT_FILE" >&2
+          echo "" >&2
+        fi
         exit 0
       fi
       err "The installer inside screen ended after $(( SECONDS - started )) s (exit code ${inner_rc}). Its last output:"
