@@ -1,6 +1,43 @@
 Instana GCP lab v0.5.9 — guided air-gapped package (explain, build or fall back)
 CURRENT: read IZMENE_v0.5.9.txt, IZMENE_v0.5.8.txt and IZMENE_v0.5.7.txt first.
 
+QUICK START — POKRETANJE NA UPRAVLJACKOJ VM
+===========================================
+Preduslovi na VM: gcloud (prijavljen na projekat), git, jq. Skripta sama
+ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
+
+1) PRVI PUT na VM (skripta jos ne postoji lokalno):
+     git clone https://github.com/miodragmikrut1980/instana-backend-skripta.git
+     cd instana-backend-skripta
+     ./install.sh
+   Pravo izvrsavanja dolazi iz repoa; chmod nije potreban.
+
+2) SKRIPTA VEC POSTOJI na VM (osvezi na poslednju verziju, pa pokreni):
+     cd ~/instana-backend-skripta
+     git checkout -- . && git pull origin main
+     ./install.sh
+   (git checkout -- . vraca eventualno obrisane/izmenjene fajlove pre pull-a;
+   ako install.sh javi da fali neki .sh fajl, ispise istu ovu komandu.)
+
+3) POSLE PREKIDA VEZE dok instalacija radi:
+     cd ~/instana-backend-skripta && ./install.sh
+   Skripta prepozna aktivnu screen sesiju i ponudi "reattach". Rucno:
+   screen -ls, pa screen -d -r <ime>.
+
+4) OSTALE KOMANDE:
+     ./install.sh --report           izvestaj poslednje instalacije (UI URL,
+                                     IP, /etc/hosts linije); isto u meniju
+     ./install.sh --dry-run          samo plan, nista se ne kreira
+     ./install.sh --resume           nastavak prekinutog deploymenta (online)
+     ./install.sh --destroy          brisanje resursa iz ovog foldera
+     ./install.sh --destroy --dry-run  pregled brisanja
+     ./install.sh --help
+   Bez state fajla meni nudi "clean up": unese se ime VM-a (npr. instana-0),
+   skripta sama nadje zonu, izlista VM/diskove i brise posle potvrde.
+
+Ne klonirati repo unutar postojeceg klona (nastaje ugnjezdeni folder sa
+odvojenim state fajlovima). Ne koristiti rm -r * bez pwd provere.
+
 The installer now shows a 12-phase checklist, explains every phase before it
 changes the VM or GCP project, displays overall completion percentage, and
 records completed phases in .install-state.json. Resource validation remains
