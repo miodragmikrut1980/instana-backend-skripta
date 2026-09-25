@@ -2043,8 +2043,14 @@ print_final_report() {
   echo "    sudo kubectl get nodes"
   echo "    sudo kubectl get pods -A"
   echo ""
-  echo -e "  To destroy all resources: ${CYAN}./destroy.sh${RESET}"
+  echo -e "  To destroy all resources: ${CYAN}./install.sh --destroy${RESET}"
+  echo -e "  Show this report again:   ${CYAN}./install.sh --report${RESET}   (saved in ${REPORT_FILE})"
   echo ""
+  # Inside a screen session the window closes when the installer ends and the
+  # report would vanish with it: hold here until the operator has read it.
+  if [[ -n "${INSTANA_EXIT_MARKER:-}" && -t 0 && "$DRY_RUN" != true ]]; then
+    read -rp "$(echo -e "${BOLD}Installation finished. Press Enter to close this screen session${RESET} (the report is saved and will be printed again): ")" _ || true
+  fi
 }
 
 # =============================================================================
