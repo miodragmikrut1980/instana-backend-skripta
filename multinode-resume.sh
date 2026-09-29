@@ -211,7 +211,7 @@ resume_mount() {
 
 resume_install_stanctl() {
   if [[ "$RESUME" == true && "$(get_state step_stanctl_installed)" == completed ]]; then
-    remote_exec "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" 'set -e; command -v stanctl; dpkg-query -W -f="\${Status}" stanctl | grep -q "install ok installed"'
+    remote_exec "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" 'set -e; command -v stanctl >/dev/null; st=$(dpkg-query -W -f="\${Status}" stanctl); echo "stanctl $(stanctl --version 2>/dev/null | head -1): package status \"$st\""; echo "$st" | grep -q "ok installed"'
   else
     add_instana_repository "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
     install_stanctl "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"

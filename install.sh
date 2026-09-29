@@ -78,7 +78,11 @@ on_exit_report() {
   [[ "$ERROR_REPORTED" != true ]] || return 0
   ERROR_REPORTED=true
   err "A step failed unexpectedly (exit code ${rc}):"
-  [[ -z "$cmd" ]] || err "  ${cmd}"
+  if [[ -n "${LAST_FAILED_STEP:-}" ]]; then
+    err "  ${LAST_FAILED_STEP}"
+  elif [[ -n "$cmd" ]]; then
+    err "  ${cmd}"
+  fi
   {
     echo ""
     echo -e "  ${BOLD}${YELLOW}┌─ HOW TO RESOLVE ────────────────────────────────────────────${RESET}"
@@ -90,7 +94,7 @@ on_exit_report() {
     echo -e "  ${BOLD}${YELLOW}└─────────────────────────────────────────────────────────────${RESET}"
     echo ""
   } | tee -a "$LOG_FILE" >&2
-  declare -F progress_fail_current >/dev/null && progress_fail_current "exit ${rc}: ${cmd}"
+  declare -F progress_fail_current >/dev/null && progress_fail_current "exit ${rc}: ${LAST_FAILED_STEP:-$cmd}"
   return 0
 }
 trap 'on_exit_report $? "$BASH_COMMAND"' EXIT
@@ -1480,15 +1484,18 @@ ssh_with_retry() {
   done
 }
 
+LAST_FAILED_STEP=""
 remote_exec() {
   local vm_name="$1" zone="$2" project="$3"; shift 3
-  local cmd="$*" quoted
+  local cmd="$*" quoted rc=0
   printf -v quoted '%q' "$cmd"
   ssh_with_retry "$vm_name" \
     --project="$project" \
     --zone="$zone" \
     --command="sudo bash -lc ${quoted}" \
-    "${SSH_KEEPALIVE_FLAGS[@]}"
+    "${SSH_KEEPALIVE_FLAGS[@]}" || rc=$?
+  (( rc == 0 )) || LAST_FAILED_STEP="remote command on ${vm_name} (exit ${rc}): ${cmd:0:300}"
+  return "$rc"
 }
 
 remote_exec_dry() {
@@ -1557,12 +1564,14 @@ with_heartbeat() { spin_run "$@"; }
 
 remote_user_exec() {
   local vm_name="$1" zone="$2" project="$3"; shift 3
-  local cmd="$*"
+  local cmd="$*" rc=0
   ssh_with_retry "$vm_name" \
     --project="$project" \
     --zone="$zone" \
     --command="$cmd" \
-    "${SSH_KEEPALIVE_FLAGS[@]}"
+    "${SSH_KEEPALIVE_FLAGS[@]}" || rc=$?
+  (( rc == 0 )) || LAST_FAILED_STEP="remote command on ${vm_name} (exit ${rc}): ${cmd:0:300}"
+  return "$rc"
 }
 
 upload_private_file() {

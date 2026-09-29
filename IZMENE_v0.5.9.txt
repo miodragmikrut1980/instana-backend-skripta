@@ -103,3 +103,11 @@ cross-region warning for air-gapped copies.
   '(( i++ ))' returns 1 on the first tick and, under set -e, ended the
   heartbeat process after one line; the later 'kill' of that gone process
   could then end the whole installer. Replaced with set -e safe forms.
+- Three-node resume phase 10: the stanctl check expected dpkg status
+  "install ok installed", but the installer pins stanctl with apt-mark hold,
+  so the status is "hold ok installed" and every resume stopped there. The
+  check now accepts any "ok installed" status and prints the stanctl version
+  and package status it saw.
+- The unexpected-failure box now names the actual remote command and node
+  that failed (e.g. "remote command on mikrut-instana-0 (exit 1): ...")
+  instead of the internal 'return "$rc"' line.
