@@ -1437,6 +1437,34 @@ remote_exec_dry() {
   fi
 }
 
+# with_heartbeat LABEL COMMAND... — runs COMMAND while printing, every 30 s, a
+# line with the elapsed time and a turning spinner, so a remote step that
+# produces no output for minutes (stanctl up, air-gapped import) is visibly
+# alive. The command's own output still streams through unchanged.
+with_heartbeat() {
+  local label="$1"; shift
+  local start=$SECONDS pid hb rc=0 i=0
+  local -a glyphs=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+  "$@" &
+  pid=$!
+  if [[ -t 2 ]]; then
+    (
+      while kill -0 "$pid" 2>/dev/null; do
+        sleep 30
+        kill -0 "$pid" 2>/dev/null || break
+        local e=$(( SECONDS - start ))
+        printf '  %s %s still running — %dm%02ds elapsed (no news is normal; do not interrupt)\n' \
+          "${glyphs[i % ${#glyphs[@]}]}" "$label" $((e/60)) $((e%60)) >&2
+        (( i++ ))
+      done
+    ) &
+    hb=$!
+  fi
+  wait "$pid" || rc=$?
+  [[ -z "${hb:-}" ]] || { kill "$hb" 2>/dev/null; wait "$hb" 2>/dev/null || true; }
+  return "$rc"
+}
+
 remote_user_exec() {
   local vm_name="$1" zone="$2" project="$3"; shift 3
   local cmd="$*"
@@ -1697,7 +1725,7 @@ install_stanctl_airgapped() {
   # Documented sequence: extract the bundled stanctl binary to /usr/local/bin,
   # then import the package. The archive stays until import succeeds so a
   # failed import can be retried without another transfer.
-  remote_exec "$vm_name" "$zone" "$project" \
+  with_heartbeat "air-gapped import on ${vm_name}" remote_exec "$vm_name" "$zone" "$project" \
     "set -e; tar -xzf /tmp/instana-airgapped.tar.gz -C /usr/local/bin --strip-components 1 airgapped/stanctl; chmod 0755 /usr/local/bin/stanctl; hash -r; stanctl --version; stanctl air-gapped import --file /tmp/instana-airgapped.tar.gz; rm -f /tmp/instana-airgapped.tar.gz" ||
     die "Air-gapped import failed on ${vm_name}; the archive remains in /tmp on the VM for inspection."
   local cli_output
@@ -1916,7 +1944,7 @@ run_stanctl_up_single_node() {
     tls_flags="--core-tls-crt=/root/instana.crt --core-tls-key=/root/instana.key"
   fi
 
-  remote_exec_dry "$vm_name" "$zone" "$project" \
+  with_heartbeat "stanctl up on ${vm_name}" remote_exec_dry "$vm_name" "$zone" "$project" \
     "trap 'rm -f /root/.stanctl.env' EXIT; stanctl up --env-file /root/.stanctl.env $(stanctl_version_flag) ${tls_flags} --quiet"
 
   ok "stanctl up completed on ${vm_name}."
@@ -1939,7 +1967,7 @@ run_stanctl_up_multi_node() {
     tls_flags="--core-tls-crt=/root/instana.crt --core-tls-key=/root/instana.key"
   fi
 
-  remote_exec_dry "$node0_name" "$zone" "$project" \
+  with_heartbeat "stanctl up on ${node0_name}" remote_exec_dry "$node0_name" "$zone" "$project" \
     "trap 'rm -f /root/.stanctl.env' EXIT; stanctl up --env-file /root/.stanctl.env $(stanctl_version_flag) ${tls_flags} --quiet"
 
   ok "stanctl up completed on ${node0_name}."
