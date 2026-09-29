@@ -74,3 +74,10 @@ cross-region warning for air-gapped copies.
   'bash install.sh --resume' command, instead of dropping to a bare prompt.
   (Observed 29 Sep: three-node run lost the SSH to mikrut-instana-0 in
   phase 12 after stanctl up had already succeeded.)
+- Fix (same day): the unexpected-failure box is produced from the EXIT trap,
+  not an ERR trap. The ERR trap also fired inside harmless probes such as
+  'screen -ls | sed' (exit 1 when no session exists) and its text was
+  captured into the probe's result, which made the start menu offer to
+  reattach to a screen session that did not exist. Verified: no box on
+  probes, on die/die_with_steps, on --help or on a clean exit; exactly one
+  box on a set -e failure.

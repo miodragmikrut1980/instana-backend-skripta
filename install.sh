@@ -33,7 +33,7 @@ for _companion in parameters.sh progress.sh multinode-online.sh local-access.sh 
     echo "[ERROR] ${_companion} is missing from ${SCRIPT_DIR}; the installer needs all its files side by side." >&2
     echo "  Restore them from git in that folder:   git checkout -- . && git pull origin main" >&2
     echo "  Or clone again:  git clone https://github.com/miodragmikrut1980/instana-backend-skripta.git" >&2
-    exit 1
+    ERROR_REPORTED=true; exit 1
   fi
 done
 unset _companion
@@ -67,14 +67,18 @@ err()  { echo -e "${RED}[ERROR]${RESET} $*" | tee -a "$LOG_FILE"; }
 ERROR_REPORTED=false
 die()  { ERROR_REPORTED=true; err "$*"; declare -F progress_fail_current >/dev/null && progress_fail_current "$*"; exit 1; }
 
-# Any command that fails without an explicit die (set -e) lands here, so the
-# user is never left with a bare shell prompt and no idea what to do next.
-on_unexpected_error() {
-  local rc=$1 line=$2 cmd=$3
-  [[ "$ERROR_REPORTED" == true ]] && return
+# Any exit with a non-zero status that no die/die_with_steps explained (a
+# command stopped by set -e) lands here, so the user is never left with a
+# bare shell prompt and no idea what to do next. Runs from the EXIT trap;
+# an ERR trap would also fire inside $(...) probes that are allowed to fail.
+on_exit_report() {
+  local rc=$1 cmd="${2:-}"
+  (( rc != 0 )) || return 0
+  (( rc != 130 && rc != 143 )) || return 0        # Ctrl+C / terminated by hand
+  [[ "$ERROR_REPORTED" != true ]] || return 0
   ERROR_REPORTED=true
-  err "A step failed unexpectedly (exit code ${rc}, install.sh line ${line}):"
-  err "  ${cmd}"
+  err "A step failed unexpectedly (exit code ${rc}):"
+  [[ -z "$cmd" ]] || err "  ${cmd}"
   {
     echo ""
     echo -e "  ${BOLD}${YELLOW}┌─ HOW TO RESOLVE ────────────────────────────────────────────${RESET}"
@@ -86,10 +90,10 @@ on_unexpected_error() {
     echo -e "  ${BOLD}${YELLOW}└─────────────────────────────────────────────────────────────${RESET}"
     echo ""
   } | tee -a "$LOG_FILE" >&2
-  declare -F progress_fail_current >/dev/null && progress_fail_current "exit ${rc} at line ${line}"
+  declare -F progress_fail_current >/dev/null && progress_fail_current "exit ${rc}: ${cmd}"
+  return 0
 }
-set -E
-trap 'on_unexpected_error $? $LINENO "$BASH_COMMAND"' ERR
+trap 'on_exit_report $? "$BASH_COMMAND"' EXIT
 
 # die_with_steps MESSAGE STEP... — like die, but first prints a readable
 # "HOW TO RESOLVE" box. A STEP written as "text|command" shows the command
@@ -156,9 +160,9 @@ for arg in "$@"; do
     --destroy) DESTROY=true ;;
     --report)
       if [[ -f "${SCRIPT_DIR}/.install-report.txt" ]]; then cat "${SCRIPT_DIR}/.install-report.txt"; exit 0
-      else echo "No report yet: no installation from this folder has completed." >&2; exit 1; fi ;;
+      else echo "No report yet: no installation from this folder has completed." >&2; ERROR_REPORTED=true; exit 1; fi ;;
     -h|--help) usage; exit 0 ;;
-    *) err "Unknown argument: $arg"; usage; exit 1 ;;
+    *) err "Unknown argument: $arg"; usage; ERROR_REPORTED=true; exit 1 ;;
   esac
 done
 [[ "$DRY_RUN" != true || "$DESTROY" == true ]] || warn "Dry-run mode — no GCP resources will be created."
@@ -2491,6 +2495,7 @@ ensure_detachable_session() {
       fi
       echo "  Full screen log: ${logf}" >&2
       echo "  To run without screen: INSTANA_NO_SCREEN=1 ./install.sh" >&2
+      ERROR_REPORTED=true   # the inner run already printed its own error and HOW TO RESOLVE box
       [[ "$inner_rc" =~ ^[0-9]+$ ]] && exit "$inner_rc" || exit 1
     fi
   else
@@ -2500,7 +2505,7 @@ ensure_detachable_session() {
 
 main() {
   if [[ -n "${INSTANA_EXIT_MARKER:-}" ]]; then
-    trap 'echo $? > "$INSTANA_EXIT_MARKER"' EXIT
+    trap 'rc=$?; on_exit_report "$rc" "$BASH_COMMAND"; echo "$rc" > "$INSTANA_EXIT_MARKER"' EXIT
   fi
   if [[ "$DESTROY" == true ]]; then
     run_destroy
