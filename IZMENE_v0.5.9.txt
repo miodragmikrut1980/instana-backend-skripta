@@ -81,3 +81,7 @@ cross-region warning for air-gapped copies.
   reattach to a screen session that did not exist. Verified: no box on
   probes, on die/die_with_steps, on --help or on a clean exit; exactly one
   box on a set -e failure.
+- Heartbeat (spinner + elapsed time every 30 s) now also covers the phase-12
+  waits: kubectl wait for Ready nodes (single- and three-node) and for Ready
+  pods in instana-core / instana-unit. Previously only stanctl up and the
+  air-gapped import showed it.

@@ -2043,12 +2043,12 @@ post_install_health_check() {
     return
   fi
 
-  remote_exec "$vm_name" "$zone" "$project" \
+  with_heartbeat "waiting for Kubernetes nodes to be Ready" remote_exec "$vm_name" "$zone" "$project" \
     "set -e; kubectl wait --for=condition=Ready nodes --all --timeout=300s"
 
   local namespace
   for namespace in instana-core instana-unit; do
-    remote_exec "$vm_name" "$zone" "$project" \
+    with_heartbeat "waiting for pods in ${namespace} to be Ready" remote_exec "$vm_name" "$zone" "$project" \
       "set -e; kubectl get namespace '$namespace' >/dev/null; pods=\$(kubectl get pods -n '$namespace' --field-selector=status.phase!=Succeeded -o name); test -n \"\$pods\" || { echo 'No active pods in $namespace' >&2; exit 1; }; kubectl wait --for=condition=Ready pod --all --field-selector=status.phase!=Succeeded -n '$namespace' --timeout=300s"
   done
 
