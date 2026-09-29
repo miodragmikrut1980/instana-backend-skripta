@@ -148,7 +148,7 @@ main_three_node() {
 
   phase_start 12 "Verify three Ready Kubernetes nodes and Instana workloads, then print local hosts-file instructions for macOS, Linux and Windows."
   if [[ "$DRY_RUN" != true ]]; then
-    with_heartbeat "waiting for the three Kubernetes nodes to be Ready" remote_exec "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" 'set -e; kubectl wait --for=condition=Ready nodes --all --timeout=600s; test "$(kubectl get nodes -o name | wc -l)" -eq 3'
+    HEARTBEAT_LABEL="waiting for the three Kubernetes nodes to be Ready" remote_exec "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" 'set -e; kubectl wait --for=condition=Ready nodes --all --timeout=600s; test "$(kubectl get nodes -o name | wc -l)" -eq 3'
     post_install_health_check "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
     configure_kubectl_user_access "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
   fi

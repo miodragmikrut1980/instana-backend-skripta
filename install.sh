@@ -132,7 +132,11 @@ run()  {
     printf '>> ' >> "$LOG_FILE"
     printf '%q ' "$@" >> "$LOG_FILE"
     printf '\n' >> "$LOG_FILE"
-    "$@"
+    if declare -F spin_run >/dev/null; then
+      spin_run "${1:-} ${2:-} ${3:-} ${4:-}" "$@"
+    else
+      "$@"
+    fi
   fi
 }
 
@@ -1463,10 +1467,10 @@ SSH_RETRY_WAIT="${SSH_RETRY_WAIT:-20}"
 # connection itself fails (exit 255: closed, refused, timed out), waits and
 # tries again. A non-zero exit from the remote command is never retried.
 ssh_with_retry() {
-  local attempt=1 rc=0
+  local attempt=1 rc=0 label="${HEARTBEAT_LABEL:-remote step on $1}"
   while :; do
     rc=0
-    gcloud compute ssh "$@" || rc=$?
+    spin_run "$label" gcloud compute ssh "$@" || rc=$?
     if (( rc != 255 )) || (( attempt >= SSH_RETRY_MAX )); then
       return "$rc"
     fi
@@ -1496,33 +1500,47 @@ remote_exec_dry() {
   fi
 }
 
-# with_heartbeat LABEL COMMAND... — runs COMMAND while printing, every 30 s, a
-# line with the elapsed time and a turning spinner, so a remote step that
-# produces no output for minutes (stanctl up, air-gapped import) is visibly
-# alive. The command's own output still streams through unchanged.
-with_heartbeat() {
+# spin_run LABEL COMMAND... — runs COMMAND while printing, every
+# HEARTBEAT_INTERVAL seconds, a line with a turning spinner and the elapsed
+# time, so any step that produces no output for a while (stanctl up, kubectl
+# wait, disk creation, package copy) is visibly alive. The command's own
+# output still streams through unchanged. Nested calls (a heartbeat already
+# running for an outer step) just run the command. Every remote command
+# (remote_exec / remote_user_exec), every 'run' and every package copy goes
+# through here, so no step of the installer is ever silent.
+HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL:-20}"
+HEARTBEAT_ACTIVE=false
+spin_run() {
   local label="$1"; shift
+  if [[ "$HEARTBEAT_ACTIVE" == true || "$DRY_RUN" == true || ! -t 2 ]]; then
+    "$@"
+    return
+  fi
   local start=$SECONDS pid hb rc=0 i=0
   local -a glyphs=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-  "$@" &
+  HEARTBEAT_ACTIVE=true "$@" &
   pid=$!
-  if [[ -t 2 ]]; then
-    (
-      while kill -0 "$pid" 2>/dev/null; do
-        sleep 30
-        kill -0 "$pid" 2>/dev/null || break
-        local e=$(( SECONDS - start ))
-        printf '  %s %s still running — %dm%02ds elapsed (no news is normal; do not interrupt)\n' \
-          "${glyphs[i % ${#glyphs[@]}]}" "$label" $((e/60)) $((e%60)) >&2
-        (( i++ ))
-      done
-    ) &
-    hb=$!
-  fi
+  (
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep "$HEARTBEAT_INTERVAL"
+      kill -0 "$pid" 2>/dev/null || break
+      local e=$(( SECONDS - start ))
+      printf '  %s %s — %dm%02ds elapsed, still running (no news is normal; do not interrupt)\n' \
+        "${glyphs[i % ${#glyphs[@]}]}" "$label" $((e/60)) $((e%60)) >&2
+      (( i++ ))
+    done
+  ) >/dev/null &
+  hb=$!
+  trap 'kill "$pid" "$hb" 2>/dev/null; wait "$pid" 2>/dev/null; exit 130' INT TERM
   wait "$pid" || rc=$?
-  [[ -z "${hb:-}" ]] || { kill "$hb" 2>/dev/null; wait "$hb" 2>/dev/null || true; }
+  trap - INT TERM
+  kill "$hb" 2>/dev/null; wait "$hb" 2>/dev/null || true
   return "$rc"
 }
+
+# with_heartbeat LABEL COMMAND... — kept for readability at the long steps;
+# same as spin_run.
+with_heartbeat() { spin_run "$@"; }
 
 remote_user_exec() {
   local vm_name="$1" zone="$2" project="$3"; shift 3
@@ -1540,7 +1558,7 @@ upload_private_file() {
     echo -e "${YELLOW}[DRY-RUN]${RESET} Securely upload ${remote_name} to ${vm_name} (content redacted)"
     return
   fi
-  gcloud compute scp "$local_file" "${vm_name}:/tmp/${remote_name}" --project="$project" --zone="$zone" --quiet
+  spin_run "copying ${remote_name} to ${vm_name}" gcloud compute scp "$local_file" "${vm_name}:/tmp/${remote_name}" --project="$project" --zone="$zone" --quiet
   remote_exec "$vm_name" "$zone" "$project" "install -o root -g root -m 600 '/tmp/${remote_name}' '/root/${remote_name}' && rm -f '/tmp/${remote_name}'"
 }
 
@@ -1779,11 +1797,11 @@ install_stanctl_airgapped() {
     warn "Dry-run: would copy $(basename "$AIRGAP_ARCHIVE"), extract stanctl ${STANCTL_CLI_VERSION} from it and import backend ${BACKEND_VERSION}."
     return
   fi
-  gcloud compute scp "$AIRGAP_ARCHIVE" "${vm_name}:/tmp/instana-airgapped.tar.gz" --project="$project" --zone="$zone"
+  spin_run "copying the air-gapped package to ${vm_name}" gcloud compute scp "$AIRGAP_ARCHIVE" "${vm_name}:/tmp/instana-airgapped.tar.gz" --project="$project" --zone="$zone"
   # Documented sequence: extract the bundled stanctl binary to /usr/local/bin,
   # then import the package. The archive stays until import succeeds so a
   # failed import can be retried without another transfer.
-  with_heartbeat "air-gapped import on ${vm_name}" remote_exec "$vm_name" "$zone" "$project" \
+  HEARTBEAT_LABEL="air-gapped import on ${vm_name}" remote_exec "$vm_name" "$zone" "$project" \
     "set -e; tar -xzf /tmp/instana-airgapped.tar.gz -C /usr/local/bin --strip-components 1 airgapped/stanctl; chmod 0755 /usr/local/bin/stanctl; hash -r; stanctl --version; stanctl air-gapped import --file /tmp/instana-airgapped.tar.gz; rm -f /tmp/instana-airgapped.tar.gz" ||
     die "Air-gapped import failed on ${vm_name}; the archive remains in /tmp on the VM for inspection."
   local cli_output
@@ -2002,7 +2020,7 @@ run_stanctl_up_single_node() {
     tls_flags="--core-tls-crt=/root/instana.crt --core-tls-key=/root/instana.key"
   fi
 
-  with_heartbeat "stanctl up on ${vm_name}" remote_exec_dry "$vm_name" "$zone" "$project" \
+  HEARTBEAT_LABEL="stanctl up on ${vm_name}" remote_exec_dry "$vm_name" "$zone" "$project" \
     "trap 'rm -f /root/.stanctl.env' EXIT; stanctl up --env-file /root/.stanctl.env $(stanctl_version_flag) ${tls_flags} --quiet"
 
   ok "stanctl up completed on ${vm_name}."
@@ -2025,7 +2043,7 @@ run_stanctl_up_multi_node() {
     tls_flags="--core-tls-crt=/root/instana.crt --core-tls-key=/root/instana.key"
   fi
 
-  with_heartbeat "stanctl up on ${node0_name}" remote_exec_dry "$node0_name" "$zone" "$project" \
+  HEARTBEAT_LABEL="stanctl up on ${node0_name}" remote_exec_dry "$node0_name" "$zone" "$project" \
     "trap 'rm -f /root/.stanctl.env' EXIT; stanctl up --env-file /root/.stanctl.env $(stanctl_version_flag) ${tls_flags} --quiet"
 
   ok "stanctl up completed on ${node0_name}."
@@ -2043,12 +2061,12 @@ post_install_health_check() {
     return
   fi
 
-  with_heartbeat "waiting for Kubernetes nodes to be Ready" remote_exec "$vm_name" "$zone" "$project" \
+  HEARTBEAT_LABEL="waiting for Kubernetes nodes to be Ready" remote_exec "$vm_name" "$zone" "$project" \
     "set -e; kubectl wait --for=condition=Ready nodes --all --timeout=300s"
 
   local namespace
   for namespace in instana-core instana-unit; do
-    with_heartbeat "waiting for pods in ${namespace} to be Ready" remote_exec "$vm_name" "$zone" "$project" \
+    HEARTBEAT_LABEL="waiting for pods in ${namespace} to be Ready" remote_exec "$vm_name" "$zone" "$project" \
       "set -e; kubectl get namespace '$namespace' >/dev/null; pods=\$(kubectl get pods -n '$namespace' --field-selector=status.phase!=Succeeded -o name); test -n \"\$pods\" || { echo 'No active pods in $namespace' >&2; exit 1; }; kubectl wait --for=condition=Ready pod --all --field-selector=status.phase!=Succeeded -n '$namespace' --timeout=300s"
   done
 

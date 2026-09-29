@@ -85,3 +85,12 @@ cross-region warning for air-gapped copies.
   waits: kubectl wait for Ready nodes (single- and three-node) and for Ready
   pods in instana-core / instana-unit. Previously only stanctl up and the
   air-gapped import showed it.
+- Spinner for every step: the heartbeat (spinner + elapsed time, now every
+  20 s) is built into every remote command, every 'run gcloud ...' and both
+  package copies, so no step of the installer is ever silent. Nested steps
+  show one heartbeat, with the most specific label. Ctrl+C now also stops
+  the background step instead of leaving it running.
+- Fix three-node resume phase 10: the stanctl presence check sent
+  dpkg-query -f="${Status}" with ${Status} already expanded to an empty
+  string on the node ("dpkg-query: error in show format: may not be empty
+  string"), so every --resume after stanctl was installed stopped there.
