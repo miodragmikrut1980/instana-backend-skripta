@@ -121,7 +121,8 @@ resume_firewalls() {
         '.disabled==false and .direction=="INGRESS" and
         (.network|endswith("/"+$network)) and .targetTags==[$tag] and
         ((.sourceTags//[]|sort)==($tags|sort)) and
-        ((.allowed|map(.ports=((.ports//[])|sort))|sort_by(.IPProtocol))==($allowed|map(.ports=((.ports//[])|sort))|sort_by(.IPProtocol)))' <<< "$info" >/dev/null ||
+        (def norm: group_by(.IPProtocol) | map({IPProtocol: .[0].IPProtocol, ports: (map(.ports//[]) | add | unique)}) | sort_by(.IPProtocol);
+         (.allowed|norm)==($allowed|norm))' <<< "$info" >/dev/null ||
         die_with_steps "Firewall rule ${name} exists but does not match this deployment (network, target tag, protocols or ports differ)." \
           "Inspect it:|gcloud compute firewall-rules describe ${name} --project=${GCP_PROJECT}" \
           "*If it belongs to an old lab with the same node names, delete it and rerun with --resume:" \
