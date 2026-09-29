@@ -49,17 +49,23 @@ lab_kernel() {
   [[ "$DRY_RUN" == true ]] && return 0
   before=$(remote_exec "$node" "$GCP_ZONE" "$GCP_PROJECT" 'cat /proc/sys/kernel/random/boot_id')
   remote_exec "$node" "$GCP_ZONE" "$GCP_PROJECT" 'shutdown -r +1'
+  if spin_run "waiting for ${node} to reboot with a new boot ID" lab_wait_for_reboot "$node" "$before"; then
+    remote_exec "$node" "$GCP_ZONE" "$GCP_PROJECT" 'grep -q "\[never\]" /sys/kernel/mm/transparent_hugepage/enabled'
+    lab_checkpoint "kernel_${node}"
+    return 0
+  fi
+  die "Reboot was not verified on $node; stop and inspect."
+}
+
+lab_wait_for_reboot() {
+  local node="$1" before="$2" after i
   for ((i=0; i<40; i++)); do
     sleep 10
     after=$(timeout 20s gcloud compute ssh "$node" --quiet --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
       --command='cat /proc/sys/kernel/random/boot_id' --ssh-flag='-o BatchMode=yes' --ssh-flag='-o ConnectTimeout=5' 2>/dev/null || true)
-    if [[ -n "$after" && "$after" != "$before" ]]; then
-      remote_exec "$node" "$GCP_ZONE" "$GCP_PROJECT" 'grep -q "\[never\]" /sys/kernel/mm/transparent_hugepage/enabled'
-      lab_checkpoint "kernel_${node}"
-      return 0
-    fi
+    [[ -n "$after" && "$after" != "$before" ]] && return 0
   done
-  die "Reboot was not verified on $node; stop and inspect."
+  return 1
 }
 
 lab_root_ssh() {

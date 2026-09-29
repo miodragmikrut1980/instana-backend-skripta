@@ -1500,41 +1500,54 @@ remote_exec_dry() {
   fi
 }
 
-# spin_run LABEL COMMAND... — runs COMMAND while printing, every
-# HEARTBEAT_INTERVAL seconds, a line with a turning spinner and the elapsed
-# time, so any step that produces no output for a while (stanctl up, kubectl
-# wait, disk creation, package copy) is visibly alive. The command's own
-# output still streams through unchanged. Nested calls (a heartbeat already
-# running for an outer step) just run the command. Every remote command
-# (remote_exec / remote_user_exec), every 'run' and every package copy goes
-# through here, so no step of the installer is ever silent.
-HEARTBEAT_INTERVAL="${HEARTBEAT_INTERVAL:-20}"
+# spin_run LABEL COMMAND... — runs COMMAND while an animated spinner with the
+# step label and the elapsed time turns on the last terminal line, updated
+# every second, so any step that produces no output for a while (waiting for
+# SSH, stanctl up, kubectl wait, disk creation, package copy) is visibly
+# alive. The command's own output still streams through unchanged: each
+# output line pushes the spinner line down. Nested calls (a spinner already
+# turning for an outer step) just run the command. Every remote command
+# (remote_exec / remote_user_exec), every 'run', every wait loop and every
+# package copy goes through here, so no step of the installer is ever silent.
+# Without a terminal (log capture, tests) the command simply runs.
 HEARTBEAT_ACTIVE=false
 spin_run() {
   local label="$1"; shift
-  if [[ "$HEARTBEAT_ACTIVE" == true || "$DRY_RUN" == true || ! -t 2 ]]; then
+  if [[ "$HEARTBEAT_ACTIVE" == true || "${DRY_RUN:-false}" == true || ! -t 2 ]]; then
     "$@"
     return
   fi
-  local start=$SECONDS pid hb rc=0 i=0
-  local -a glyphs=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-  HEARTBEAT_ACTIVE=true "$@" &
+  local start=$SECONDS pid hb rc=0
+  if [[ -t 1 ]]; then
+    # Output is the terminal: relay it line by line so each line first wipes
+    # the spinner line and the spinner then redraws below it.
+    (
+      HEARTBEAT_ACTIVE=true
+      "$@" 2>&1 | while IFS= read -r line || [[ -n "$line" ]]; do printf '\r\033[K%s\n' "$line"; done
+      exit "${PIPESTATUS[0]}"
+    ) &
+  else
+    # Output is being captured ($(...)); leave stdout untouched.
+    ( HEARTBEAT_ACTIVE=true; "$@" ) &
+  fi
   pid=$!
   (
+    local -a glyphs=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏') i=0 e
     while kill -0 "$pid" 2>/dev/null; do
-      sleep "$HEARTBEAT_INTERVAL"
-      kill -0 "$pid" 2>/dev/null || break
-      local e=$(( SECONDS - start ))
-      printf '  %s %s — %dm%02ds elapsed, still running (no news is normal; do not interrupt)\n' \
+      e=$(( SECONDS - start ))
+      printf '\r\033[K  %s %s — %dm%02ds (still running; do not interrupt)' \
         "${glyphs[i % ${#glyphs[@]}]}" "$label" $((e/60)) $((e%60)) >&2
-      (( i++ ))
+      i=$(( i + 1 ))
+      sleep 1
     done
   ) >/dev/null &
   hb=$!
-  trap 'kill "$pid" "$hb" 2>/dev/null; wait "$pid" 2>/dev/null; exit 130' INT TERM
+  trap 'kill "$pid" "$hb" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; printf "\r\033[K" >&2; exit 130' INT TERM
   wait "$pid" || rc=$?
   trap - INT TERM
-  kill "$hb" 2>/dev/null; wait "$hb" 2>/dev/null || true
+  kill "$hb" 2>/dev/null || true
+  wait "$hb" 2>/dev/null || true
+  printf '\r\033[K' >&2
   return "$rc"
 }
 
@@ -1599,6 +1612,14 @@ upload_stanctl_env() {
 wait_for_ssh() {
   local vm_name="$1" zone="$2" project="$3"
   log "Waiting for SSH on ${vm_name}..."
+  if spin_run "waiting for SSH on ${vm_name}" wait_for_ssh_loop "$vm_name" "$zone" "$project"; then
+    ok "SSH ready on ${vm_name}."
+    return
+  fi
+  die "SSH did not become available on ${vm_name} after 30 bounded attempts."
+}
+wait_for_ssh_loop() {
+  local vm_name="$1" zone="$2" project="$3"
   local attempt=0
   while (( attempt < 30 )); do
     if timeout 30s gcloud compute ssh "$vm_name" \
@@ -1607,14 +1628,13 @@ wait_for_ssh() {
         --quiet --command="echo ready" \
         --ssh-flag="-o StrictHostKeyChecking=accept-new" \
         --ssh-flag="-o BatchMode=yes" \
-        --ssh-flag="-o ConnectTimeout=10"; then
-      ok "SSH ready on ${vm_name}."
-      return
+        --ssh-flag="-o ConnectTimeout=10" >/dev/null 2>&1; then
+      return 0
     fi
     attempt=$((attempt + 1))
     sleep 10
   done
-  die "SSH did not become available on ${vm_name} after 30 bounded attempts."
+  return 1
 }
 
 apply_kernel_parameters() {
@@ -1637,8 +1657,7 @@ apply_kernel_parameters() {
   if [[ "$DRY_RUN" != true ]]; then
     remote_exec "$vm_name" "$zone" "$project" "shutdown -r +1"
     log "Graceful reboot scheduled in one minute."
-    sleep 45
-    sleep 30
+    spin_run "waiting for ${vm_name} to reboot" sleep 75
     wait_for_ssh "$vm_name" "$zone" "$project"
     # Verify THP disabled — from docs: expected output is: always madvise [never]
     remote_exec "$vm_name" "$zone" "$project" \

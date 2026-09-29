@@ -94,3 +94,12 @@ cross-region warning for air-gapped copies.
   dpkg-query -f="${Status}" with ${Status} already expanded to an empty
   string on the node ("dpkg-query: error in show format: may not be empty
   string"), so every --resume after stanctl was installed stopped there.
+- The spinner is now a real one: it turns every second on the last terminal
+  line with the step label and elapsed time, and each output line of the
+  step pushes it down instead of mixing with it. It also covers the waits
+  that had none: "Waiting for SSH on <node>", the reboot waits (single-node
+  75 s pause and the three-node boot-ID poll).
+- Fixed a latent bug that silenced the previous heartbeat: its counter
+  '(( i++ ))' returns 1 on the first tick and, under set -e, ended the
+  heartbeat process after one line; the later 'kill' of that gone process
+  could then end the whole installer. Replaced with set -e safe forms.
