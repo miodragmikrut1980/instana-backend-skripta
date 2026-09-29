@@ -35,8 +35,10 @@ lab_firewalls() {
       internal) rule=tcp,udp,icmp; sources="--source-tags=$DEPLOYMENT_TAG";;
       pods) rule=tcp,udp,icmp; sources=--source-ranges=10.42.0.0/16,10.43.0.0/16;;
     esac
+    # The description carries the deployment identity that resume_firewalls
+    # verifies; without it every later --resume would refuse these rules.
     run gcloud compute firewall-rules create "$name" --project="$GCP_PROJECT" \
-      --network="$GCP_NETWORK" --allow="$rule" "$sources" "$target"
+      --network="$GCP_NETWORK" --allow="$rule" "$sources" "$target" --description="instana-lab-id=${DEPLOYMENT_ID:-}"
     save_state "firewall_${name}" created
   done
 }

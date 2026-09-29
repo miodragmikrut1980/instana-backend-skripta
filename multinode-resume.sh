@@ -115,11 +115,55 @@ resume_firewalls() {
       [[ -z "$(get_state "firewall_${name}")" ]] || die "Recorded firewall disappeared: $name"
       run gcloud compute firewall-rules create "$name" --project="$GCP_PROJECT" --network="$GCP_NETWORK" --allow="$rule" "$sources" --target-tags="$DEPLOYMENT_TAG" --description="instana-lab-id=$DEPLOYMENT_ID"
     else
-      jq -e --arg id "$DEPLOYMENT_ID" --arg tag "$DEPLOYMENT_TAG" --arg network "$GCP_NETWORK" --argjson allowed "$allowed" --argjson ranges "$ranges" --argjson tags "$tags" \
-        '.description==("instana-lab-id="+$id) and .disabled==false and .direction=="INGRESS" and
+      # Structural match (network, target tag, protocols/ports, source tags);
+      # the description (identity) and the SSH source range are handled below.
+      jq -e --arg tag "$DEPLOYMENT_TAG" --arg network "$GCP_NETWORK" --argjson allowed "$allowed" --argjson tags "$tags" \
+        '.disabled==false and .direction=="INGRESS" and
         (.network|endswith("/"+$network)) and .targetTags==[$tag] and
-        ((.sourceRanges//[]|sort)==($ranges|sort)) and ((.sourceTags//[]|sort)==($tags|sort)) and
-        ((.allowed|map(.ports=((.ports//[])|sort))|sort_by(.IPProtocol))==($allowed|map(.ports=((.ports//[])|sort))|sort_by(.IPProtocol)))' <<< "$info" >/dev/null || die "Firewall ownership or rule mismatch: $name"
+        ((.sourceTags//[]|sort)==($tags|sort)) and
+        ((.allowed|map(.ports=((.ports//[])|sort))|sort_by(.IPProtocol))==($allowed|map(.ports=((.ports//[])|sort))|sort_by(.IPProtocol)))' <<< "$info" >/dev/null ||
+        die_with_steps "Firewall rule ${name} exists but does not match this deployment (network, target tag, protocols or ports differ)." \
+          "Inspect it:|gcloud compute firewall-rules describe ${name} --project=${GCP_PROJECT}" \
+          "*If it belongs to an old lab with the same node names, delete it and rerun with --resume:" \
+          "*    gcloud compute firewall-rules delete ${name} --project=${GCP_PROJECT}"
+      local desc other_id
+      desc=$(jq -r '.description // ""' <<< "$info")
+      if [[ "$desc" == "instana-lab-id=$DEPLOYMENT_ID" ]]; then
+        :
+      elif [[ -z "$desc" ]]; then
+        # Created by an earlier installer version without the identity tag; it
+        # matches structurally, so adopt it and tag it now.
+        run gcloud compute firewall-rules update "$name" --project="$GCP_PROJECT" --description="instana-lab-id=$DEPLOYMENT_ID"
+        log "Adopted firewall rule ${name} (tagged with this deployment's identity)."
+      else
+        other_id="${desc#instana-lab-id=}"
+        warn "Firewall rule ${name} carries another deployment identity (${other_id}; this run is ${DEPLOYMENT_ID}), but its content matches this deployment exactly."
+        hint "This happens when the state file of an earlier attempt with the same node names was lost or replaced." \
+             "Adopting re-tags the rule for this deployment; nothing else changes."
+        if prompt_yes_no "Adopt firewall rule ${name} for this deployment?" Y; then
+          run gcloud compute firewall-rules update "$name" --project="$GCP_PROJECT" --description="instana-lab-id=$DEPLOYMENT_ID"
+          ok "Adopted firewall rule ${name}."
+        else
+          die_with_steps "Firewall rule ${name} was not adopted." \
+            "*Use different node names for this deployment, or remove the other lab first ('clean up' in ./install.sh)."
+        fi
+      fi
+      local have_ranges
+      have_ranges=$(jq -c '(.sourceRanges//[])|sort' <<< "$info")
+      if [[ "$have_ranges" != "$(jq -c 'sort' <<< "$ranges")" ]]; then
+        if [[ "$suffix" == ssh ]]; then
+          warn "SSH firewall rule ${name} allows $(jq -r 'join(", ")' <<< "$have_ranges"), but this machine's current address is ${SSH_SOURCE_CIDR} (public IPs change between sessions)."
+          if prompt_yes_no "Update the SSH rule to allow ${SSH_SOURCE_CIDR} instead?" Y; then
+            run gcloud compute firewall-rules update "$name" --project="$GCP_PROJECT" --source-ranges="$SSH_SOURCE_CIDR"
+            ok "SSH firewall rule ${name} now allows ${SSH_SOURCE_CIDR}."
+          else
+            die "SSH rule left unchanged; the installer cannot reach the nodes from ${SSH_SOURCE_CIDR}. Rerun with --resume when ready."
+          fi
+        else
+          die_with_steps "Firewall rule ${name} has source ranges $(jq -r 'join(", ")' <<< "$have_ranges"), expected $(jq -r 'join(", ")' <<< "$ranges")." \
+            "Inspect and correct it, then rerun with --resume:|gcloud compute firewall-rules describe ${name} --project=${GCP_PROJECT}"
+        fi
+      fi
     fi
     save_state "firewall_${name}" created
   done
