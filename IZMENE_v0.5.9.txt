@@ -60,3 +60,17 @@ europe-west6, copied cross-region to us-central1-a, imported, stanctl up
 with Enter default, single-pass archive inspection with percentage/elapsed
 display, region/zone default from this machine's own GCE zone with a
 cross-region warning for air-gapped copies.
+
+2026-09-29 — SSH resilience for the installer's own node connections
+- The SSH the installer opens to the nodes (gcloud compute ssh) now sends a
+  keep-alive every 15 s (ServerAliveInterval/CountMax, TCPKeepAlive), so a
+  long silent step (stanctl up, kubectl wait in phase 12) no longer drops on
+  an idle timeout.
+- When that connection is still lost (ssh exit 255) the command is retried
+  up to 3 times, 20 s apart, with a visible [WARN]. A non-zero exit of the
+  remote command itself is never retried.
+- Any step that fails without an explicit message (set -e) now prints a
+  HOW TO RESOLVE box with the failing command, the log path and the exact
+  'bash install.sh --resume' command, instead of dropping to a bare prompt.
+  (Observed 29 Sep: three-node run lost the SSH to mikrut-instana-0 in
+  phase 12 after stanctl up had already succeeded.)

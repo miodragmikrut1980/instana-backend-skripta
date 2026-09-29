@@ -64,12 +64,38 @@ log()  { echo -e "${CYAN}[INFO]${RESET}  $*" | tee -a "$LOG_FILE"; }
 ok()   { echo -e "${GREEN}[OK]${RESET}    $*" | tee -a "$LOG_FILE"; }
 warn() { echo -e "${YELLOW}[WARN]${RESET}  $*" | tee -a "$LOG_FILE"; }
 err()  { echo -e "${RED}[ERROR]${RESET} $*" | tee -a "$LOG_FILE"; }
-die()  { err "$*"; declare -F progress_fail_current >/dev/null && progress_fail_current "$*"; exit 1; }
+ERROR_REPORTED=false
+die()  { ERROR_REPORTED=true; err "$*"; declare -F progress_fail_current >/dev/null && progress_fail_current "$*"; exit 1; }
+
+# Any command that fails without an explicit die (set -e) lands here, so the
+# user is never left with a bare shell prompt and no idea what to do next.
+on_unexpected_error() {
+  local rc=$1 line=$2 cmd=$3
+  [[ "$ERROR_REPORTED" == true ]] && return
+  ERROR_REPORTED=true
+  err "A step failed unexpectedly (exit code ${rc}, install.sh line ${line}):"
+  err "  ${cmd}"
+  {
+    echo ""
+    echo -e "  ${BOLD}${YELLOW}┌─ HOW TO RESOLVE ────────────────────────────────────────────${RESET}"
+    echo -e "  ${YELLOW}│${RESET} Nothing already completed is lost: every finished phase is recorded in .install-state.json."
+    echo -e "  ${YELLOW}│${RESET} ${BOLD}1.${RESET} Read the lines above this box for the actual cause (the last [ERROR] or ssh/gcloud message)."
+    echo -e "  ${YELLOW}│${RESET} ${BOLD}2.${RESET} If it was a lost connection or a transient error, simply continue where it stopped:"
+    echo -e "  ${YELLOW}│${RESET}      ${CYAN}cd ${SCRIPT_DIR} && bash install.sh --resume${RESET}"
+    echo -e "  ${YELLOW}│${RESET} ${BOLD}3.${RESET} If it fails again at the same step, keep the log for troubleshooting: ${CYAN}${LOG_FILE}${RESET}"
+    echo -e "  ${BOLD}${YELLOW}└─────────────────────────────────────────────────────────────${RESET}"
+    echo ""
+  } | tee -a "$LOG_FILE" >&2
+  declare -F progress_fail_current >/dev/null && progress_fail_current "exit ${rc} at line ${line}"
+}
+set -E
+trap 'on_unexpected_error $? $LINENO "$BASH_COMMAND"' ERR
 
 # die_with_steps MESSAGE STEP... — like die, but first prints a readable
 # "HOW TO RESOLVE" box. A STEP written as "text|command" shows the command
 # on its own indented line; a STEP starting with "*" is printed as a note.
 die_with_steps() {
+  ERROR_REPORTED=true
   local msg="$1"; shift
   local n=1 step text cmd line
   err "$msg"
@@ -1416,16 +1442,45 @@ create_firewall_rules() {
 # =============================================================================
 # SECTION 7 — REMOTE SETUP (kernel, disks, install)
 # =============================================================================
+# SSH keep-alive: a probe every 15 s, give up after 8 missed replies (2 min).
+# Long remote steps (stanctl up, kubectl wait) produce no traffic for minutes
+# and an idle connection is otherwise dropped by NAT or the node's sshd.
+SSH_KEEPALIVE_FLAGS=(
+  --ssh-flag="-o StrictHostKeyChecking=accept-new"
+  --ssh-flag="-o ConnectTimeout=30"
+  --ssh-flag="-o ServerAliveInterval=15"
+  --ssh-flag="-o ServerAliveCountMax=8"
+  --ssh-flag="-o TCPKeepAlive=yes"
+)
+SSH_RETRY_MAX="${SSH_RETRY_MAX:-3}"
+SSH_RETRY_WAIT="${SSH_RETRY_WAIT:-20}"
+
+# ssh_with_retry GCLOUD-ARGS... — runs `gcloud compute ssh ...` and, when the
+# connection itself fails (exit 255: closed, refused, timed out), waits and
+# tries again. A non-zero exit from the remote command is never retried.
+ssh_with_retry() {
+  local attempt=1 rc=0
+  while :; do
+    rc=0
+    gcloud compute ssh "$@" || rc=$?
+    if (( rc != 255 )) || (( attempt >= SSH_RETRY_MAX )); then
+      return "$rc"
+    fi
+    warn "SSH connection to the node was lost (attempt ${attempt}/${SSH_RETRY_MAX}). Retrying in ${SSH_RETRY_WAIT}s ..."
+    sleep "$SSH_RETRY_WAIT"
+    (( attempt++ ))
+  done
+}
+
 remote_exec() {
   local vm_name="$1" zone="$2" project="$3"; shift 3
   local cmd="$*" quoted
   printf -v quoted '%q' "$cmd"
-  gcloud compute ssh "$vm_name" \
+  ssh_with_retry "$vm_name" \
     --project="$project" \
     --zone="$zone" \
     --command="sudo bash -lc ${quoted}" \
-    --ssh-flag="-o StrictHostKeyChecking=accept-new" \
-    --ssh-flag="-o ConnectTimeout=30"
+    "${SSH_KEEPALIVE_FLAGS[@]}"
 }
 
 remote_exec_dry() {
@@ -1468,12 +1523,11 @@ with_heartbeat() {
 remote_user_exec() {
   local vm_name="$1" zone="$2" project="$3"; shift 3
   local cmd="$*"
-  gcloud compute ssh "$vm_name" \
+  ssh_with_retry "$vm_name" \
     --project="$project" \
     --zone="$zone" \
     --command="$cmd" \
-    --ssh-flag="-o StrictHostKeyChecking=accept-new" \
-    --ssh-flag="-o ConnectTimeout=30"
+    "${SSH_KEEPALIVE_FLAGS[@]}"
 }
 
 upload_private_file() {
