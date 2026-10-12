@@ -1,5 +1,5 @@
-Instana GCP lab v0.6.0 — resilient installer: survives lost connections, always shows progress and the next step
-CURRENT: read IZMENE_v0.6.0.txt first (it summarises v0.5.7–v0.5.9), then the older IZMENE files for details.
+Instana GCP lab v0.6.1 — backend version chosen first; resilient installer (survives lost connections, progress on every step)
+CURRENT: read IZMENE_v0.6.1.txt and IZMENE_v0.6.0.txt first, then the older IZMENE files for details.
 
 QUICK START — POKRETANJE NA UPRAVLJACKOJ VM
 ===========================================

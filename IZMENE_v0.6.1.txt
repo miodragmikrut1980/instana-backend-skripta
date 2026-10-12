@@ -1,0 +1,19 @@
+v0.6.1 — backend version is chosen first (urgent-ticket use case)
+
+Why: when an urgent ticket arrives, the lab must run exactly the customer's
+backend version. Until now the online path asked for the version in phase 10,
+about 20 minutes into the run, after the VM and disks were already created.
+
+- Online mode now asks for the stanctl and backend version right after the
+  license keys, before anything is created on GCP. The exact stanctl package
+  is installed on the management machine from the authenticated repository
+  and 'stanctl versions identify' lists the backend versions it supports; the
+  chosen pair is pinned for the whole run (shown in the plan, used by phase
+  10 on the VM, written into the final report and .install-report.txt).
+- If the management machine cannot do that (not Ubuntu/Debian, no sudo,
+  repository unreachable, wrong download key) the installer says so and the
+  version is chosen on the Instana VM in phase 10, exactly as before.
+- Resume keeps the versions recorded in .install-state.json; air-gapped takes
+  them from the archive, unchanged.
+- The screen hint no longer claims "1-2 hours": a single-node online run is
+  30-40 min; three-node and air-gapped take longer.

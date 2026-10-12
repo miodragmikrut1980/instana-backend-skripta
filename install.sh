@@ -771,6 +771,7 @@ collect_parameters() {
   if [[ "$INSTALL_MODE" == "air-gapped" ]]; then
     obtain_airgapped_archive
   fi
+  select_versions_upfront
 
   # TLS certificate
   hint "HTTPS certificate for the UI. Self-signed is generated automatically (browser will warn; fine for a lab)." \
@@ -926,6 +927,7 @@ configure_local_instana_repository() {
 # Same rule as on the Instana VM: an exact stanctl package version is chosen,
 # installed and held. The archive is later packaged by exactly this CLI.
 select_and_install_local_stanctl() {
+  local prompt="${1:-Select the exact stanctl version for the air-gapped package:}"
   local installed selected
   local -a stanctl_versions
   mapfile -t stanctl_versions < <(apt-cache madison stanctl 2>/dev/null | awk '{print $3}' | sed '/^$/d' | sort -Vu -r | grep -E '^[0-9]+([:.+~_-]?[0-9A-Za-z]+)*$' | awk '!seen[$0]++')
@@ -933,7 +935,7 @@ select_and_install_local_stanctl() {
   installed=$(dpkg-query -W -f='${Version}' stanctl 2>/dev/null || true)
   echo "" >&2
   echo -e "${BOLD}Available stanctl package versions (newest first)${RESET}${installed:+; currently installed: ${installed}}:" >&2
-  selected=$(prompt_choice "Select the exact stanctl version for the air-gapped package:" "${stanctl_versions[@]}") ||
+  selected=$(prompt_choice "$prompt" "${stanctl_versions[@]}") ||
     { err "stanctl version selection was cancelled."; return 1; }
   if [[ "$installed" != "$selected" ]]; then
     log "Installing stanctl ${selected} on this machine..."
@@ -955,6 +957,7 @@ select_and_install_local_stanctl() {
 # The installed CLI reports the backend versions it supports; the operator
 # picks one and it is pinned into the package (--instana-version).
 select_local_backend_version() {
+  local prompt="${1:-Select the exact Instana backend version to package:}"
   local tmp_key raw_backends selected
   local -a backend_versions
   tmp_key=$(mktemp); chmod 600 "$tmp_key"
@@ -966,10 +969,57 @@ select_local_backend_version() {
     { err "stanctl ${STANCTL_CLI_VERSION} returned no supported backend versions (check the download key)."; return 1; }
   echo "" >&2
   echo -e "${BOLD}Backend versions supported by stanctl ${STANCTL_CLI_VERSION}:${RESET}" >&2
-  selected=$(prompt_choice "Select the exact Instana backend version to package:" "${backend_versions[@]}") ||
+  selected=$(prompt_choice "$prompt" "${backend_versions[@]}") ||
     { err "Backend version selection was cancelled."; return 1; }
   BACKEND_VERSION="$selected"
-  ok "Package will pin: stanctl ${STANCTL_CLI_VERSION} → backend ${BACKEND_VERSION}"
+  ok "Selected: stanctl ${STANCTL_CLI_VERSION} → backend ${BACKEND_VERSION}"
+}
+
+# Online mode: the backend version is the first thing an urgent ticket needs
+# ("reproduce the customer's problem on exactly their version"), so it is
+# chosen here, before anything is created on GCP, not 20 minutes later in
+# phase 10. The exact stanctl package is installed on THIS machine from the
+# authenticated repository and asked which backend versions it supports; the
+# pair is then pinned for the whole run (REQUESTED_* globals, honoured by
+# install_stanctl on the VM). When this machine cannot do that (not
+# Ubuntu/Debian, no sudo, repository unreachable, wrong key) the selection
+# falls back to phase 10 on the VM exactly as before.
+REQUESTED_STANCTL_APT_VERSION=""
+REQUESTED_BACKEND_VERSION=""
+select_versions_upfront() {
+  [[ "$INSTALL_MODE" == online ]] || return 0
+  [[ "${RESUME:-false}" == true ]] && return 0
+  local os_id
+  echo "" >&2
+  log "Backend version selection"
+  hint "Choose the exact Instana backend version to install, e.g. the version your customer runs." \
+       "The matching stanctl is installed on this machine first (needs sudo, Ubuntu/Debian and access to" \
+       "artifact-public.instana.io with your download key) so the list below is the one IBM publishes for it." \
+       "The versions are pinned for this run and shown in the plan and the final report."
+  if [[ "$DRY_RUN" == true ]]; then
+    REQUESTED_STANCTL_APT_VERSION="DRY-RUN-SELECTION"; REQUESTED_BACKEND_VERSION="DRY-RUN-COMPATIBLE-SELECTION"
+    return 0
+  fi
+  os_id=$(. /etc/os-release 2>/dev/null && printf '%s %s' "${ID:-}" "${ID_LIKE:-}")
+  if [[ "$os_id" != *ubuntu* && "$os_id" != *debian* ]] || ! command -v sudo >/dev/null 2>&1; then
+    warn "This machine is not Ubuntu/Debian with sudo; the version will be chosen on the Instana VM in phase 10 instead."
+    return 0
+  fi
+  if ! configure_local_instana_repository; then
+    warn "The Instana repository could not be configured here; the version will be chosen on the Instana VM in phase 10 instead."
+    return 0
+  fi
+  if ! select_and_install_local_stanctl "Select the exact stanctl version (newest first; the backend list depends on it):"; then
+    warn "stanctl could not be installed here; the version will be chosen on the Instana VM in phase 10 instead."
+    return 0
+  fi
+  if ! select_local_backend_version "Select the exact Instana backend version to install (the customer's version):"; then
+    warn "Backend versions could not be listed here; the version will be chosen on the Instana VM in phase 10 instead."
+    return 0
+  fi
+  REQUESTED_STANCTL_APT_VERSION="$STANCTL_APT_VERSION"
+  REQUESTED_BACKEND_VERSION="$BACKEND_VERSION"
+  ok "Pinned for this run: stanctl ${STANCTL_APT_VERSION} → backend ${BACKEND_VERSION}"
 }
 
 build_airgapped_package_locally() {
@@ -1181,6 +1231,12 @@ show_plan() {
   printf "  %-30s %s\n" "UI URL (after DNS):" "https://${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}"
   printf "  %-30s %s\n" "TLS:"               "$TLS_MODE"
   printf "  %-30s %s\n" "SSH source CIDR:"   "$SSH_SOURCE_CIDR"
+  if [[ -n "${BACKEND_VERSION:-}" ]]; then
+    printf "  %-30s %s\n" "stanctl package:"   "${STANCTL_APT_VERSION:-?}"
+    printf "  %-30s %s\n" "Backend version:"   "$BACKEND_VERSION"
+  elif [[ "$INSTALL_MODE" == online ]]; then
+    printf "  %-30s %s\n" "Backend version:"   "chosen on the Instana VM in phase 10"
+  fi
 
   if [[ "$TOPOLOGY" == "single-node" ]]; then
     echo ""
@@ -1867,11 +1923,12 @@ install_stanctl() {
   (( ${#stanctl_versions[@]} > 0 )) || die "The Instana repository returned no installable stanctl versions."
 
   saved=$(get_state stanctl_apt_version)
+  [[ -n "$saved" ]] || saved="$REQUESTED_STANCTL_APT_VERSION"
   if [[ -n "$saved" ]]; then
     printf '%s\n' "${stanctl_versions[@]}" | grep -Fxq "$saved" ||
       die "Saved stanctl version ${saved} is no longer available from the configured repository."
     selected="$saved"
-    phase_detail done "Reusing saved stanctl package selection: ${selected}"
+    phase_detail done "Using the pinned stanctl package: ${selected}"
   else
     echo ""
     echo -e "${BOLD}Available stanctl package versions (newest first):${RESET}" >&2
@@ -1915,11 +1972,13 @@ install_stanctl() {
     die "stanctl returned no selectable compatible backend versions; no backend installation was started."
 
   saved=$(get_state backend_version)
+  [[ -n "$saved" ]] || saved="$REQUESTED_BACKEND_VERSION"
   if [[ -n "$saved" ]]; then
     printf '%s\n' "${backend_versions[@]}" | grep -Fxq "$saved" ||
       die "Saved backend ${saved} is not compatible with stanctl ${STANCTL_CLI_VERSION}."
     selected="$saved"
-    phase_detail done "Reusing saved compatible backend selection: ${selected}"
+    save_state backend_version "$selected"
+    phase_detail done "Using the pinned backend version: ${selected}"
   else
     echo ""
     echo -e "${BOLD}Backend versions compatible with stanctl ${STANCTL_CLI_VERSION}:${RESET}" >&2
@@ -2140,6 +2199,7 @@ print_final_report() {
     echo "  Instana UI URL:  https://${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}"
     echo "  Admin user:      admin@instana.local"
     echo "  External IP:     ${external_ip}"
+    echo "  Backend version: ${BACKEND_VERSION:-$(get_state backend_version)}   (stanctl ${STANCTL_CLI_VERSION:-$(get_state stanctl_cli_version)})"
     echo "  /etc/hosts entries:"
     printf '    %s %s\n' "$external_ip" "$BASE_DOMAIN" \
       "$external_ip" "${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}" \
@@ -2159,6 +2219,7 @@ print_final_report() {
   echo -e "  ${BOLD}Instana UI URL:${RESET}  https://${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}"
   echo -e "  ${BOLD}Admin user:${RESET}      admin@instana.local"
   echo -e "  ${BOLD}External IP:${RESET}     ${external_ip}"
+  echo -e "  ${BOLD}Backend version:${RESET} ${BACKEND_VERSION:-$(get_state backend_version)}   (stanctl ${STANCTL_CLI_VERSION:-$(get_state stanctl_cli_version)})"
   echo ""
   echo -e "  ${YELLOW}Ready-to-copy /etc/hosts entries:${RESET}"
   printf '    %s %s\n' "$external_ip" "$BASE_DOMAIN" \
@@ -2495,7 +2556,7 @@ ensure_detachable_session() {
   offer_reattach_running_installer
   echo "" >&2
   warn "You are not inside a screen/tmux session."
-  hint "Why this matters: this installer runs for 1-2 hours and drives 'stanctl up' on the Instana VM through an SSH" \
+  hint "Why this matters: this installer runs 30-40 min for single-node online (longer for three-node and air-gapped) and drives 'stanctl up' on the Instana VM through an SSH" \
        "connection from THIS terminal. If your own connection to this machine drops (Wi-Fi, VPN, laptop sleep), Linux" \
        "closes the terminal and kills everything started from it, including stanctl up in the middle of the installation." \
        "'screen' keeps the installer running on this machine independent of your connection: you can disconnect at any" \

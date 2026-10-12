@@ -85,6 +85,7 @@ offer_saved_parameters() {
   reask_secret DOWNLOAD_KEY "Instana download key" "Download key"
   reask_secret AGENT_KEY "Instana agent key" "Agent key"
   reask_secret SALES_KEY "Instana sales key" "Sales key"
+  declare -F select_versions_upfront >/dev/null && select_versions_upfront
   if [[ "$TLS_MODE" == "provide custom certificate files" ]]; then
     [[ -f "$TLS_CRT_PATH" && -f "$TLS_KEY_PATH" ]] || die "Custom TLS files missing."
   else
