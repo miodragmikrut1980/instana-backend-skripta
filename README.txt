@@ -1,5 +1,5 @@
-Instana GCP lab v0.6.1 — backend version chosen first; resilient installer (survives lost connections, progress on every step)
-CURRENT: read IZMENE_v0.6.1.txt and IZMENE_v0.6.0.txt first, then the older IZMENE files for details.
+Instana GCP lab v0.7.0 — provider layer (GCP behind providers/, groundwork for other targets); backend version chosen first; resilient installer
+CURRENT: read IZMENE_v0.7.0.txt and IZMENE_v0.6.1.txt first, then the older IZMENE files for details.
 
 QUICK START — POKRETANJE NA UPRAVLJACKOJ VM
 ===========================================
@@ -18,6 +18,8 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
      ./install.sh
    (git checkout -- . vraca eventualno obrisane/izmenjene fajlove pre pull-a;
    ako install.sh javi da fali neki .sh fajl, ispise istu ovu komandu.)
+   Od v0.7.0 skripta treba i folder providers/ (dolazi istim git pull-om);
+   kopiras li skriptu rucno, kopiraj ceo folder, ne samo *.sh.
 
 2b) SVEZ POCETAK kad folder vec postoji (brise se lokalni state, config i
     izvestaj poslednje instalacije — GCP resursi ostaju netaknuti; ako

@@ -1,0 +1,39 @@
+v0.7.0 — provider layer: GCP behind providers/, groundwork for other targets
+
+Why: the installer should later also run against other targets (first:
+existing hosts over SSH, later other clouds). Everything cloud-specific now
+sits behind one provider interface, so a new target is a new file in
+providers/ instead of edits all over the installer. GCP is the only
+provider and its behaviour is unchanged.
+
+2026-10-15 — GCP moved behind providers/ (no behaviour change)
+- New required folder providers/: common.sh (provider_<op> dispatch,
+  provider selection, parameter checks) and gcp.sh (every gcloud call of the
+  installer). install.sh refuses to start, and destroy.sh refuses to delete,
+  when the folder is missing, with the git command that restores it.
+  Copying the installer by hand: copy the whole folder, not only *.sh.
+- Moved unchanged into providers/gcp.sh: GCP login and configuration checks,
+  the project/region/zone/network/subnet questions, machine type selection,
+  Ubuntu image check, VM/disk/firewall creation and their resume checks,
+  SSH and file copy (same gcloud arguments, keep-alive and exit-255 retry),
+  IP lookups, the gcloud commands shown in HOW TO RESOLVE boxes, the
+  deletions in destroy.sh and the clean-up by VM name. capacity-fallback.sh
+  remains the GCP stockout fallback. The data-disk path on the VM comes from
+  the provider (GCP: /dev/disk/by-id/google-<device>, as before).
+- Provider selection: a deployment recorded in the folder keeps its
+  provider. .install-state.json now also records "provider" (a state file
+  from an older version is treated as GCP). Without a recorded deployment
+  the provider comes from INSTANA_PROVIDER, otherwise gcp. A different or
+  unsupported provider stops with HOW TO RESOLVE naming both values and
+  where they came from; it never switches silently. A PROVIDER variable in
+  the shell environment has no effect.
+- Parameter checks for the coming --config option: provider_param_keys,
+  provider_validate_param (format only, no gcloud call) and PROVIDER_SCOPE/
+  REGION/LOCATION/NETWORK/SUBNET as aliases of the GCP_* parameters.
+- Tests: new test-destroy.sh (delete order and exact gcloud delete
+  commands, confirmation phrase, dry-run, refusal of unusable state files),
+  test-provider-contract.sh (every provider implements every operation;
+  provider selection rules; parameter checks) and test-gcp-provider.sh
+  (exact gcloud arguments of SSH, probes, copies and IP lookups). The other
+  tests copy the whole folder instead of a fixed file list. The dry-run
+  output of all test-dry-run cases is unchanged.
