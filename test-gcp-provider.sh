@@ -52,6 +52,29 @@ vm0
 --ssh-flag=-o ConnectTimeout=10
 EOF
 
+provider_ssh_probe vm0 zone-a proj-a 20 5 'cat /proc/sys/kernel/random/boot_id' reboot
+expect ssh_probe_reboot <<'EOF'
+compute
+ssh
+vm0
+--quiet
+--project=proj-a
+--zone=zone-a
+--command=cat /proc/sys/kernel/random/boot_id
+--ssh-flag=-o BatchMode=yes
+--ssh-flag=-o ConnectTimeout=5
+EOF
+
+provider_scp /var/tmp/instana-airgapped.tar.gz vm0 zone-a proj-a /var/tmp/instana-airgapped.tar.gz.part bulk
+expect scp_bulk <<'EOF'
+compute
+scp
+/var/tmp/instana-airgapped.tar.gz
+vm0:/var/tmp/instana-airgapped.tar.gz.part
+--project=proj-a
+--zone=zone-a
+EOF
+
 provider_scp /tmp/local.env vm0 zone-a proj-a /tmp/.stanctl.env
 expect scp <<'EOF'
 compute

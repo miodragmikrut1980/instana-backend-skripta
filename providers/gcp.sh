@@ -46,9 +46,16 @@ prov_gcp_ssh() {
     "${GCP_SSH_KEEPALIVE_FLAGS[@]}"
 }
 
-# prov_gcp_ssh_probe VM ZONE PROJECT TIMEOUT_S CONNECT_TIMEOUT_S COMMAND —
+# prov_gcp_ssh_probe VM ZONE PROJECT TIMEOUT_S CONNECT_TIMEOUT_S COMMAND [KIND] —
 # non-interactive single attempt for wait loops; never prompts, never retries.
+# KIND "first" (default) waits for a new VM and accepts its host key once;
+# "reboot" polls a VM whose host key is already known.
 prov_gcp_ssh_probe() {
+  if [[ "${7:-first}" == reboot ]]; then
+    timeout "${4}s" gcloud compute ssh "$1" --quiet --project="$3" --zone="$2" \
+      --command="$6" --ssh-flag='-o BatchMode=yes' --ssh-flag="-o ConnectTimeout=${5}"
+    return
+  fi
   timeout "${4}s" gcloud compute ssh "$1" \
     --project="$3" \
     --zone="$2" \
@@ -58,9 +65,14 @@ prov_gcp_ssh_probe() {
     --ssh-flag="-o ConnectTimeout=${5}"
 }
 
-# prov_gcp_scp LOCAL_FILE VM ZONE PROJECT REMOTE_PATH
+# prov_gcp_scp LOCAL_FILE VM ZONE PROJECT REMOTE_PATH [KIND] — KIND "file"
+# (default) for small files, "bulk" for the air-gapped package.
 prov_gcp_scp() {
-  gcloud compute scp "$1" "${2}:${5}" --project="$4" --zone="$3" --quiet
+  if [[ "${6:-file}" == bulk ]]; then
+    gcloud compute scp "$1" "${2}:${5}" --project="$4" --zone="$3"
+  else
+    gcloud compute scp "$1" "${2}:${5}" --project="$4" --zone="$3" --quiet
+  fi
 }
 
 # prov_gcp_get_ip VM ZONE PROJECT public|private

@@ -1566,7 +1566,7 @@ install_stanctl_airgapped() {
     remote_exec "$vm_name" "$zone" "$project" "rm -f /tmp/instana-airgapped.tar.gz ${AIRGAP_REMOTE_ARCHIVE} ${AIRGAP_REMOTE_ARCHIVE}.part"
     airgap_check_space "$vm_name" "$zone" "$project" $(( 2 * local_size + AIRGAP_SPACE_MARGIN_BYTES ))
     log "Copying air-gapped package to ${vm_name} ($(du -h "$AIRGAP_ARCHIVE" 2>/dev/null | cut -f1 || echo '?'))..."
-    spin_run "copying the air-gapped package to ${vm_name}" provider_scp "$AIRGAP_ARCHIVE" "$vm_name" "$zone" "$project" "${AIRGAP_REMOTE_ARCHIVE}.part"
+    spin_run "copying the air-gapped package to ${vm_name}" provider_scp "$AIRGAP_ARCHIVE" "$vm_name" "$zone" "$project" "${AIRGAP_REMOTE_ARCHIVE}.part" bulk
     remote_exec "$vm_name" "$zone" "$project" "mv -f ${AIRGAP_REMOTE_ARCHIVE}.part ${AIRGAP_REMOTE_ARCHIVE}"
   fi
 

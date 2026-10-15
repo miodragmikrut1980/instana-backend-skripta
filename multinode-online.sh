@@ -37,7 +37,7 @@ lab_wait_for_reboot() {
   local node="$1" before="$2" after i
   for ((i=0; i<40; i++)); do
     sleep 10
-    after=$(provider_ssh_probe "$node" "$GCP_ZONE" "$GCP_PROJECT" 20 5 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null || true)
+    after=$(provider_ssh_probe "$node" "$GCP_ZONE" "$GCP_PROJECT" 20 5 'cat /proc/sys/kernel/random/boot_id' reboot 2>/dev/null || true)
     [[ -n "$after" && "$after" != "$before" ]] && return 0
   done
   return 1
