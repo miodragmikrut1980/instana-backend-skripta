@@ -55,9 +55,9 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
    b) Prebaci fajl na VM: dugme "Copy as paste-in command" pa paste u
       terminal VM-a (upise ~/instana-backend-skripta/instana-config-....json),
       ili "Download file" pa gcloud compute scp.
-   c) Pokreni (prvo plan, pa pravo):
-        ./install.sh --config instana-config-<ime>.json --dry-run
-        ./install.sh --config instana-config-<ime>.json
+   c) Pokreni (prvo plan, pa pravo; zameni IME imenom svog fajla):
+        ./install.sh --config instana-config-IME.json --dry-run
+        ./install.sh --config instana-config-IME.json
       Ili bez --config: u meniju "How do you want to provide the deployment
       parameters?" izaberi "import them from a JSON file" i upisi putanju.
    Svaka vrednost iz fajla prolazi istu proveru kao kucani odgovor. Na
@@ -65,6 +65,8 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
    razlogom) / skip (ne vazi za ovaj deployment). Pitaju se samo ask
    vrednosti. Bez terminala (npr. ssh komanda, cron) skripta odmah stane i
    izlista SVE vrednosti koje fale ili ne valjaju, sa primerom ispravne.
+   I potpun fajl bez terminala stane na planu: start uvek trazi Y
+   (npr. echo y | ./install.sh --config instana-config-IME.json).
    Na planu: Y = start, E = promeni jednu vrednost (plan se ponovo pokaze),
    S = sacuvaj parametre u novi fajl (bez kljuceva) i stani, N = odustani.
      ./install.sh --export-config [fajl]   parametri sacuvani u ovom folderu

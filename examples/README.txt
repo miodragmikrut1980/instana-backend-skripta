@@ -1,5 +1,5 @@
 Primeri JSON fajlova za test-config-file.sh
-Tajne u fajlovima su lažne test vrednosti (test-*-0000).
+Tajne u fajlovima su lazne test vrednosti (test-*-0000).
 
 single-gcp-online-full.json
   Every value valid, secrets embedded (fake test values). Expect: zero prompts until 'Start now?'.
@@ -35,10 +35,10 @@ three-gcp-duplicate-names.json
   NODE1_NAME == NODE2_NAME. Expect: warn + re-ask NODE2_NAME.
 
 three-ssh-full.json
-  Existing hosts, full disk table. Expect: zero prompts until 'Start now?'; no SSH_SOURCE_CIDR/size/network asked.
+  Existing hosts, full disk table. Expect today: stop with "PROVIDER 'ssh' ... is not available in this version yet" and how to switch to gcp. With the ssh provider (next step): zero prompts until 'Start now?'; no SSH_SOURCE_CIDR/size/network asked.
 
 single-ssh-bad-disk-and-gcp-key.json
-  DISK_DEV_DATA=/dev/sdb (not by-id) and a GCP key on the ssh provider. Expect: warn + re-ask DISK_DEV_DATA; 'skip GCP_PROJECT ignored for provider ssh'.
+  DISK_DEV_DATA=/dev/sdb (not by-id) and a GCP key on the ssh provider. Expect today: the same 'ssh not available yet' stop. With the ssh provider (next step): warn + re-ask DISK_DEV_DATA; GCP_PROJECT ignored for provider ssh.
 
 single-gcp-airgapped-existing.json
   Air-gapped with existing package. Test replaces __ARCHIVE__ with the fake archive path. Versions come from the package; the versions in the file are listed as 'skip ... ignored'.

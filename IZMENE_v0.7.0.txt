@@ -86,3 +86,16 @@ still checks every value and asks only what is missing or wrong.
   inputs start with the menu answer, three-node size answer removed;
   assertions unchanged. Dry-run output differs only by the menu, the E/S
   lines of the plan and the fixed-size line for three-node.
+
+2026-10-15 — Input file: review fixes
+- The plan confirmation now runs as a plain step (run_plan_confirmation):
+  if recording the deployment in .install-state.json fails at "Start", the
+  run stops before anything is created (destroy.sh needs those records).
+- The remaining new stops explain what happened and how to continue
+  (HOW TO RESOLVE): closed input in the parameter-source menu, at the
+  alias-conflict choice and at "which value to change", and an unsafe
+  .install-config.json for --export-config.
+- Tests: saved and exported files are searched for every test key value;
+  symbolic-link input files; the new stop texts; a failing state write at
+  the plan. README: copy-pasteable --config commands and the note that
+  without a terminal a complete file still stops at the plan (Y needed).
