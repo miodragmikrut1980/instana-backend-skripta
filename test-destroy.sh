@@ -20,7 +20,8 @@ chmod +x "$TEST_ROOT/bin/gcloud"
 
 FULL_STATE='{"gcp_project":"test-project","gcp_zone":"us-central1-a","topology":"three-node",
 "vm_node-a":"created","vm_node-b":"created","disk_node-a-data":"attached","disk_gone-disk":"created",
-"firewall_lab-node-a-ssh":"created","fw_ssh":"created","fw_internal":"created","step_vm":"completed"}'
+"firewall_lab-node-a-ssh":"created","fw_ssh":"created","fw_internal":"created","step_vm":"completed",
+"hostdisk_lab-data":"/dev/disk/by-id/x"}'
 
 # run_destroy NAME STATE INPUT [ARGS...] — runs destroy.sh in its own directory.
 run_destroy() {
@@ -81,6 +82,13 @@ if [[ -e "$d/.install-state.json" ]]; then echo "FAIL: unusable state file not s
 ls "$d"/.install-state.json.*.empty >/dev/null
 test ! -s "$d/gcloud.log"
 echo 'PASS: state without resources is refused and set aside'
+
+# 4b. Keys of another provider (hostdisk_*) are not GCP resources: the pattern is anchored.
+if run_destroy foreign_keys '{"provider":"gcp","gcp_project":"test-project","gcp_zone":"us-central1-a","hostdisk_lab-data":"/dev/disk/by-id/x","myvm_x":"created"}' ''; then
+  echo "FAIL: state with only foreign keys accepted" >&2; exit 1
+fi
+grep -q 'records no GCP resources (project: .test-project., zone: .us-central1-a., recorded resources: 0)' "$TEST_ROOT/foreign_keys/output.txt"
+echo 'PASS: only keys that start with vm_/disk_/firewall_/fw_ count as GCP resources'
 
 # 5. Missing zone is refused the same way.
 if run_destroy no_zone '{"gcp_project":"test-project","vm_node-a":"created"}' ''; then

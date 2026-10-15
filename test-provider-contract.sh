@@ -88,6 +88,11 @@ cp -R "$(dirname "$0")"/*.sh "$(dirname "$0")"/providers "$TEST_DIR/"
   BASE_DOMAIN=instana.example.com TENANT_NAME=tenant0 UNIT_NAME=unit0 TLS_MODE=auto SSH_SOURCE_CIDR=203.0.113.10/32
   show_plan > /dev/null
   jq -e '.provider == "gcp" and .gcp_project == "test-project"' .install-state.json > /dev/null
+  # GCP keeps 22/tcp open in UFW even when SSH_PORT is set in the environment.
+  export SSH_PORT=2222
+  DRY_RUN=true
+  ufw=$(configure_ufw_single_node vm z p 2>&1)
+  [[ "$ufw" == *"ufw allow 22/tcp"* && "$ufw" != *2222* ]] || { echo "FAIL: GCP UFW SSH port: $ufw" >&2; exit 1; }
 )
 echo 'PASS: the confirmed plan records the provider in the state file; ACTIVE_PROVIDER from the environment is ignored'
 

@@ -23,10 +23,19 @@ init() {
 }
 plain() { sed 's/\x1b\[[0-9;]*m//g' "$OUT"; }
 
+# Never offered: a whole disk mounted at /data, a partitioned unmounted disk,
+# an LVM member — all large enough and with stable names.
+EXTRA_FACT_LINES=(
+  "DISK=/dev/sdf|2000000000000|1|/data|ext4|Mounted" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdf|/dev/sdf"
+  "DISK=/dev/sdg|2000000000000|2||gpt|Parted" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdg|/dev/sdg"
+  "DISK=/dev/sdh|2000000000000|1||LVM2_member|Lvm" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdh|/dev/sdh")
 host_facts h1
 (
   init
   mapfile -t c < <(prov_ssh_disk_candidates h1 ANALYTICS DISK_DEV_ANALYTICS)
+  for d in sdf sdg sdh; do
+    if printf '%s\n' "${c[@]}" | grep -q "/dev/$d\$"; then echo "FAIL: /dev/$d offered" >&2; exit 1; fi
+  done
   test "${#c[@]}" = 4
   test "${c[0]}" = "/dev/disk/by-id/scsi-0Disk_h1_sdb|600|PersistentDisk|/dev/sdb"
   # The root disk (partitions, mounted) is never offered.
@@ -40,7 +49,8 @@ host_facts h1
   prov_ssh_ensure_disks > "$OUT" 2>&1
   grep -q 'lab: analytics → /dev/disk/by-id/scsi-0Disk_h1_sdb (600 GB, now /dev/sdb)' "$OUT"
 )
-echo 'PASS: one disk per role from unused whole disks, stable by-id paths, a disk is never offered twice'
+EXTRA_FACT_LINES=()
+echo 'PASS: one disk per role from unused whole disks (not mounted, not partitioned, not LVM), stable by-id paths, a disk is never offered twice'
 
 (
   init
