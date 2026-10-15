@@ -235,7 +235,12 @@ start_menu() {
   local -a options=("install: start a new Instana deployment" \
                     "dry-run: show the plan and simulate all phases, create nothing")
   [[ -f "$STATE_FILE" ]] && ! state_is_only_progress && options+=("resume: continue the interrupted deployment recorded in this folder")
-  if [[ -f "$STATE_FILE" ]] && ! state_is_only_progress; then
+  local recorded_provider=""
+  [[ -f "$STATE_FILE" ]] && recorded_provider=$(jq -r '.provider // "gcp"' "$STATE_FILE" 2>/dev/null || echo gcp)
+  if [[ -f "$STATE_FILE" ]] && ! state_is_only_progress && [[ "$recorded_provider" == ssh ]]; then
+    options+=("destroy (preview): show what forgetting this folder's existing-host deployment removes (the hosts are not changed)" \
+              "destroy: forget this folder's existing-host deployment (local state only; nothing on the hosts is deleted)")
+  elif [[ -f "$STATE_FILE" ]] && ! state_is_only_progress; then
     options+=("destroy (preview): list the GCP resources of this folder's deployment that would be deleted" \
               "destroy: DELETE the GCP resources of this folder's deployment (VM, disks, firewall rules)")
   else
@@ -246,7 +251,11 @@ start_menu() {
   echo ""
   echo -e "${BOLD}Instana Standard Edition — GCP installer${RESET}"
   if [[ -f "$STATE_FILE" ]] && ! state_is_only_progress; then
-    log "A deployment is recorded in this folder: $(jq -r '[.gcp_project, .gcp_zone, .topology] | map(. // "?") | join(" / ")' "$STATE_FILE" 2>/dev/null)"
+    if [[ "$recorded_provider" == ssh ]]; then
+      log "A deployment on existing hosts is recorded in this folder: $(jq -r '[.ssh_target, .topology] | map(. // "?") | join(" / ")' "$STATE_FILE" 2>/dev/null)"
+    else
+      log "A deployment is recorded in this folder: $(jq -r '[.gcp_project, .gcp_zone, .topology] | map(. // "?") | join(" / ")' "$STATE_FILE" 2>/dev/null)"
+    fi
   else
     log "No deployment is recorded in this folder (no .install-state.json)."
   fi

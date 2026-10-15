@@ -30,14 +30,20 @@ printf 'instana-version: 3.285.123-0\nregistry:\n  url: artifact-public.instana.
 printf 'version: 1.10.9\ncommitDate: 2026-01-01\ncommitHash: abc\n' > "$TEST_ROOT/pkg/airgapped/buildmeta/buildmeta.yaml"
 tar -czf "$TEST_ROOT/instana-airgapped.tar.gz" -C "$TEST_ROOT/pkg" airgapped
 
+# Existing hosts (PROVIDER ssh): fake ssh/scp answer for the hosts (test-ssh-lib.inc).
+source "$SCRIPT_DIR/test-ssh-lib.inc"
+ssh_fakes_setup
+trap 'rm -rf "$TEST_ROOT" "$FAKE_ROOT"' EXIT
+for h in 10.0.0.5 10.0.0.11 10.0.0.12 10.0.0.13; do host_facts "$h"; done
+
 run_case() {
-  local name="$1" input="$2"
+  local name="$1" input="$2" provider="${3:-}"
   local case_dir="$TEST_ROOT/$name"
   mkdir -p "$case_dir"
   cp -R "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR/providers" "$case_dir/"
   (
     cd "$case_dir"
-    if ! PATH="$TEST_ROOT/bin:$PATH" bash ./install.sh --dry-run <<< "$input" > output.txt 2>&1; then
+    if ! INSTANA_PROVIDER="$provider" PATH="$TEST_ROOT/bin:$PATH" bash ./install.sh --dry-run <<< "$input" > output.txt 2>&1; then
       cat output.txt >&2
       return 1
     fi
@@ -59,7 +65,7 @@ run_case() {
       grep -q 'Switched to an online installation' output.txt
       grep -q -- "--instana-version 'DRY-RUN-COMPATIBLE-SELECTION'" output.txt
       if grep -q 'import backend' output.txt; then echo "FAIL: test-dry-run.sh:68: unexpected match" >&2; exit 1; fi
-    elif [[ "$name" == *airgapped ]]; then
+    elif [[ "$name" == *airgapped || "$name" == *airgapped_ssh ]]; then
       grep -q 'Air-gapped installation package' output.txt
       grep -q 'stanctl 1.10.9 → Instana backend 3.285.123-0' output.txt
       grep -q 'extract stanctl 1.10.9 from it and import backend 3.285.123-0' output.txt
@@ -69,6 +75,24 @@ run_case() {
       if awk '/\.deb/ && !/No separate stanctl \.deb package is needed/ {found=1} END {exit !found}' output.txt; then echo "FAIL: test-dry-run.sh:76: unexpected .deb in the air-gapped output" >&2; exit 1; fi
     else
       grep -q -- "--instana-version 'DRY-RUN-COMPATIBLE-SELECTION'" output.txt
+    fi
+    if [[ "$name" == *_ssh ]]; then
+      if grep -q 'gcloud\|GCP Project\|SSH source CIDR\|Creating VM' output.txt; then echo "FAIL: $name: GCP step in an existing-host run" >&2; exit 1; fi
+      grep -q '\[PHASE 3/12\] Host checks (OS, CPU, RAM, sudo)' output.txt
+      grep -q '\[PHASE 4/12\] Data disk mapping' output.txt
+      grep -q '\[PHASE 5/12\] Network port checklist' output.txt
+      grep -q 'Install on:                    existing host(s), nothing is created or deleted' output.txt
+      grep -q 'REBOOT of each host' output.txt
+    fi
+    if [[ "$name" == single_online_ssh ]]; then
+      grep -q 'ufw allow 2222/tcp' output.txt
+      grep -q 'analytics disk:              /dev/disk/by-id/scsi-0Disk_10.0.0.5_sdb → /mnt/instana/stanctl/analytics' output.txt
+      grep -q 'ssh .* -p 2222 ubuntu@10.0.0.5 -- ' "$SSH_LOG"
+    fi
+    if [[ "$name" == multi_airgapped_ssh ]]; then
+      grep -q 'objects disk:                /dev/disk/by-id/scsi-0Disk_10.0.0.11_sdc → /mnt/instana/stanctl/objects' output.txt
+      grep -q 'analytics disk:              /dev/disk/by-id/scsi-0Disk_10.0.0.12_sdd → /mnt/instana/stanctl/analytics' output.txt
+      test "$(grep -c '\[INFO\].*Formatting and mounting' output.txt)" -eq 4
     fi
     if [[ "$name" == multi_online ]]; then
       test "$(grep -c '\[INFO\].*Creating VM:' output.txt)" -eq 3
@@ -97,5 +121,12 @@ run_case multi_airgapped "$AIR_MULTI"
 # Air-gapped selected, no package available: the operator switches to online from the package menu.
 AIR_TO_ONLINE=$'1\n1\n2\n1\n1\ntest-project\nus-central1\nus-central1-a\ndefault\ndefault\n203.0.113.10/32\ninstana-backend\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n3\n1\ny'
 run_case single_airgapped_to_online "$AIR_TO_ONLINE"
+
+# Existing hosts: no Ubuntu image, SSH CIDR or size questions; one disk per data directory.
+SSH_SINGLE=$'1\n1\n1\n1\n10.0.0.5\nubuntu\n'"$FAKE_KEY"$'\n2222\nlab-host\n1\n1\n1\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\ny'
+run_case single_online_ssh "$SSH_SINGLE" ssh
+
+SSH_AIR_MULTI=$'1\n2\n2\n10.0.0.11\n10.0.0.12\n10.0.0.13\nubuntu\n'"$FAKE_KEY"$'\n22\n1\nnode-a\nnode-b\nnode-c\n1\n1\n1\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n1\ny'
+run_case multi_airgapped_ssh "$SSH_AIR_MULTI" ssh
 
 echo "All dry-run smoke tests passed."

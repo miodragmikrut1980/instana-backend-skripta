@@ -107,3 +107,20 @@ fi
 grep -q 'providers/common.sh is missing' "$TEST_ROOT/no_providers/out.txt"
 test -f "$TEST_ROOT/no_providers/.install-state.json"
 echo 'PASS: missing providers/ folder is reported, nothing deleted'
+
+# 8. Existing hosts (provider ssh): only the local state is removed; no remote call at all.
+for tool in ssh scp; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$GCLOUD_LOG"\n' "$tool" > "$TEST_ROOT/bin/$tool"; chmod +x "$TEST_ROOT/bin/$tool"; done
+SSH_STATE='{"provider":"ssh","ssh_target":"ubuntu@10.0.0.5:22","topology":"single-node","host_lab":"checked","hostid_lab":"mid","hostdisk_lab-data":"/dev/disk/by-id/scsi-0d"}'
+run_destroy ssh_preview "$SSH_STATE" 'DELETE state/ubuntu@10.0.0.5:22' --dry-run
+d="$TEST_ROOT/ssh_preview"
+grep -q 'nothing on the hosts is deleted or changed' "$d/output.txt"
+grep -q 'Preview finished: only the local state of this folder would be removed; nothing on the hosts.' "$d/output.txt"
+test -f "$d/.install-state.json"
+run_destroy ssh "$SSH_STATE" 'DELETE state/ubuntu@10.0.0.5:22'
+d="$TEST_ROOT/ssh"
+test ! -s "$d/gcloud.log"
+grep -q "This folder's record of the deployment was removed; nothing on the hosts was deleted or changed." "$d/output.txt"
+grep -q 'sudo /usr/local/bin/k3s-uninstall.sh' "$d/output.txt"
+if [[ -e "$d/.install-state.json" ]]; then echo "FAIL: ssh state kept" >&2; exit 1; fi
+echo 'PASS: provider ssh: destroy forgets the local state only, no ssh or gcloud call'
+

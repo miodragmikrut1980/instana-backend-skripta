@@ -71,8 +71,9 @@ provider_destroy_target
 recorded=$(jq -r --arg re "$(provider_state_resource_pattern)" 'to_entries[] | select(.key | test($re)) | .key' "$STATE_FILE" 2>/dev/null | wc -l)
 if [[ -z "$DESTROY_SCOPE" || -z "$DESTROY_LOCATION" || "$recorded" -eq 0 ]]; then
   err "The state file records no ${PROVIDER_LABEL} resources ($(provider_destroy_target_text), recorded resources: ${recorded})."
-  echo "  Nothing can be deleted from it. If VMs or disks still exist in ${PROVIDER_LABEL}, remove them by VM name:" >&2
-  echo "      ./install.sh   ->  'clean up (preview)' / 'clean up'   (asks project, zone and VM name, e.g. instana-0)" >&2
+  provider_text_or destroy_nothing_hint \
+    "  Nothing can be deleted from it. If VMs or disks still exist in ${PROVIDER_LABEL}, remove them by VM name:" \
+    "      ./install.sh   ->  'clean up (preview)' / 'clean up'   (asks project, zone and VM name, e.g. instana-0)" >&2
   if [[ "$DRY_RUN" != true ]]; then
     mv -f "$STATE_FILE" "${STATE_FILE}.$(date +%Y%m%d-%H%M%S).empty" 2>/dev/null &&
       warn "The unusable state file was set aside as $(basename "${STATE_FILE}").*.empty."
@@ -83,7 +84,7 @@ provider_destroy_validate_target || exit 1
 
 echo ""
 echo -e "${BOLD}${RED}════════════════════════════════════════════════════════════════${RESET}"
-echo -e "${BOLD}${RED}  WARNING: This will permanently delete all Instana ${PROVIDER_LABEL} resources${RESET}"
+echo -e "${BOLD}${RED}  $(provider_text_or destroy_banner "WARNING: This will permanently delete all Instana ${PROVIDER_LABEL} resources")${RESET}"
 echo -e "${BOLD}${RED}════════════════════════════════════════════════════════════════${RESET}"
 echo ""
 echo "  State file: ${STATE_FILE}"
@@ -96,7 +97,7 @@ read -rp "$(echo -e "${RED}?${RESET} Type '${expected}' to confirm deletion: ")"
 
 echo ""
 
-DELETED=0; MISSING=0
+DELETED=0; MISSING=0; DESTROY_SUMMARY=""
 log "Reading resources from state file..."
 provider_destroy_from_state
 
@@ -107,7 +108,9 @@ if [[ "$DRY_RUN" != true ]]; then
 fi
 
 echo ""
-if [[ "$DRY_RUN" == true ]]; then
+if [[ -n "$DESTROY_SUMMARY" ]]; then
+  ok "$DESTROY_SUMMARY"
+elif [[ "$DRY_RUN" == true ]]; then
   ok "Preview finished: ${DELETED} resource(s) would be deleted, ${MISSING} recorded resource(s) no longer exist."
 elif (( DELETED > 0 )); then
   ok "Deleted ${DELETED} resource(s); ${MISSING} recorded resource(s) no longer existed."

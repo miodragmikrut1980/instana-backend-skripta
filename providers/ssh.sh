@@ -449,6 +449,10 @@ prov_ssh_text() {
     resume_mismatch) echo "Host, user or port differs from the saved state of this deployment. No changes made." ;;
     ip_confirm_line) echo "Confirm public IPv4 addresses. Enter accepts the address used for SSH." ;;
     default_vm_name) prov_ssh_name_from_host "${VM_HOST:-}" instana-backend ;;
+    destroy_banner) echo "This forgets the deployment recorded in this folder; nothing on the hosts is deleted or changed" ;;
+    destroy_nothing_hint)
+      echo "  The installer has not checked or changed any host for this deployment yet; there is nothing to forget."
+      echo "  The hosts are never deleted by the installer." ;;
     default_node0_name) prov_ssh_name_from_host "${NODE0_HOST:-}" instana-0 ;;
     default_node1_name) prov_ssh_name_from_host "${NODE1_HOST:-}" instana-1 ;;
     default_node2_name) prov_ssh_name_from_host "${NODE2_HOST:-}" instana-2 ;;
@@ -833,7 +837,11 @@ prov_ssh_destroy_from_state() {
   echo "  formatted data disks mounted under /mnt/instana/stanctl, UFW rules and kernel settings." >&2
   echo "  To clean a host completely, uninstall k3s there (sudo /usr/local/bin/k3s-uninstall.sh) and" >&2
   echo "  remove the /mnt/instana/stanctl entries from /etc/fstab." >&2
-  SSH_DESTROY_DONE=true
+  if [[ "$DRY_RUN" == true ]]; then
+    DESTROY_SUMMARY="Preview finished: only the local state of this folder would be removed; nothing on the hosts."
+  else
+    DESTROY_SUMMARY="This folder's record of the deployment was removed; nothing on the hosts was deleted or changed."
+  fi
 }
 prov_ssh_destroy_by_name() {
   ok "Provider ssh (existing hosts) creates nothing, so there is nothing to clean up by name. The hosts are never deleted."
