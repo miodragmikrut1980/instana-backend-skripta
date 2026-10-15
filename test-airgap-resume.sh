@@ -8,7 +8,7 @@
 set -euo pipefail
 TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT
-cp "$(dirname "$0")"/{install.sh,parameters.sh,multinode-online.sh,local-access.sh,multinode-resume.sh,hardware-input.sh,capacity-fallback.sh,progress.sh} "$TEST_DIR/"
+cp -R "$(dirname "$0")"/*.sh "$(dirname "$0")"/providers "$TEST_DIR/"
 printf 'package-bytes' > "$TEST_DIR/instana-airgapped.tar.gz"
 LOCAL_SUM=$(sha256sum "$TEST_DIR/instana-airgapped.tar.gz" | cut -d' ' -f1)
 LOCAL_SIZE=$(wc -c < "$TEST_DIR/instana-airgapped.tar.gz" | tr -d ' ')

@@ -192,7 +192,7 @@ resume_mount() {
   local node="$1" device="$2" mountpoint="$3"
   if [[ "$DRY_RUN" == true ]]; then format_and_mount_disk "$node" "$GCP_ZONE" "$GCP_PROJECT" "$device" "$mountpoint"; return; fi
   remote_exec "$node" "$GCP_ZONE" "$GCP_PROJECT" "set -euo pipefail
-    dev=/dev/disk/by-id/google-$device
+    dev=$(provider_disk_device_path "$node" "$device")
     target='$mountpoint'
     test -b \"\$dev\"
     test \"\$(lsblk -nr -o NAME \"\$dev\" | wc -l)\" -eq 1 || { echo 'STOP: partitioned disk'; exit 1; }

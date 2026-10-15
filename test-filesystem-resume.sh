@@ -3,7 +3,7 @@ set -euo pipefail
 
 TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT
-cp "$(dirname "$0")"/{install.sh,parameters.sh,multinode-online.sh,local-access.sh,multinode-resume.sh,hardware-input.sh,capacity-fallback.sh,progress.sh} "$TEST_DIR/"
+cp -R "$(dirname "$0")"/*.sh "$(dirname "$0")"/providers "$TEST_DIR/"
 
 (
   cd "$TEST_DIR"
@@ -22,6 +22,7 @@ cp "$(dirname "$0")"/{install.sh,parameters.sh,multinode-online.sh,local-access.
   format_and_mount_disk node0 zone-a project-a disk-analytics /mnt/instana/stanctl/analytics
   grep -q "UUID=1111-2222" calls
   grep -q "mount '/mnt/instana/stanctl/analytics'" calls
+  grep -q 'dev=/dev/disk/by-id/google-disk-analytics$' calls
   if grep -q 'mkfs.ext4' calls; then echo "FAIL: test-filesystem-resume.sh:25: unexpected match" >&2; exit 1; fi
 )
 echo 'PASS: interrupted empty ext4 is adopted without formatting'

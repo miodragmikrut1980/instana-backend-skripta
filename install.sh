@@ -28,7 +28,7 @@ readonly REPORT_FILE="${SCRIPT_DIR}/.install-report.txt"
 umask 077
 # The installer is split over several files; a missing one (partial copy,
 # accidental delete) must produce a clear fix instead of a bash source error.
-for _companion in parameters.sh progress.sh multinode-online.sh local-access.sh multinode-resume.sh hardware-input.sh capacity-fallback.sh; do
+for _companion in parameters.sh progress.sh multinode-online.sh local-access.sh multinode-resume.sh hardware-input.sh capacity-fallback.sh providers/common.sh providers/gcp.sh; do
   if [[ ! -f "${SCRIPT_DIR}/${_companion}" ]]; then
     echo "[ERROR] ${_companion} is missing from ${SCRIPT_DIR}; the installer needs all its files side by side." >&2
     echo "  Restore them from git in that folder:   git checkout -- . && git pull origin main" >&2
@@ -324,7 +324,7 @@ start_menu() {
 check_local_tools() {
   log "Checking required local tools..."
   local missing=()
-  for tool in gcloud jq ssh-keygen curl mktemp timeout flock; do
+  for tool in $(provider_required_tools) jq ssh-keygen curl mktemp timeout flock; do
     command -v "$tool" &>/dev/null || missing+=("$tool")
   done
   if [[ ${#missing[@]} -gt 0 ]]; then
@@ -333,13 +333,6 @@ check_local_tools() {
   ok "All required tools found."
 }
 
-check_gcp_login() {
-  log "Checking GCP authentication..."
-  if ! gcloud auth list --filter=status:ACTIVE --format="value(account)" 2>/dev/null | grep -q "@"; then
-    die "No active GCP account found. Run: gcloud auth login"
-  fi
-  ok "GCP authentication active: $(gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -1)"
-}
 
 check_gcp_quota() {
   local project="$1" zone="$2" cpus="$3" region
@@ -379,15 +372,6 @@ check_duplicate_vms() {
     fi
   done
   ok "No duplicate VMs found."
-}
-
-check_gcp_configuration() {
-  log "Validating GCP project, zone, network, and subnet..."
-  gcloud projects describe "$GCP_PROJECT" >/dev/null 2>&1 || die "Cannot access GCP project: ${GCP_PROJECT}"
-  gcloud compute zones describe "$GCP_ZONE" --project="$GCP_PROJECT" >/dev/null 2>&1 || die "Zone not found or unavailable: ${GCP_ZONE}"
-  gcloud compute networks describe "$GCP_NETWORK" --project="$GCP_PROJECT" >/dev/null 2>&1 || die "VPC network not found: ${GCP_NETWORK}"
-  gcloud compute networks subnets describe "$GCP_SUBNET" --region="$GCP_REGION" --project="$GCP_PROJECT" >/dev/null 2>&1 || die "Subnet '${GCP_SUBNET}' not found in ${GCP_REGION}."
-  ok "GCP configuration is accessible."
 }
 
 # =============================================================================
@@ -634,14 +618,6 @@ validate_file_exists() {
   [[ -f "$path" && ! -L "$path" ]] || { err "${label} not found or is a symlink: ${path}"; return 1; }
 }
 
-validate_gcp_project_id() {
-  # https://cloud.google.com/resource-manager/docs/creating-managing-projects: 6-30 chars,
-  # lowercase letters, digits, hyphens; starts with a letter; no trailing hyphen.
-  local id="$1"
-  [[ "$id" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] ||
-    { err "Invalid GCP Project ID '${id}': 6-30 lowercase letters, digits or hyphens, starting with a letter."; return 1; }
-}
-
 validate_fqdn() {
   local fqdn="$1"
   if ! [[ "$fqdn" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
@@ -689,36 +665,7 @@ collect_parameters() {
     "ubuntu-2404-lts-amd64" \
     "ubuntu-2204-lts")
 
-  # GCP parameters
-  hint "The Google Cloud project that will own and pay for the VM(s). It is the project ID (lowercase, e.g. instana-support-test-account)," \
-       "not the display name. Enter accepts the default; 'gcloud projects list' shows the projects your account can use."
-  prompt_required "GCP_PROJECT" "GCP Project ID" "$(default_gcp_project)" validate_gcp_project_id
-  # Default region/zone: where this machine runs when it is itself a GCE VM
-  # (metadata server), so the deployment lands close to it. That matters most
-  # for air-gapped installs, where the ~30 GB package is copied to the VM.
-  local local_zone local_region
-  local_zone=$(detect_local_gce_zone)
-  if [[ -n "$local_zone" ]]; then
-    local_region="${local_zone%-*}"
-    log "This machine is a GCE VM in zone ${local_zone}; offering region ${local_region} as the default (fastest transfer to the Instana VM)."
-  else
-    local_region="us-central1"
-  fi
-  hint "Region = geographic area (e.g. europe-west6 = Zurich, us-central1 = Iowa); zone = a data center inside it (suffix -a/-b/-c)." \
-       "Keep the defaults unless you need another location."
-  prompt_required "GCP_REGION" "GCP Region" "$local_region"
-  if [[ -n "$local_zone" && "$GCP_REGION" == "$local_region" ]]; then
-    prompt_required "GCP_ZONE" "GCP Zone" "$local_zone"
-  else
-    prompt_required "GCP_ZONE" "GCP Zone" "${GCP_REGION}-a"
-  fi
-  if [[ -n "$local_zone" && "$GCP_REGION" != "$local_region" && "$INSTALL_MODE" == "air-gapped" ]]; then
-    warn "Air-gapped: the package (tens of GB) will be copied from ${local_region} to ${GCP_REGION}; a cross-region copy is several times slower than staying in ${local_region}."
-    prompt_yes_no "Keep region ${GCP_REGION} anyway?" N || { prompt_required "GCP_REGION" "GCP Region" "$local_region"; prompt_required "GCP_ZONE" "GCP Zone" "$([[ "$GCP_REGION" == "$local_region" ]] && echo "$local_zone" || echo "${GCP_REGION}-a")"; }
-  fi
-  hint "VPC network and subnet the VM(s) attach to. Every project has one called 'default'; keep it unless your admin gave you another."
-  prompt_required "GCP_NETWORK" "VPC Network name" "default"
-  prompt_required "GCP_SUBNET" "Subnet name" "default"
+  provider_collect_location_params
   hint "Which public IP address may open SSH to the VM(s). Default = this machine's own public IP with /32 (only this machine)." \
        "0.0.0.0/0 would allow the whole internet; avoid it."
   prompt_required "SSH_SOURCE_CIDR" "CIDR allowed to SSH to the VM(s)" "$(detect_public_cidr)" validate_cidr
@@ -1110,26 +1057,6 @@ default_airgapped_archive() {
   return 0
 }
 
-# Default project: the active gcloud project; otherwise the lab project this
-# installer is normally used with (adjust here if you use another one).
-readonly FALLBACK_GCP_PROJECT="instana-support-test-account"
-default_gcp_project() {
-  local p
-  p=$(gcloud config get-value project 2>/dev/null || true)
-  [[ -n "$p" && "$p" != "(unset)" ]] && printf '%s\n' "$p" || printf '%s\n' "$FALLBACK_GCP_PROJECT"
-}
-
-# Zone of this machine when it runs on Google Compute Engine, e.g. europe-west6-b;
-# empty elsewhere. The metadata server answers only from inside GCE.
-detect_local_gce_zone() {
-  local raw
-  raw=$(curl -fsS --max-time 2 -H 'Metadata-Flavor: Google' \
-    http://metadata.google.internal/computeMetadata/v1/instance/zone 2>/dev/null) || return 0
-  raw="${raw##*/}"
-  [[ "$raw" =~ ^[a-z]+-[a-z]+[0-9]+-[a-z]$ ]] && printf '%s\n' "$raw"
-  return 0
-}
-
 detect_public_cidr() {
   local ip
   ip=$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)
@@ -1171,8 +1098,8 @@ show_hw_requirements_and_pick_machine_type() {
         collect_cpu_ram VM_CPUS VM_RAM_GB "$min_cpu" "$min_ram" "single-node $INSTALL_TYPE"
         ;;
     esac
-    # Map to GCP machine type
-    MACHINE_TYPE=$(gcp_machine_type_for "$VM_CPUS" "$VM_RAM_GB")
+    # Map to the provider's machine type
+    MACHINE_TYPE=$(provider_machine_type_for "$VM_CPUS" "$VM_RAM_GB")
 
   else
     # Three-node: fixed minimum per node from docs (Small VM: 12 vCPUs, 48 GB)
@@ -1193,22 +1120,7 @@ show_hw_requirements_and_pick_machine_type() {
         collect_cpu_ram NODE_CPUS NODE_RAM_GB 12 48 "three-node (per node)"
         ;;
     esac
-    MACHINE_TYPE=$(gcp_machine_type_for "$NODE_CPUS" "$NODE_RAM_GB")
-  fi
-}
-
-gcp_machine_type_for() {
-  local cpus="$1" ram_gb="$2"
-  # Use n2-standard series as it provides guaranteed performance (IOPS requirement from docs: 3000)
-  # n2-standard machines come in specific sizes; pick the smallest that fits
-  if   (( cpus <= 2  && ram_gb <= 8   )); then echo "n2-standard-2"
-  elif (( cpus <= 4  && ram_gb <= 16  )); then echo "n2-standard-4"
-  elif (( cpus <= 8  && ram_gb <= 32  )); then echo "n2-standard-8"
-  elif (( cpus <= 16 && ram_gb <= 64  )); then echo "n2-standard-16"
-  elif (( cpus <= 32 && ram_gb <= 128 )); then echo "n2-standard-32"
-  elif (( cpus <= 48 && ram_gb <= 192 )); then echo "n2-standard-48"
-  elif (( cpus <= 64 && ram_gb <= 256 )); then echo "n2-standard-64"
-  else echo "n2-standard-96"
+    MACHINE_TYPE=$(provider_machine_type_for "$NODE_CPUS" "$NODE_RAM_GB")
   fi
 }
 
@@ -1753,7 +1665,7 @@ format_and_mount_disk() {
 
   inspection=$(remote_exec "$vm_name" "$zone" "$project" \
     "set -euo pipefail
-dev=/dev/disk/by-id/google-${device}
+dev=$(provider_disk_device_path "$vm_name" "$device")
 target='${mount_point}'
 test -b \"\$dev\"
 mkdir -p \"\$target\"
@@ -1793,7 +1705,7 @@ fi") || die "Could not safely inspect ${device}; it was not formatted or mounted
       ;;
     BLANK)
       remote_exec "$vm_name" "$zone" "$project" \
-        "set -euo pipefail; dev=/dev/disk/by-id/google-${device}; mkfs.ext4 -m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard \"\$dev\"; uuid=\$(blkid -s UUID -o value \"\$dev\"); grep -qF \"UUID=\$uuid  ${mount_point} \" /etc/fstab || printf 'UUID=%s  %s  ext4  discard,defaults,nofail  0 2\\n' \"\$uuid\" '${mount_point}' >> /etc/fstab; mount '${mount_point}'; findmnt -rn -M '${mount_point}'"
+        "set -euo pipefail; dev=$(provider_disk_device_path "$vm_name" "$device"); mkfs.ext4 -m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard \"\$dev\"; uuid=\$(blkid -s UUID -o value \"\$dev\"); grep -qF \"UUID=\$uuid  ${mount_point} \" /etc/fstab || printf 'UUID=%s  %s  ext4  discard,defaults,nofail  0 2\\n' \"\$uuid\" '${mount_point}' >> /etc/fstab; mount '${mount_point}'; findmnt -rn -M '${mount_point}'"
       ;;
     EXISTING_EMPTY:ext4:*)
       uuid=${status##*:}
@@ -2616,10 +2528,11 @@ main() {
 
   progress_init
   phase_start 1 "Verify required command-line tools, acquire the installer lock, authenticate to GCP, and collect or reuse saved non-secret parameters."
+  resolve_provider || die "Set INSTANA_PROVIDER to one of: ${PROVIDERS_SUPPORTED} (or unset it for gcp)."
   check_local_tools
   exec 9>"${SCRIPT_DIR}/.install.lock"
   flock -n 9 || die "Another installer is running from this deployment folder."
-  check_gcp_login
+  provider_check_auth
   if ! offer_saved_parameters; then
     collect_parameters
   fi
@@ -2635,12 +2548,11 @@ main() {
     prepare_multinode_lab
   fi
   phase_start 2 "Validate project, region, zone, VPC, subnet and Ubuntu image, then display the complete plan before resources are changed."
-  check_gcp_configuration
+  provider_validate_config
   if [[ "$RESUME" == true && "$TOPOLOGY" != three-node ]]; then
     validate_resume
   else
-    gcloud compute images describe-from-family "$UBUNTU_VERSION" \
-      --project=ubuntu-os-cloud >/dev/null || die "Ubuntu image family unavailable."
+    provider_validate_image
   fi
   show_plan
   phase_done 2 "GCP configuration and installation plan were validated."
@@ -2658,6 +2570,8 @@ source "${SCRIPT_DIR}/multinode-resume.sh"
 source "${SCRIPT_DIR}/hardware-input.sh"
 source "${SCRIPT_DIR}/capacity-fallback.sh"
 source "${SCRIPT_DIR}/progress.sh"
+source "${SCRIPT_DIR}/providers/common.sh"
+source "${SCRIPT_DIR}/providers/gcp.sh"
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   main "$@"

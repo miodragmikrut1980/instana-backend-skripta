@@ -34,14 +34,7 @@ run_case() {
   local name="$1" input="$2"
   local case_dir="$TEST_ROOT/$name"
   mkdir -p "$case_dir"
-  cp "$SCRIPT_DIR/install.sh" "$case_dir/install.sh"
-  cp "$SCRIPT_DIR/parameters.sh" "$case_dir/parameters.sh"
-  cp "$SCRIPT_DIR/multinode-online.sh" "$case_dir/multinode-online.sh"
-  cp "$SCRIPT_DIR/local-access.sh" "$case_dir/local-access.sh"
-  cp "$SCRIPT_DIR/multinode-resume.sh" "$case_dir/multinode-resume.sh"
-  cp "$SCRIPT_DIR/hardware-input.sh" "$case_dir/hardware-input.sh"
-  cp "$SCRIPT_DIR/capacity-fallback.sh" "$case_dir/capacity-fallback.sh"
-  cp "$SCRIPT_DIR/progress.sh" "$case_dir/progress.sh"
+  cp -R "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR/providers" "$case_dir/"
   (
     cd "$case_dir"
     if ! PATH="$TEST_ROOT/bin:$PATH" bash ./install.sh --dry-run <<< "$input" > output.txt 2>&1; then
