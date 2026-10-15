@@ -13,3 +13,5 @@
 .DS_Store
 .install-report.txt
 screen-*.log
+CLAUDE.local.md
+.claude/
