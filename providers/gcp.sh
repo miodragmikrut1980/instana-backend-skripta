@@ -670,3 +670,179 @@ resume_firewalls() {
     save_state "firewall_${name}" created
   done
 }
+
+# ── Destroy (destroy.sh and the clean-up menu) ───────────────────────────────
+# prov_gcp_destroy_target — sets DESTROY_SCOPE / DESTROY_LOCATION (project and
+# zone) from the state file; empty when not recorded.
+prov_gcp_destroy_target() {
+  DESTROY_SCOPE=$(get_state "gcp_project" 2>/dev/null || echo "")
+  DESTROY_LOCATION=$(get_state "gcp_zone" 2>/dev/null || echo "")
+}
+prov_gcp_destroy_target_text() { echo "project: '${DESTROY_SCOPE:-?}', zone: '${DESTROY_LOCATION:-?}'"; }
+prov_gcp_destroy_validate_target() {
+  [[ "$DESTROY_SCOPE" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || die "State file holds an invalid GCP project ID '${DESTROY_SCOPE}'."
+}
+
+gcp_destroy_vm() {
+  local name="$1"
+  if gcloud compute instances describe "$name" \
+      --project="$DESTROY_SCOPE" --zone="$DESTROY_LOCATION" &>/dev/null 2>&1; then
+    log "Deleting VM: ${name}..."
+    run gcloud compute instances delete "$name" \
+      --project="$DESTROY_SCOPE" \
+      --zone="$DESTROY_LOCATION" \
+      --quiet
+    ok "VM ${name} deleted."; (( DELETED++ )) || true
+  else
+    warn "VM ${name} not found — skipping."; (( MISSING++ )) || true
+  fi
+}
+
+# Disks are deleted after the VMs, which detaches them.
+gcp_destroy_disk() {
+  local name="$1"
+  if gcloud compute disks describe "$name" \
+      --project="$DESTROY_SCOPE" --zone="$DESTROY_LOCATION" &>/dev/null 2>&1; then
+    log "Deleting disk: ${name}..."
+    run gcloud compute disks delete "$name" \
+      --project="$DESTROY_SCOPE" \
+      --zone="$DESTROY_LOCATION" \
+      --quiet
+    ok "Disk ${name} deleted."; (( DELETED++ )) || true
+  else
+    warn "Disk ${name} not found — skipping."; (( MISSING++ )) || true
+  fi
+}
+
+gcp_destroy_firewall() {
+  local name="$1"
+  if gcloud compute firewall-rules describe "$name" \
+      --project="$DESTROY_SCOPE" &>/dev/null 2>&1; then
+    log "Deleting firewall rule: ${name}..."
+    run gcloud compute firewall-rules delete "$name" \
+      --project="$DESTROY_SCOPE" \
+      --quiet
+    ok "Firewall rule ${name} deleted."; (( DELETED++ )) || true
+  else
+    warn "Firewall rule ${name} not found — skipping."; (( MISSING++ )) || true
+  fi
+}
+
+# prov_gcp_destroy_from_state — deletes the VMs, then the disks, then the
+# firewall rules recorded in the state file; counts DELETED and MISSING.
+prov_gcp_destroy_from_state() {
+  local vm_name disk_name fw fw_key
+  # VMs
+  while IFS= read -r vm_name; do
+    [[ -n "$vm_name" ]] && gcp_destroy_vm "$vm_name"
+  done < <(jq -r 'to_entries[] | select(.key | startswith("vm_")) | .key | ltrimstr("vm_")' "$STATE_FILE" 2>/dev/null)
+
+  # Disks
+  while IFS= read -r disk_name; do
+    [[ -n "$disk_name" ]] && gcp_destroy_disk "$disk_name"
+  done < <(jq -r 'to_entries[] | select(.key | startswith("disk_")) | .key | ltrimstr("disk_")' "$STATE_FILE" 2>/dev/null)
+
+  # Firewall rules
+  while IFS= read -r fw; do
+    [[ -n "$fw" ]] && gcp_destroy_firewall "$fw"
+  done < <(jq -r 'to_entries[] | select(.key | startswith("firewall_")) | .key | ltrimstr("firewall_")' "$STATE_FILE")
+  for fw in "instana-allow-ssh" "instana-allow-external" "instana-allow-k3s-subnets" "instana-allow-internal"; do
+    fw_key="fw_${fw#instana-allow-}"
+    if [[ "$(get_state "$fw_key")" == "created" ]]; then
+      gcp_destroy_firewall "$fw"
+    fi
+  done
+}
+
+# Cleanup without a state file: the operator names the project, zone and VM;
+# the installer lists the VM, the disks named <vm>-* and the instana-allow-*
+# firewall rules, shows them, and deletes only after an explicit confirmation.
+prov_gcp_destroy_by_name() {
+  local project zone vm confirm vm_found disks fws expected
+  echo "" >&2
+  echo -e "${BOLD}Clean up GCP resources by VM name${RESET}" >&2
+  echo "  No deployment is recorded in this folder, so tell me which VM to look for." >&2
+  echo "  Disks created by this installer are named <vm-name>-analytics/-metrics/-objects/-data." >&2
+  command -v gcloud >/dev/null 2>&1 || die "gcloud is required."
+  check_gcp_login
+  OPERATION_NAME="clean-up"
+  prompt_required GCP_PROJECT "GCP Project ID" "$(default_gcp_project)" validate_gcp_project_id
+  hint "The zone is found automatically from the VM name."
+  prompt_required VM_NAME "VM name to clean up (e.g. mikrut-air; for three-node the node0 name, e.g. instana-0)" ""
+  project="$GCP_PROJECT"; vm="$VM_NAME"
+  local base="${vm%-0}"   # three-node: instana-0 -> also instana-1, instana-2
+
+  log "Searching project ${project} (all zones) for resources of '${vm}'..."
+  local zones
+  # Regexes are quoted inside the filter expression; unquoted ( | ) confuse the gcloud filter parser.
+  local vm_re="^(${vm}|${base}-[0-9])\$" disk_re="^(${vm}|${base}-[0-9])(-[a-z]+)?\$"
+  zones=$( { gcloud compute instances list --project="$project" --filter="name~\"${vm_re}\"" --format="value(zone.basename())";
+             gcloud compute disks list --project="$project" --filter="name~\"${disk_re}\"" --format="value(zone.basename())"; } 2>/dev/null | sed '/^$/d' | sort -u)
+  if [[ -z "$zones" ]]; then
+    ok "Nothing named '${vm}' (VM or disks) exists in project ${project}; nothing to delete."
+    exit 0
+  fi
+  if (( $(wc -l <<< "$zones") > 1 )); then
+    zone=$(prompt_choice "Resources named '${vm}' exist in several zones; which one?" $zones) || die "Clean-up cancelled."
+  else
+    zone="$zones"
+  fi
+  GCP_ZONE="$zone"
+  log "Found them in zone ${zone}."
+  vm_found=$(gcloud compute instances list --project="$project" --zones="$zone" \
+    --filter="name~\"${vm_re}\"" --format="value(name,status,machineType.basename())" 2>/dev/null || true)
+  disks=$(gcloud compute disks list --project="$project" --zones="$zone" \
+    --filter="name~\"${disk_re}\"" --format="value(name,sizeGb,type.basename(),users.basename())" 2>/dev/null || true)
+  fws=$(gcloud compute firewall-rules list --project="$project" \
+    --filter="name~\"^instana-allow-\"" --format="value(name,sourceRanges.list())" 2>/dev/null || true)
+
+  echo "" >&2
+  echo -e "${BOLD}Found:${RESET}" >&2
+  echo "  VMs:" >&2;    if [[ -n "$vm_found" ]]; then sed 's/^/    /' <<< "$vm_found" >&2; else echo "    (none)" >&2; fi
+  echo "  Disks:" >&2;  if [[ -n "$disks" ]]; then sed 's/^/    /' <<< "$disks" >&2; else echo "    (none)" >&2; fi
+  echo "  Firewall rules (shared by every Instana deployment in this project):" >&2
+  if [[ -n "$fws" ]]; then sed 's/^/    /' <<< "$fws" >&2; else echo "    (none)" >&2; fi
+  echo "" >&2
+  if [[ -z "$vm_found" && -z "$disks" ]]; then
+    ok "Nothing named '${vm}' exists in ${project}/${zone}; nothing to delete."
+    exit 0
+  fi
+  if [[ "$DRY_RUN" == true ]]; then
+    warn "Preview only (--dry-run). Nothing was deleted."
+    exit 0
+  fi
+  prompt_yes_no "Delete the VMs and disks listed above?" N || { log "Nothing was deleted."; exit 0; }
+  local delete_fw=false
+  if [[ -n "$fws" ]]; then
+    prompt_yes_no "Also delete the instana-allow-* firewall rules? Only say yes if no other Instana deployment in this project uses them" N && delete_fw=true
+  fi
+  expected="DELETE ${project}/${zone}"
+  echo -e "${BOLD}${RED}  This permanently deletes the VMs and disks listed above (data on the disks is lost).${RESET}" >&2
+  read -rp "$(echo -e "${CYAN}?${RESET} Type '${expected}' to confirm: ")" confirm || exit 1
+  [[ "$confirm" == "$expected" ]] || die "Confirmation did not match; nothing was deleted."
+
+  local name
+  while read -r name _; do
+    [[ -n "$name" ]] || continue
+    log "Deleting VM ${name}..."
+    gcloud compute instances delete "$name" --project="$project" --zone="$zone" --quiet && ok "VM ${name} deleted."
+  done <<< "$vm_found"
+  while read -r name _; do
+    [[ -n "$name" ]] || continue
+    # Boot disks carry the VM's name and are removed together with the VM.
+    if ! gcloud compute disks describe "$name" --project="$project" --zone="$zone" >/dev/null 2>&1; then
+      log "Disk ${name} is already gone (boot disk deleted with its VM)."
+      continue
+    fi
+    log "Deleting disk ${name}..."
+    gcloud compute disks delete "$name" --project="$project" --zone="$zone" --quiet && ok "Disk ${name} deleted."
+  done <<< "$disks"
+  if [[ "$delete_fw" == true ]]; then
+    while read -r name _; do
+      [[ -n "$name" ]] || continue
+      gcloud compute firewall-rules delete "$name" --project="$project" --quiet && ok "Firewall rule ${name} deleted."
+    done <<< "$fws"
+  fi
+  ok "Cleanup of '${vm}' in ${project}/${zone} finished."
+  exit 0
+}

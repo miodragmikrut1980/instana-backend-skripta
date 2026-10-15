@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Instana Standard Edition — GCP Teardown / Destroy Script
+# Instana Standard Edition — Teardown / Destroy Script
 # =============================================================================
-# Reads state from .install-state.json written by install.sh
-# and removes all created GCP resources in safe reverse order.
+# Reads state from .install-state.json written by install.sh and removes the
+# cloud resources it records in safe reverse order, through the provider that
+# created them (providers/<provider>.sh; a state without one is GCP).
 #
 # Usage:
 #   ./destroy.sh [--dry-run]
@@ -51,18 +52,26 @@ get_state() {
   jq -r --arg k "$1" '.[$k] // empty' "$STATE_FILE"
 }
 
-# Read all state
-GCP_PROJECT=$(get_state "gcp_project" 2>/dev/null || echo "")
-GCP_ZONE=$(get_state "gcp_zone" 2>/dev/null || echo "")
+for _provider_file in common.sh gcp.sh; do
+  [[ -f "${SCRIPT_DIR}/providers/${_provider_file}" ]] ||
+    die "providers/${_provider_file} is missing from ${SCRIPT_DIR}; restore it from git (git checkout -- . && git pull origin main)."
+  source "${SCRIPT_DIR}/providers/${_provider_file}"
+done
+unset _provider_file
+resolve_provider || exit 1
+
+# Where the recorded resources live (GCP: project and zone).
+DESTROY_SCOPE="" DESTROY_LOCATION=""
+provider_destroy_target
 
 # The state file must actually record resources. A file holding only progress
 # checkpoints (an interrupted phase 1) or nothing usable is refused with a
 # pointer to the name-based clean-up in install.sh, instead of pretending that
 # "all resources were deleted".
 recorded=$(jq -r 'to_entries[] | select(.key | test("^(vm_|disk_|firewall_|fw_)")) | .key' "$STATE_FILE" 2>/dev/null | wc -l)
-if [[ -z "$GCP_PROJECT" || -z "$GCP_ZONE" || "$recorded" -eq 0 ]]; then
-  err "The state file records no GCP resources (project: '${GCP_PROJECT:-?}', zone: '${GCP_ZONE:-?}', recorded resources: ${recorded})."
-  echo "  Nothing can be deleted from it. If VMs or disks still exist in GCP, remove them by VM name:" >&2
+if [[ -z "$DESTROY_SCOPE" || -z "$DESTROY_LOCATION" || "$recorded" -eq 0 ]]; then
+  err "The state file records no ${PROVIDER_LABEL} resources ($(provider_destroy_target_text), recorded resources: ${recorded})."
+  echo "  Nothing can be deleted from it. If VMs or disks still exist in ${PROVIDER_LABEL}, remove them by VM name:" >&2
   echo "      ./install.sh   ->  'clean up (preview)' / 'clean up'   (asks project, zone and VM name, e.g. instana-0)" >&2
   if [[ "$DRY_RUN" != true ]]; then
     mv -f "$STATE_FILE" "${STATE_FILE}.$(date +%Y%m%d-%H%M%S).empty" 2>/dev/null &&
@@ -70,94 +79,26 @@ if [[ -z "$GCP_PROJECT" || -z "$GCP_ZONE" || "$recorded" -eq 0 ]]; then
   fi
   exit 1
 fi
-[[ "$GCP_PROJECT" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || die "State file holds an invalid GCP project ID '${GCP_PROJECT}'."
+provider_destroy_validate_target || exit 1
 
 echo ""
 echo -e "${BOLD}${RED}════════════════════════════════════════════════════════════════${RESET}"
-echo -e "${BOLD}${RED}  WARNING: This will permanently delete all Instana GCP resources${RESET}"
+echo -e "${BOLD}${RED}  WARNING: This will permanently delete all Instana ${PROVIDER_LABEL} resources${RESET}"
 echo -e "${BOLD}${RED}════════════════════════════════════════════════════════════════${RESET}"
 echo ""
 echo "  State file: ${STATE_FILE}"
 echo "  Log file:   ${LOG_FILE}"
 echo ""
 
-expected="DELETE ${GCP_PROJECT}/${GCP_ZONE}"
+expected="DELETE ${DESTROY_SCOPE}/${DESTROY_LOCATION}"
 read -rp "$(echo -e "${RED}?${RESET} Type '${expected}' to confirm deletion: ")" confirm
 [[ "$confirm" == "$expected" ]] || { log "Aborted."; exit 0; }
 
 echo ""
 
 DELETED=0; MISSING=0
-# Delete VMs
-delete_vm() {
-  local name="$1"
-  if gcloud compute instances describe "$name" \
-      --project="$GCP_PROJECT" --zone="$GCP_ZONE" &>/dev/null 2>&1; then
-    log "Deleting VM: ${name}..."
-    run gcloud compute instances delete "$name" \
-      --project="$GCP_PROJECT" \
-      --zone="$GCP_ZONE" \
-      --quiet
-    ok "VM ${name} deleted."; (( DELETED++ )) || true
-  else
-    warn "VM ${name} not found — skipping."; (( MISSING++ )) || true
-  fi
-}
-
-# Delete disks (detached after VM deletion)
-delete_disk() {
-  local name="$1"
-  if gcloud compute disks describe "$name" \
-      --project="$GCP_PROJECT" --zone="$GCP_ZONE" &>/dev/null 2>&1; then
-    log "Deleting disk: ${name}..."
-    run gcloud compute disks delete "$name" \
-      --project="$GCP_PROJECT" \
-      --zone="$GCP_ZONE" \
-      --quiet
-    ok "Disk ${name} deleted."; (( DELETED++ )) || true
-  else
-    warn "Disk ${name} not found — skipping."; (( MISSING++ )) || true
-  fi
-}
-
-# Delete firewall rules
-delete_firewall() {
-  local name="$1"
-  if gcloud compute firewall-rules describe "$name" \
-      --project="$GCP_PROJECT" &>/dev/null 2>&1; then
-    log "Deleting firewall rule: ${name}..."
-    run gcloud compute firewall-rules delete "$name" \
-      --project="$GCP_PROJECT" \
-      --quiet
-    ok "Firewall rule ${name} deleted."; (( DELETED++ )) || true
-  else
-    warn "Firewall rule ${name} not found — skipping."; (( MISSING++ )) || true
-  fi
-}
-
-# Read all vm_ and disk_ keys from state file and delete
 log "Reading resources from state file..."
-
-# VMs
-while IFS= read -r vm_name; do
-  [[ -n "$vm_name" ]] && delete_vm "$vm_name"
-done < <(jq -r 'to_entries[] | select(.key | startswith("vm_")) | .key | ltrimstr("vm_")' "$STATE_FILE" 2>/dev/null)
-
-# Disks
-while IFS= read -r disk_name; do
-  [[ -n "$disk_name" ]] && delete_disk "$disk_name"
-done < <(jq -r 'to_entries[] | select(.key | startswith("disk_")) | .key | ltrimstr("disk_")' "$STATE_FILE" 2>/dev/null)
-
-# Firewall rules
-while IFS= read -r fw; do
-  [[ -n "$fw" ]] && delete_firewall "$fw"
-done < <(jq -r 'to_entries[] | select(.key | startswith("firewall_")) | .key | ltrimstr("firewall_")' "$STATE_FILE")
-for fw in "instana-allow-ssh" "instana-allow-external" "instana-allow-k3s-subnets" "instana-allow-internal"; do
-  fw_key="fw_${fw#instana-allow-}"
-  if [[ "$(get_state "$fw_key")" == "created" ]]; then
-    delete_firewall "$fw"
-  fi
-done
+provider_destroy_from_state
 
 # Remove state file
 if [[ "$DRY_RUN" != true ]]; then

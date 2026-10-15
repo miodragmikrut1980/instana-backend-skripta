@@ -27,7 +27,7 @@ run_destroy() {
   local name="$1" state="$2" input="$3"; shift 3
   local dir="$TEST_ROOT/$name"
   mkdir -p "$dir"
-  cp "$SCRIPT_DIR/destroy.sh" "$dir/destroy.sh"
+  cp -R "$SCRIPT_DIR/destroy.sh" "$SCRIPT_DIR/providers" "$dir/"
   printf '%s\n' "$state" > "$dir/.install-state.json"
   : > "$dir/gcloud.log"
   (cd "$dir" && GCLOUD_LOG="$dir/gcloud.log" PATH="$TEST_ROOT/bin:$PATH" \
@@ -96,3 +96,14 @@ fi
 grep -q "invalid GCP project ID 'Bad_Project'" "$TEST_ROOT/bad_project/output.txt"
 test ! -s "$TEST_ROOT/bad_project/gcloud.log"
 echo 'PASS: invalid project ID is refused'
+
+# 7. A copy without the providers folder stops with a restore hint, deleting nothing.
+mkdir -p "$TEST_ROOT/no_providers"
+cp "$SCRIPT_DIR/destroy.sh" "$TEST_ROOT/no_providers/"
+printf '%s\n' "$FULL_STATE" > "$TEST_ROOT/no_providers/.install-state.json"
+if (cd "$TEST_ROOT/no_providers" && GCLOUD_LOG=/dev/null PATH="$TEST_ROOT/bin:$PATH" bash ./destroy.sh <<< 'DELETE test-project/us-central1-a' > out.txt 2>&1); then
+  echo "FAIL: destroy ran without providers/" >&2; exit 1
+fi
+grep -q 'providers/common.sh is missing' "$TEST_ROOT/no_providers/out.txt"
+test -f "$TEST_ROOT/no_providers/.install-state.json"
+echo 'PASS: missing providers/ folder is reported, nothing deleted'

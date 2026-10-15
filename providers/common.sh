@@ -31,6 +31,11 @@ ensure_disks
 ensure_firewall
 preflight_multi
 resume_check_vm
+destroy_target
+destroy_target_text
+destroy_validate_target
+destroy_from_state
+destroy_by_name
 "
 
 # The active provider lives in ACTIVE_PROVIDER, set only by resolve_provider;
