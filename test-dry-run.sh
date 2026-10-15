@@ -87,7 +87,7 @@ run_case() {
     if [[ "$name" == single_online_ssh ]]; then
       grep -q 'ufw allow 2222/tcp' output.txt
       grep -q 'analytics disk:              /dev/disk/by-id/scsi-0Disk_10.0.0.5_sdb → /mnt/instana/stanctl/analytics' output.txt
-      grep -q 'ssh .* -p 2222 ubuntu@10.0.0.5 -- ' "$SSH_LOG"
+      grep -q 'ssh .* -p 2222 -l ubuntu -- 10.0.0.5 ' "$SSH_LOG"
     fi
     if [[ "$name" == multi_airgapped_ssh ]]; then
       grep -q 'objects disk:                /dev/disk/by-id/scsi-0Disk_10.0.0.11_sdc → /mnt/instana/stanctl/objects' output.txt

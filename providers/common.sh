@@ -49,6 +49,7 @@ prepare_multi
 collect_host_params
 state_resource_pattern
 saved_param_keys
+check_saved_params
 "
 
 # The active provider lives in ACTIVE_PROVIDER, set only by resolve_provider;

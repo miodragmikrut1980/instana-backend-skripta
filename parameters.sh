@@ -7,6 +7,12 @@ PARAMETER_KEYS=(TOPOLOGY INSTALL_MODE INSTALL_TYPE UBUNTU_VERSION GCP_PROJECT
   MACHINE_TYPE BASE_DOMAIN TENANT_NAME UNIT_NAME TLS_MODE TLS_CRT_PATH
   TLS_KEY_PATH AIRGAP_ARCHIVE)
 
+# Provider parameters saved next to the common ones (none for GCP). The
+# provider layer is not loaded when this file is used on its own (tests).
+saved_provider_keys() {
+  ! declare -F provider_saved_param_keys >/dev/null || provider_saved_param_keys
+}
+
 save_parameters() {
   [[ "$DRY_RUN" == true ]] && return 0
   if [[ "${RESUME:-false}" == true ]]; then
@@ -16,7 +22,7 @@ save_parameters() {
   fi
   [[ ! -L "$CONFIG_FILE" ]] || die "Refusing symlink configuration."
   local key temp json='{}'
-  for key in "${PARAMETER_KEYS[@]}" $(provider_saved_param_keys); do
+  for key in "${PARAMETER_KEYS[@]}" $(saved_provider_keys); do
     json=$(jq --arg k "$key" --arg v "${!key:-}" '.[$k]=$v' <<< "$json")
   done
   if [[ "${TOPOLOGY:-}" == three-node && -f "$STATE_FILE" ]]; then
@@ -79,9 +85,10 @@ offer_saved_parameters() {
   fi
   CONFIG_LOADED=true
   [[ "$choice" == "reuse saved parameters" ]] || return 1
-  for key in "${PARAMETER_KEYS[@]}" $(provider_saved_param_keys); do
+  for key in "${PARAMETER_KEYS[@]}" $(saved_provider_keys); do
     printf -v "$key" '%s' "$(jq -r --arg k "$key" '.parameters[$k] // empty' "$CONFIG_FILE")"
   done
+  ! declare -F provider_check_saved_params >/dev/null || provider_check_saved_params
   [[ "$TOPOLOGY" == single-node || "$TOPOLOGY" == three-node ]] || die "Invalid saved topology."
   [[ "$INSTALL_MODE" == online || "$INSTALL_MODE" == air-gapped ]] || die "Invalid saved connectivity."
   [[ "$INSTALL_TYPE" == demo || "$INSTALL_TYPE" == production ]] || die "Invalid saved installation type."

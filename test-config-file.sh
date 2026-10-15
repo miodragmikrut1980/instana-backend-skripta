@@ -202,7 +202,7 @@ has "[PHASE 3/12] Host checks (OS, CPU, RAM, sudo)"
 has "lab-node-b: analytics → /dev/disk/by-id/scsi-0TEST_NODE1_analytics (1300 GB, now /dev/sdd)"
 hasnt "GCP Project:"
 hasnt "SSH source CIDR"
-grep -q 'ssh .* -p 22 ubuntu@10.0.0.12 -- ' "$SSH_LOG" || fail "no SSH call to node 1"
+grep -q 'ssh .* -p 22 -l ubuntu -- 10.0.0.12 ' "$SSH_LOG" || fail "no SSH call to node 1"
 echo "PASS: PROVIDER ssh from a file: no questions, hosts checked, disks mapped, dry-run completes"
 
 new_case ssh_bad

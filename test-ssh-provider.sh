@@ -21,14 +21,14 @@ base() {
   test "$(provider_label)" = "existing hosts"
   : > "$SSH_LOG"
   provider_ssh lab "" "" 'sudo bash -lc id'
-  expected="ssh -i $FAKE_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$TEST_DIR/.ssh-known-hosts -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 -o TCPKeepAlive=yes -p 2222 ubuntu@10.0.0.5 -- sudo bash -lc id"
+  expected="ssh -i $FAKE_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$TEST_DIR/.ssh-known-hosts -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 -o TCPKeepAlive=yes -p 2222 -l ubuntu -- 10.0.0.5 sudo bash -lc id"
   [[ "$(cat "$SSH_LOG")" == "$expected" ]] || { echo "FAIL: ssh arguments: $(cat "$SSH_LOG")" >&2; exit 1; }
   : > "$SSH_LOG"
   provider_scp /tmp/x.env lab "" "" /tmp/.stanctl.env
-  grep -qx "scp -i $FAKE_KEY .* -P 2222 /tmp/x.env ubuntu@10.0.0.5:/tmp/.stanctl.env" "$SSH_LOG"
+  grep -qx "scp -i $FAKE_KEY .* -P 2222 -o User=ubuntu -- /tmp/x.env 10.0.0.5:/tmp/.stanctl.env" "$SSH_LOG"
   : > "$SSH_LOG"
   provider_ssh_probe lab "" "" 20 5 'cat /proc/sys/kernel/random/boot_id' reboot
-  grep -q -- '-o ConnectTimeout=5 -p 2222 ubuntu@10.0.0.5 -- cat /proc/sys/kernel/random/boot_id' "$SSH_LOG"
+  grep -q -- '-o ConnectTimeout=5 -p 2222 -l ubuntu -- 10.0.0.5 cat /proc/sys/kernel/random/boot_id' "$SSH_LOG"
   test "$(provider_get_ip lab "" "" public)" = 10.0.0.5
   SSH_VIA_PRIVATE=true; test "$(provider_get_ip lab "" "" public)" = unknown
   test "$(provider_hint ssh lab "" "" 'df -h /')" = "ssh -i $FAKE_KEY -p 2222 ubuntu@10.0.0.5 'df -h /'"

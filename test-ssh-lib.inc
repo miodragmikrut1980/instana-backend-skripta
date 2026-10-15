@@ -12,7 +12,7 @@ ssh_fakes_setup() {
   cat > "$FAKE_ROOT/bin/ssh" <<'FAKE'
 #!/usr/bin/env bash
 echo "ssh $*" >> "$SSH_LOG"
-host=""; for a in "$@"; do [[ "$a" == *@* && -z "$host" ]] && host="${a#*@}"; done
+host=""; prev=""; for a in "$@"; do [[ "$prev" == "--" && -z "$host" ]] && host="$a"; prev="$a"; done
 cmd="${!#}"
 rc=0; [[ -f "$SCEN/$host.rc" ]] && rc=$(cat "$SCEN/$host.rc")
 if (( rc != 0 )); then cat "$SCEN/$host.err" >&2 2>/dev/null; exit "$rc"; fi

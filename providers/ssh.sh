@@ -40,6 +40,8 @@ prov_ssh_param_keys() {
 }
 
 # Saved in .install-config.json next to the common parameters.
+prov_ssh_check_saved_params() { prov_ssh_check_params; }
+
 prov_ssh_saved_param_keys() {
   local hosts="VM_HOST"
   [[ "${TOPOLOGY:-}" == three-node ]] && hosts="NODE0_HOST NODE1_HOST NODE2_HOST"
@@ -102,6 +104,34 @@ prov_ssh_expand_path() {
   [[ "$p" == "~" ]] && p="$HOME"
   [[ "$p" == "~/"* ]] && p="${HOME}/${p#\~/}"
   printf '%s' "$p"
+}
+
+# Keys this deployment needs, in the order they are asked.
+prov_ssh_required_keys() {
+  if [[ "${TOPOLOGY:-}" == three-node ]]; then echo NODE0_HOST NODE1_HOST NODE2_HOST; else echo VM_HOST; fi
+  echo SSH_USER SSH_KEY_PATH SSH_PORT
+  prov_ssh_disk_keys
+}
+
+# prov_ssh_check_params — every SSH value (typed, from a file, or loaded from
+# .install-config.json on reuse/--resume) passes the same check before any of
+# it is used in an ssh call, a local command or a remote root command.
+prov_ssh_check_params() {
+  local key reason
+  for key in $(prov_ssh_required_keys) SSH_VIA_PRIVATE; do
+    [[ "$key" == SSH_VIA_PRIVATE && -z "${SSH_VIA_PRIVATE:-}" ]] && continue
+    if [[ -z "${!key:-}" ]]; then
+      reason="${key} is empty."
+    elif reason=$(prov_ssh_validate_param "$key" "${!key}" 2>&1); then
+      continue
+    fi
+    reason=$(sed -e 's/\x1b\[[0-9;]*m//g' -e 's/^\[ERROR\] *//' <<< "$reason" | paste -sd' ' -)
+    die_with_steps "The saved parameter ${key} cannot be used: ${reason}" \
+      "*Why the installation stops: SSH values go into ssh commands and into commands run as root on the hosts; a value that fails the check is never used." \
+      "Look at the saved value:|jq -r '.parameters.${key}' ${CONFIG_FILE:-.install-config.json}" \
+      "Start a new deployment and enter the value again (or fix it in the input file):|./install.sh" \
+      "*A deployment that was already started keeps its saved parameters; restore the original .install-config.json, then continue with ./install.sh --resume."
+  done
 }
 
 # prompt_required validators.
@@ -182,19 +212,19 @@ prov_ssh_opts() {
 # project) are not used; exit 255 means the connection failed.
 prov_ssh_ssh() {
   local -a SSH_OPTS; prov_ssh_opts
-  ssh "${SSH_OPTS[@]}" -p "${SSH_PORT:-22}" "${SSH_USER}@$(prov_ssh_host_for "$1")" -- "$4"
+  ssh "${SSH_OPTS[@]}" -p "${SSH_PORT:-22}" -l "$SSH_USER" -- "$(prov_ssh_host_for "$1")" "$4"
 }
 
 # prov_ssh_ssh_probe NODE LOCATION SCOPE TIMEOUT_S CONNECT_TIMEOUT_S COMMAND [KIND]
 prov_ssh_ssh_probe() {
   local -a SSH_OPTS; prov_ssh_opts
-  timeout "${4}s" ssh "${SSH_OPTS[@]}" -o "ConnectTimeout=${5}" -p "${SSH_PORT:-22}" "${SSH_USER}@$(prov_ssh_host_for "$1")" -- "$6"
+  timeout "${4}s" ssh "${SSH_OPTS[@]}" -o "ConnectTimeout=${5}" -p "${SSH_PORT:-22}" -l "$SSH_USER" -- "$(prov_ssh_host_for "$1")" "$6"
 }
 
 # prov_ssh_scp LOCAL_FILE NODE LOCATION SCOPE REMOTE_PATH [KIND]
 prov_ssh_scp() {
   local -a SSH_OPTS; prov_ssh_opts
-  scp "${SSH_OPTS[@]}" -P "${SSH_PORT:-22}" "$1" "${SSH_USER}@$(prov_ssh_host_for "$2"):${5}"
+  scp "${SSH_OPTS[@]}" -P "${SSH_PORT:-22}" -o "User=${SSH_USER}" -- "$1" "$(prov_ssh_host_for "$2"):${5}"
 }
 
 # prov_ssh_get_ip NODE LOCATION SCOPE public|private
@@ -317,7 +347,10 @@ prov_ssh_gather_facts() {
     key="${line%%=*}"; value="${line#*=}"
     case "$key" in
       DISK) SSH_FACT["${host}|DISKS"]+="${value}"$'\n' ;;
-      LINK) links+=("$value"); SSH_FACT_LINKS+=("${host}|${value}") ;;
+      LINK)
+        # Paths come from the host's udev; only plain stable names are used.
+        [[ "${value%%|*}" =~ ^/dev/disk/by-(id|path)/[A-Za-z0-9._:+@-]+$ && "${value#*|}" =~ ^/dev/[A-Za-z0-9/_-]+$ ]] || continue
+        links+=("$value"); SSH_FACT_LINKS+=("${host}|${value}") ;;
       HOSTNAME|OS_ID|OS_VERSION|OS_NAME|ARCH|CPUS|MEM_KB|ROOT_SIZE|ROOT_FREE|SUDO|K3S|STANCTL|FIREWALLD|MACHINE_ID|SSHD22|NTP)
         SSH_FACT["${host}|${key}"]="$value" ;;
     esac
@@ -584,6 +617,7 @@ prov_ssh_validate_config() {
   # The shared phase code passes zone and project to every remote call; for
   # existing hosts they are empty (prov_ssh_ssh ignores them).
   GCP_ZONE="${GCP_ZONE:-}" GCP_PROJECT="${GCP_PROJECT:-}"
+  prov_ssh_check_params
   prov_ssh_agent_preflight
   local host
   while IFS= read -r host; do prov_ssh_ensure_facts "$host"; done < <(prov_ssh_hosts)
