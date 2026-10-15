@@ -128,7 +128,7 @@ prov_ssh_check_params() {
     reason=$(sed -e 's/\x1b\[[0-9;]*m//g' -e 's/^\[ERROR\] *//' <<< "$reason" | paste -sd' ' -)
     die_with_steps "The saved parameter ${key} cannot be used: ${reason}" \
       "*Why the installation stops: SSH values go into ssh commands and into commands run as root on the hosts; a value that fails the check is never used." \
-      "Look at the saved value:|jq -r '.parameters.${key}' ${CONFIG_FILE:-.install-config.json}" \
+      "Look at the saved value:|jq -r '.parameters.${key}' $(prov_ssh_q "${CONFIG_FILE:-.install-config.json}")" \
       "Start a new deployment and enter the value again (or fix it in the input file):|./install.sh" \
       "*A deployment that was already started keeps its saved parameters; restore the original .install-config.json, then continue with ./install.sh --resume."
   done
@@ -239,12 +239,17 @@ prov_ssh_get_ip() {
   if [[ "$host" =~ ^[0-9.]+$ ]]; then echo "$host"; else getent ahostsv4 "$host" 2>/dev/null | awk 'NR==1{print $1}'; fi
 }
 
+# Shell-quoted value for commands printed to be copied (paths may hold spaces).
+prov_ssh_q() { printf '%q' "$1"; }
+# The ssh command line an operator can paste to reach HOST.
+prov_ssh_cmd_line() { printf 'ssh -i %s -p %s %s@%s' "$(prov_ssh_q "$SSH_KEY_PATH")" "${SSH_PORT:-22}" "$SSH_USER" "$1"; }
+
 prov_ssh_hint() {
   local kind="$1" node="$2" cmd="${5:-}" host
   host=$(prov_ssh_host_for "$node")
   case "$kind" in
     ssh)
-      local base="ssh -i ${SSH_KEY_PATH} -p ${SSH_PORT:-22} ${SSH_USER}@${host}"
+      local base; base=$(prov_ssh_cmd_line "$host")
       if [[ -n "$cmd" ]]; then printf '%s\n' "${base} '${cmd}'"; else printf '%s\n' "$base"; fi ;;
     cpu_platform)
       printf '%s\n' "The CPU of ${host} lacks x86-64-v3 instructions; this cannot be fixed on the host. Use a machine with a newer CPU (Intel Haswell / AMD Excavator or newer; on a VM: a machine type that exposes AVX2), then start again:|./install.sh" ;;
@@ -270,7 +275,7 @@ prov_ssh_agent_preflight() {
   if [[ -z "${SSH_AUTH_SOCK:-}" || "$rc" == 2 ]]; then
     die_with_steps "SSH key ${key} is protected by a passphrase, and no ssh-agent is running in this shell to hold it." \
       "*Why the installation stops: every step runs over SSH without prompts (BatchMode); a passphrase cannot be typed for each of the hundreds of SSH calls." \
-      "Start an agent in this shell and load the key once (ssh-add asks for the passphrase):|eval \"\$(ssh-agent -s)\" && ssh-add ${key}" \
+      "Start an agent in this shell and load the key once (ssh-add asks for the passphrase):|eval \"\$(ssh-agent -s)\" && ssh-add $(prov_ssh_q "$key")" \
       "How to continue afterwards (in the same shell):|$(prov_ssh_continue_cmd)"
   fi
   if [[ -n "$fp" ]] && ssh-add -l 2>/dev/null | grep -qF "$fp"; then
@@ -285,7 +290,7 @@ prov_ssh_agent_preflight() {
   fi
   die_with_steps "SSH key ${key} is protected by a passphrase and could not be loaded into ssh-agent." \
     "*Why the installation stops: every step runs over SSH without prompts (BatchMode), so the key must be available in ssh-agent." \
-    "Load the key once in this shell (ssh-add asks for the passphrase):|ssh-add ${key}" \
+    "Load the key once in this shell (ssh-add asks for the passphrase):|ssh-add $(prov_ssh_q "$key")" \
     "*If no agent is running, start one first: eval \"\$(ssh-agent -s)\"" \
     "How to continue afterwards (in the same shell):|$(prov_ssh_continue_cmd)"
 }
@@ -329,14 +334,14 @@ prov_ssh_gather_facts() {
         "a changed host key means the address now leads to another machine, or the host was reinstalled; continuing could install on the wrong machine." \
         "$(prov_ssh_continue_cmd)" \
         "Check that ${host} is still the intended machine (console, hostname, IP)." \
-        "If the host was deliberately reinstalled, forget its old key:|ssh-keygen -R ${host} -f ${SSH_KNOWN_HOSTS_FILE}"
+        "If the host was deliberately reinstalled, forget its old key:|ssh-keygen -R ${host} -f $(prov_ssh_q "$SSH_KNOWN_HOSTS_FILE")"
     fi
     if (( rc == 124 )); then msg="no answer within 60 seconds${msg:+ (${msg})}"; fi
     host_stop "$host" "SSH login as ${SSH_USER} on port ${SSH_PORT:-22} with key ${SSH_KEY_PATH} failed: ${msg:-exit code ${rc}}." \
       "the installer runs every step on the host over SSH; without a working login nothing can be checked or installed." \
       "$(prov_ssh_continue_cmd)" \
-      "Try the same login by hand; it must work without a password prompt:|ssh -i ${SSH_KEY_PATH} -p ${SSH_PORT:-22} ${SSH_USER}@${host} true" \
-      "*If it asks for a password or is refused: authorize the key on the host (ssh-copy-id -i ${SSH_KEY_PATH}.pub -p ${SSH_PORT:-22} ${SSH_USER}@${host})." \
+      "Try the same login by hand; it must work without a password prompt:|$(prov_ssh_cmd_line "$host") true" \
+      "*If it asks for a password or is refused: authorize the key on the host ($(printf 'ssh-copy-id -i %s -p %s %s@%s' "$(prov_ssh_q "${SSH_KEY_PATH}.pub")" "${SSH_PORT:-22}" "$SSH_USER" "$host"))." \
       "*If it times out: check that the host is running and that port ${SSH_PORT:-22} is open from this machine."
   fi
   rm -f "$errf"
@@ -359,7 +364,7 @@ prov_ssh_gather_facts() {
   SSH_FACT["${host}|GATHERED"]=1
   local dev bytes parts mounts fstype model stable l target best
   while IFS='|' read -r dev bytes parts mounts fstype model; do
-    [[ -n "$dev" ]] || continue
+    [[ "$dev" =~ ^/dev/[A-Za-z0-9/_-]+$ && "$bytes" =~ ^[0-9]+$ && "$parts" =~ ^[0-9]+$ ]] || continue
     best=""
     for l in "${links[@]}"; do
       target="${l#*|}"; [[ "$target" == "$dev" ]] || continue
@@ -603,7 +608,7 @@ prov_ssh_choose_disk() {
     host_stop "$host" "no unused disk of at least ${min} GB is available for the ${role,,} data ($(prov_ssh_disk_summary "$host"))." \
       "IBM requires a dedicated disk per Instana data directory; the installer never uses the system disk, a mounted or partitioned disk, or one disk for two roles." \
       "$(prov_ssh_continue_cmd)" \
-      "Attach an empty disk of at least ${min} GB to ${host} (no partitions, not mounted), then check it is visible:|ssh -i ${SSH_KEY_PATH} -p ${SSH_PORT:-22} ${SSH_USER}@${host} lsblk -dp -o NAME,SIZE,TYPE,MOUNTPOINT"
+      "Attach an empty disk of at least ${min} GB to ${host} (no partitions, not mounted), then check it is visible:|$(prov_ssh_cmd_line "$host") lsblk -dp -o NAME,SIZE,TYPE,MOUNTPOINT"
   fi
   if [[ ! -t 0 && -n "${INPUT_NONINTERACTIVE:-}" ]]; then
     host_stop "$host" "no disk is chosen for the ${role,,} data (${key} is missing or not usable) and there is no terminal to ask." \
@@ -837,7 +842,7 @@ prov_ssh_ensure_disks() {
         host_stop "$host" "the disk for ${role,,} (${path}, now ${dev}) is $( [[ "$parts" != 1 ]] && echo partitioned || echo "mounted at ${mounts}" )." \
           "a data disk must be a whole, unused disk; the installer never repartitions or unmounts a disk that may hold data." \
           "$(prov_ssh_continue_cmd)" \
-          "Check what is on it:|ssh -i ${SSH_KEY_PATH} -p ${SSH_PORT:-22} ${SSH_USER}@${host} lsblk -p ${dev}" \
+          "Check what is on it:|$(prov_ssh_cmd_line "$host") lsblk -p ${dev}" \
           "*If it holds nothing you need: unmount it and remove its partitions (wipefs -a ${dev} deletes the signatures), or choose another disk in a new run."
       fi
       [[ "$DRY_RUN" == true ]] || save_state "hostdisk_${node}-${role,,}" "$path"
@@ -850,7 +855,8 @@ prov_ssh_ensure_disks() {
 # "Blank" for the installer means: no signature blkid knows. Disks on hosts the
 # installer does not own may hold data without one (raw database files, an
 # encrypted volume, another OS); such a disk is formatted only when its first
-# and last megabyte are all zeros. Read-only; a disk with a signature is left
+# and last MiB (by byte offset, so a size that is not a multiple of 1 MiB
+# still has its very end checked, where a GPT backup header sits) are zeros. Read-only; a disk with a signature is left
 # to the existing checks (empty ext4 adoption, refusal of anything else).
 prov_ssh_check_blank_disk() {
   local node="$1" device="$2" path host out
@@ -859,9 +865,10 @@ prov_ssh_check_blank_disk() {
 dev='${path}'
 test -b \"\$dev\"
 if blkid \"\$dev\" >/dev/null 2>&1; then echo SIGNED; exit 0; fi
-mb=\$(( \$(blockdev --getsize64 \"\$dev\") / 1048576 ))
+size=\$(blockdev --getsize64 \"\$dev\")
+start=\$(( size > 1048576 ? size - 1048576 : 0 ))
 first=\$(head -c 1048576 \"\$dev\" | tr -d '\\000' | wc -c)
-last=\$(dd if=\"\$dev\" bs=1M skip=\$(( mb - 1 )) count=1 2>/dev/null | tr -d '\\000' | wc -c)
+last=\$(dd if=\"\$dev\" bs=1M iflag=skip_bytes,count_bytes skip=\$start count=1048576 2>/dev/null | tr -d '\\000' | wc -c)
 echo \"ZEROCHECK:\$first:\$last\"") ||
     host_stop "$host" "the data disk ${path} could not be read before formatting." \
       "the installer formats a disk without a filesystem only after checking that it holds no data." \
@@ -871,11 +878,11 @@ echo \"ZEROCHECK:\$first:\$last\"") ||
   case "$out" in
     SIGNED|ZEROCHECK:0:0) return 0 ;;
   esac
-  host_stop "$host" "the disk ${path} has no filesystem signature, but its first or last megabyte is not empty (${out#ZEROCHECK:} non-zero bytes)." \
+  host_stop "$host" "the disk ${path} has no filesystem signature, but its first or last MiB is not empty (${out#ZEROCHECK:} non-zero bytes)." \
     "it may hold data without a filesystem signature (raw database files, an encrypted volume, another operating system); formatting would destroy it, so the installer never formats it on its own." \
     "./install.sh --resume" \
     "Look at the start of the disk to see what it holds:|$(prov_ssh_hint ssh "$node" "" "" "sudo hexdump -C -n 512 ${path}")" \
-    "Only if it holds nothing you need, wipe it yourself (start and end of the disk):|sudo wipefs -a ${path} && sudo dd if=/dev/zero of=${path} bs=1M count=10 && sudo dd if=/dev/zero of=${path} bs=1M count=1 seek=\$(( \$(sudo blockdev --getsize64 ${path}) / 1048576 - 1 ))"
+    "Only if it holds nothing you need, wipe it yourself (start and end of the disk):|sudo wipefs -a ${path} && sudo dd if=/dev/zero of=${path} bs=1M count=10 && sudo dd if=/dev/zero of=${path} bs=1M count=1 oflag=seek_bytes seek=\$(( \$(sudo blockdev --getsize64 ${path}) - 1048576 ))"
 }
 
 # ── Phase 5: network ports ───────────────────────────────────────────────────
@@ -898,7 +905,7 @@ prov_ssh_ensure_firewall() {
       host_stop "$host" "TCP port ${SSH_PORT} (SSH) cannot be reached from this machine any more." \
         "every remaining step runs over SSH." \
         "$(prov_ssh_continue_cmd)" \
-        "Check that the host is running and the network allows TCP ${SSH_PORT} from this machine:|ssh -i ${SSH_KEY_PATH} -p ${SSH_PORT} ${SSH_USER}@${host} true"
+        "Check that the host is running and the network allows TCP ${SSH_PORT} from this machine:|$(prov_ssh_cmd_line "$host") true"
     fi
   done < <(prov_ssh_hosts)
   warn "Ports 80, 443 and 8443$( [[ "${TOPOLOGY:-}" == three-node ]] && echo " and the node-to-node ports" ) can only be tested after Instana is running."

@@ -107,7 +107,7 @@ echo SIGNED > "$SCEN/h1.zero"
 ( init; base_disks; prov_ssh_check_blank_disk lab disk-data ) > "$OUT" 2>&1
 echo ZEROCHECK:512:0 > "$SCEN/h1.zero"
 if ( init; base_disks; prov_ssh_check_blank_disk lab disk-data ) > "$OUT" 2>&1; then echo "FAIL: non-zero disk accepted" >&2; exit 1; fi
-stop_ok "non-zero data without a signature" "Host h1: the disk /dev/disk/by-id/scsi-0Disk_h1_sde has no filesystem signature, but its first or last megabyte is not empty (512:0 non-zero bytes)." \
+stop_ok "non-zero data without a signature" "Host h1: the disk /dev/disk/by-id/scsi-0Disk_h1_sde has no filesystem signature, but its first or last MiB is not empty (512:0 non-zero bytes)." \
   "sudo wipefs -a /dev/disk/by-id/scsi-0Disk_h1_sde && sudo dd if=/dev/zero of=/dev/disk/by-id/scsi-0Disk_h1_sde bs=1M count=10"
 plain | grep -q 'may hold data without a filesystem signature'
 rm -f "$SCEN/h1.zero"
@@ -123,4 +123,50 @@ rm -f "$SCEN/h1.zero"
 grep -q CHECKED "$FAKE_ROOT/calls"
 if grep -q mkfs "$FAKE_ROOT/calls"; then echo "FAIL: mkfs ran after a failed zero check" >&2; exit 1; fi
 echo 'PASS: the zero check runs before mkfs and a failure formats nothing'
+
+# Three-node: the zero check also guards the mount step of node 1 (resume_mount).
+three() {
+  INSTANA_PROVIDER=ssh resolve_provider
+  DRY_RUN=false RESUME=false TOPOLOGY=three-node INSTALL_TYPE=production
+  SSH_USER=ubuntu SSH_KEY_PATH="$FAKE_KEY" SSH_PORT=22
+  NODE0_NAME=n0 NODE1_NAME=n1 NODE2_NAME=n2 NODE0_HOST=h0 NODE1_HOST=h1 NODE2_HOST=h2
+  DISK_DEV_NODE1_DATA=/dev/disk/by-id/scsi-0Disk_h1_sdb GCP_ZONE="" GCP_PROJECT=""
+}
+echo ZEROCHECK:0:7 > "$SCEN/h1.zero"
+: > "$SSH_LOG"
+if ( three; resume_mount n1 disk-data /mnt/instana/stanctl/data ) > "$OUT" 2>&1; then echo "FAIL: three-node mount went on over non-zero data" >&2; exit 1; fi
+stop_ok "three-node non-zero data" "Host h1: the disk /dev/disk/by-id/scsi-0Disk_h1_sdb has no filesystem signature, but its first or last MiB is not empty (0:7 non-zero bytes)." "sudo wipefs -a /dev/disk/by-id/scsi-0Disk_h1_sdb"
+if grep -q mkfs "$SSH_LOG"; then echo "FAIL: mkfs reached the host" >&2; exit 1; fi
+rm -f "$SCEN/h1.zero"
+( three; resume_mount n1 disk-data /mnt/instana/stanctl/data ) > "$OUT" 2>&1
+grep -q mkfs "$SSH_LOG"
+echo 'PASS: three-node mount step: non-zero data stops before mkfs, zeros continue'
+
+# A failing read is a stop, never "blank".
+echo 1 > "$SCEN/h1.zerorc"
+if ( init; base_disks; prov_ssh_check_blank_disk lab disk-data ) > "$OUT" 2>&1; then echo "FAIL: unreadable disk accepted" >&2; exit 1; fi
+stop_ok "unreadable disk" "Host h1: the data disk /dev/disk/by-id/scsi-0Disk_h1_sde could not be read before formatting." "sudo blockdev --getsize64 /dev/disk/by-id/scsi-0Disk_h1_sde"
+rm -f "$SCEN/h1.zerorc"
+
+# The remote script itself, run against image files: the very last bytes are
+# read even when the size is not a multiple of 1 MiB (GPT backup header).
+(
+  init; base_disks
+  remote_exec() { printf '%s' "$4" > "$FAKE_ROOT/zero.sh"; echo ZEROCHECK:0:0; }
+  prov_ssh_check_blank_disk lab disk-data > /dev/null 2>&1
+)
+zero_run() {
+  sed -e "s#/dev/disk/by-id/scsi-0Disk_h1_sde#$1#" -e 's#test -b#test -f#' -e 's#blkid "$dev"#false#' \
+      -e 's#blockdev --getsize64 "$dev"#stat -c %s "$dev"#' "$FAKE_ROOT/zero.sh" > "$FAKE_ROOT/zero-run.sh"
+  bash "$FAKE_ROOT/zero-run.sh" | tail -n 1
+}
+img="$FAKE_ROOT/disk.img"
+head -c 5767168 /dev/zero > "$img"                      # 5.5 MiB, all zeros
+test "$(zero_run "$img")" = ZEROCHECK:0:0
+printf '\x01' | dd of="$img" bs=1 seek=5600000 conv=notrunc 2>/dev/null   # inside the last 0.5 MiB
+test "$(zero_run "$img")" = ZEROCHECK:0:1
+head -c 5767168 /dev/zero > "$img"
+printf '\x01' | dd of="$img" bs=1 seek=4000 conv=notrunc 2>/dev/null
+test "$(zero_run "$img")" = ZEROCHECK:1:0
+echo 'PASS: the zero check reads the first MiB and the last MiB by byte offset (5.5 MiB image)'
 

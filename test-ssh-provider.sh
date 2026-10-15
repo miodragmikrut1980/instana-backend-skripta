@@ -33,6 +33,10 @@ base() {
   SSH_VIA_PRIVATE=true; test "$(provider_get_ip lab "" "" public)" = unknown
   test "$(provider_hint ssh lab "" "" 'df -h /')" = "ssh -i $FAKE_KEY -p 2222 ubuntu@10.0.0.5 'df -h /'"
   test "$(provider_ssh_port)" = 2222
+  # Paths in copy-paste commands are shell-quoted (spaces, $(...) never run on paste).
+  SSH_KEY_PATH='/tmp/my keys/id$(touch x)'
+  test "$(provider_hint ssh lab "" "" true)" = "ssh -i /tmp/my\\ keys/id\\\$\\(touch\\ x\\) -p 2222 ubuntu@10.0.0.5 'true'"
+  SSH_KEY_PATH="$FAKE_KEY"
   TOPOLOGY=three-node NODE0_NAME=n0 NODE1_NAME=n1 NODE2_NAME=n2 NODE0_HOST=h0 NODE1_HOST=h1 NODE2_HOST=h2
   test "$(prov_ssh_host_for n1)" = h1
   test "$(prov_ssh_disk_key_for n1 METRICS)" = DISK_DEV_NODE1_METRICS
