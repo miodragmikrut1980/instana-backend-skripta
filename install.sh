@@ -77,7 +77,7 @@ on_exit_report() {
   (( rc != 130 && rc != 143 )) || return 0        # Ctrl+C / terminated by hand
   [[ "$ERROR_REPORTED" != true ]] || return 0
   ERROR_REPORTED=true
-  err "A step failed unexpectedly (exit code ${rc}):"
+  err "A step failed unexpectedly (exit code ${rc}) after $(declare -F run_elapsed >/dev/null && run_elapsed || echo '?') in this run:"
   if [[ -n "${LAST_FAILED_STEP:-}" ]]; then
     err "  ${LAST_FAILED_STEP}"
   elif [[ -n "$cmd" ]]; then
@@ -2225,6 +2225,7 @@ print_final_report() {
     echo "  Admin user:      admin@instana.local"
     echo "  External IP:     ${external_ip}"
     echo "  Backend version: ${BACKEND_VERSION:-$(get_state backend_version)}   (stanctl ${STANCTL_CLI_VERSION:-$(get_state stanctl_cli_version)})"
+    echo "  Total time:      this run $(run_elapsed) (started ${RUN_STARTED_AT}); all phases together $(fmt_duration "$(phases_total_seconds)")"
     echo "  /etc/hosts entries:"
     printf '    %s %s\n' "$external_ip" "$BASE_DOMAIN" \
       "$external_ip" "${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}" \
@@ -2245,6 +2246,7 @@ print_final_report() {
   echo -e "  ${BOLD}Admin user:${RESET}      admin@instana.local"
   echo -e "  ${BOLD}External IP:${RESET}     ${external_ip}"
   echo -e "  ${BOLD}Backend version:${RESET} ${BACKEND_VERSION:-$(get_state backend_version)}   (stanctl ${STANCTL_CLI_VERSION:-$(get_state stanctl_cli_version)})"
+  echo -e "  ${BOLD}Total time:${RESET}      this run $(run_elapsed) (started ${RUN_STARTED_AT}); all phases together $(fmt_duration "$(phases_total_seconds)")"
   echo ""
   echo -e "  ${YELLOW}Ready-to-copy /etc/hosts entries:${RESET}"
   printf '    %s %s\n' "$external_ip" "$BASE_DOMAIN" \

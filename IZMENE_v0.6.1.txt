@@ -27,3 +27,13 @@ about 20 minutes into the run, after the VM and disks were already created.
   box naming the missing flags, the CPU model, and the gcloud commands to
   move the VM to an n2/Cascade Lake platform, then --resume. n2-standard
   machine types, which the installer uses, provide x86-64-v3.
+
+2026-10-15 — run time is measured and shown
+- Every phase prints how long it took and how long the run has been going
+  ("Phase 7 took 4m 12s; running for 18m 03s since start (…)").
+- The checklist shows each completed phase's duration, also for phases
+  completed in an earlier run (durations are kept in .install-state.json).
+- The final summary, the final report and .install-report.txt carry
+  "Total time: this run … ; all phases together …" — the second figure is
+  the real installation work time across resumes.
+- A stop (error or unexpected failure) says how long the run lasted.

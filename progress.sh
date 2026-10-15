@@ -18,7 +18,27 @@ declare -a PROGRESS_TITLES=(
   "Health checks and local access instructions"
 )
 declare -a PROGRESS_STATUS
+declare -a PHASE_STARTED      # SECONDS when the phase started (this run)
+declare -a PHASE_SECONDS      # duration of the phase, this run or a previous one
 PROGRESS_CURRENT=0
+RUN_STARTED_SECONDS=$SECONDS
+RUN_STARTED_AT=$(date '+%Y-%m-%d %H:%M:%S')
+
+# fmt_duration SECONDS → "1h 02m 03s" / "4m 12s" / "37s"
+fmt_duration() {
+  local t=${1:-0}
+  if (( t >= 3600 )); then printf '%dh %02dm %02ds' $((t/3600)) $((t%3600/60)) $((t%60))
+  elif (( t >= 60 )); then printf '%dm %02ds' $((t/60)) $((t%60))
+  else printf '%ds' "$t"; fi
+}
+run_elapsed() { fmt_duration $(( SECONDS - RUN_STARTED_SECONDS )); }
+# Sum of every phase's recorded duration (this run plus earlier runs taken
+# from the state file) = the real installation work time across resumes.
+phases_total_seconds() {
+  local i t=0
+  for ((i=1; i<=PROGRESS_TOTAL; i++)); do t=$(( t + ${PHASE_SECONDS[$i]:-0} )); done
+  echo "$t"
+}
 
 progress_emit() { echo -e "$*" | tee -a "$LOG_FILE"; }
 
@@ -68,7 +88,11 @@ progress_checklist() {
       failed) mark="${RED}✗${RESET}";;
       *) mark=" ";;
     esac
-    progress_emit "  [${mark}] ${i}/${PROGRESS_TOTAL} ${PROGRESS_TITLES[$i]}"
+    if [[ -n "${PHASE_SECONDS[$i]:-}" ]]; then
+      progress_emit "  [${mark}] ${i}/${PROGRESS_TOTAL} ${PROGRESS_TITLES[$i]}  ($(fmt_duration "${PHASE_SECONDS[$i]}"))"
+    else
+      progress_emit "  [${mark}] ${i}/${PROGRESS_TOTAL} ${PROGRESS_TITLES[$i]}"
+    fi
   done
   progress_emit ""
 }
@@ -80,6 +104,8 @@ progress_init() {
     if [[ "$DRY_RUN" != true && -f "$STATE_FILE" ]]; then
       saved=$(get_state "progress_phase_${i}" 2>/dev/null || true)
       [[ "$saved" == completed ]] && PROGRESS_STATUS[$i]=done
+      saved=$(get_state "progress_phase_${i}_seconds" 2>/dev/null || true)
+      [[ "$saved" =~ ^[0-9]+$ ]] && PHASE_SECONDS[$i]="$saved"
     fi
   done
   progress_checklist
@@ -94,6 +120,7 @@ phase_start() {
   local number="$1" explanation="$2"
   PROGRESS_CURRENT="$number"
   PROGRESS_STATUS[$number]=active
+  PHASE_STARTED[$number]=$SECONDS
   progress_emit "${BOLD}${CYAN}[PHASE ${number}/${PROGRESS_TOTAL}] ${PROGRESS_TITLES[$number]}${RESET}"
   progress_emit "  ${explanation}"
   progress_emit "  Overall progress before this phase: $(progress_percent)%"
@@ -115,8 +142,14 @@ phase_detail() {
 phase_done() {
   local number="${1:-$PROGRESS_CURRENT}" message="${2:-Phase completed.}"
   PROGRESS_STATUS[$number]=done
-  [[ "$DRY_RUN" == true ]] || save_state "progress_phase_${number}" completed
+  local took=$(( SECONDS - ${PHASE_STARTED[$number]:-$SECONDS} ))
+  PHASE_SECONDS[$number]=$took
+  if [[ "$DRY_RUN" != true ]]; then
+    save_state "progress_phase_${number}" completed
+    save_state "progress_phase_${number}_seconds" "$took"
+  fi
   phase_detail done "$message"
+  progress_emit "  Phase ${number} took $(fmt_duration "$took"); running for $(run_elapsed) since start ($RUN_STARTED_AT)."
   progress_emit "  Overall progress: $(progress_percent)%"
   if (( $(progress_percent) == 100 )); then
     progress_bar complete
@@ -143,6 +176,7 @@ progress_fail_current() {
   if (( PROGRESS_CURRENT > 0 )); then
     PROGRESS_STATUS[$PROGRESS_CURRENT]=failed
     phase_detail fail "Phase ${PROGRESS_CURRENT} stopped: ${message}"
+    progress_emit "  Stopped after $(run_elapsed) in this run (started $RUN_STARTED_AT)."
     progress_bar stopped
     progress_emit "  Correct the reported problem and rerun with --resume when supported."
   fi
@@ -152,4 +186,5 @@ progress_summary() {
   progress_checklist
   progress_bar complete
   progress_emit "${GREEN}${BOLD}All required phases completed.${RESET}"
+  progress_emit "  Total time: this run $(run_elapsed) (started $RUN_STARTED_AT); all phases together $(fmt_duration "$(phases_total_seconds)")."
 }
