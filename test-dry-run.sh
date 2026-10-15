@@ -72,7 +72,8 @@ run_case() {
       grep -q 'extract stanctl 1.10.9 from it and import backend 3.285.123-0' output.txt
       if grep -q 'instana-version' output.txt; then echo "FAIL: test-dry-run.sh:73: unexpected match" >&2; exit 1; fi
       if grep -q 'dpkg' output.txt; then echo "FAIL: test-dry-run.sh:74: unexpected match" >&2; exit 1; fi
-      if grep -q '\.deb' output.txt; then echo "FAIL: test-dry-run.sh:75: unexpected match" >&2; exit 1; fi
+      # The package explanation itself says no separate stanctl .deb is needed; any other .deb is a failure.
+      if awk '/\.deb/ && !/No separate stanctl \.deb package is needed/ {found=1} END {exit !found}' output.txt; then echo "FAIL: test-dry-run.sh:76: unexpected .deb in the air-gapped output" >&2; exit 1; fi
     else
       grep -q -- "--instana-version 'DRY-RUN-COMPATIBLE-SELECTION'" output.txt
     fi
