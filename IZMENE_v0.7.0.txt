@@ -37,3 +37,52 @@ provider and its behaviour is unchanged.
   (exact gcloud arguments of SSH, probes, copies and IP lookups). The other
   tests copy the whole folder instead of a fixed file list. The dry-run
   output of all test-dry-run cases is unchanged.
+
+2026-10-15 — Parameters from a JSON file (--config, config-generator.html)
+Why: a lab is often prepared ahead of time or repeated with small changes;
+answering 25 questions each time is slow and error-prone. The parameters
+can now be prepared in a browser page and handed to the installer, which
+still checks every value and asks only what is missing or wrong.
+- config-generator.html (works offline from file://) builds the input file
+  (schema instana-installer-input, schema_version 1). examples/ holds input
+  files for every case, with README.txt describing the expected behaviour.
+- New input-config.sh. ./install.sh --config FILE, or "import them from a
+  JSON file" in the new menu "How do you want to provide the deployment
+  parameters?" (enter now / import / reuse saved / edit saved). The menu
+  replaces the separate "Previous configuration found" question for a new
+  deployment; --resume is unchanged.
+- Each value from the file gets the same check as a typed answer. A summary
+  shows ok / ask (with the reason) / skip. A missing or invalid value is
+  explained, then asked as usual; the bad value is never offered as default.
+- Without a terminal (--config with stdin not a terminal) the installer stops
+  before the first question and lists every missing or invalid value with
+  what it is for and a valid example (HOW TO RESOLVE).
+- Keys and admin password: asked hidden by default; may come from the file
+  (made owner-only, 600, with a warning) or from INSTANA_DOWNLOAD_KEY,
+  INSTANA_AGENT_KEY, INSTANA_SALES_KEY, INSTANA_ADMIN_PASSWORD. Never shown or
+  logged. After Start the installer offers to blank them in the file; nothing
+  is changed without yes.
+- PROVIDER_SCOPE/REGION/LOCATION/NETWORK/SUBNET in a file are accepted as
+  GCP_* aliases; two different values for one setting are chosen in a
+  terminal or listed without one. GCP_REGION follows from GCP_ZONE when only
+  the zone is given. Unknown keys are ignored with a "did you mean" hint.
+  PROVIDER "ssh" stops with an explanation (existing hosts come next).
+- Versions in the file are taken when the live list offers them; otherwise
+  the list is shown. Air-gapped: versions come from the package.
+- Plan for a new deployment: Y start, E change one value (every other value
+  is kept and re-checked, then the plan is shown again), S save the
+  parameters to a new input file without keys, N cancel.
+- ./install.sh --export-config [FILE] writes the parameters saved in this
+  folder (.install-config.json) as an input file without keys.
+- A recorded three-node deployment in the folder still leads to the resume /
+  set-aside question; resume from a file is refused with the command to use
+  (./install.sh --resume). --config together with --resume is refused.
+- Three-node no longer asks the machine size: the lab supports only the
+  fixed small size (3x n2-standard-16), so the question could only lead to a
+  later stop.
+- Typed VM names, GCP region, zone, network and subnet are now checked when
+  entered (re-asked at once instead of stopping later).
+- Tests: new test-config-file.sh (20 cases on examples/). test-dry-run.sh:
+  inputs start with the menu answer, three-node size answer removed;
+  assertions unchanged. Dry-run output differs only by the menu, the E/S
+  lines of the plan and the fixed-size line for three-node.

@@ -161,6 +161,7 @@ pre#preview .x{color:#F08A80;text-decoration:underline wavy #F08A80}
   <div class="body">
     <h2>Existing hosts</h2>
     <p class="lead">The script connects with SSH from the control VM, checks the hardware and installs. It does not create or delete machines.</p>
+    <p class="note warn">Not available in the installer yet: this version stops with an explanation when the file says existing hosts. Fill it in now and keep the file for the next version, or choose Google Cloud.</p>
     <div class="grid">
       <div class="field"><label class="lbl" for="SSH_USER">SSH user</label><input type="text" class="code" id="SSH_USER" placeholder="ubuntu"><span class="msg"></span></div>
       <div class="field"><label class="lbl" for="SSH_PORT">Port</label><input type="text" class="code" id="SSH_PORT" value="22"><span class="msg"></span></div>
@@ -242,10 +243,10 @@ pre#preview .x{color:#F08A80;text-decoration:underline wavy #F08A80}
   <div class="num" data-n>7</div>
   <div class="body">
     <h2>Versions</h2>
-    <p class="lead">Leave empty to pick from the live list in the script. A version typed here is still checked against the repository.</p>
+    <p class="lead">Leave empty to pick from the live list in the script. A version typed here is still checked against the repository; if it is not offered, the script shows the list.</p>
     <div class="grid">
       <div class="field"><label class="lbl" for="BACKEND_VERSION">Instana backend</label><input type="text" class="code" id="BACKEND_VERSION" list="backendVersions" placeholder="choose in the script"><span class="msg"></span></div>
-      <div class="field"><label class="lbl" for="STANCTL_VERSION">stanctl</label><input type="text" class="code" id="STANCTL_VERSION" placeholder="matching the backend"><span class="msg"></span></div>
+      <div class="field"><label class="lbl" for="STANCTL_VERSION">stanctl package</label><input type="text" class="code" id="STANCTL_VERSION" placeholder="choose in the script"><span class="help">As listed by <code>apt-cache madison stanctl</code>.</span><span class="msg"></span></div>
     </div>
     <datalist id="backendVersions"><option value="3.323.470-0"><option value="3.321.456-0"><option value="3.319.465-0"></datalist>
     <p class="help" style="margin-top:8px">Suggestions are versions known when this page was made. Newer ones may exist.</p>
@@ -292,6 +293,7 @@ pre#preview .x{color:#F08A80;text-decoration:underline wavy #F08A80}
     <span class="lbl">Then on the control VM</span>
     <pre id="runCmd"></pre>
     <p class="help">“Copy as paste-in command” gives you a block to paste into the VM terminal; it writes the file with owner-only permissions, no upload needed.</p>
+    <p class="help">The installer checks every value again. What is empty or wrong here is asked in the terminal; run without a terminal, it stops and lists exactly what to fill in. Before starting you can still change a value (E) or save the parameters to a new file (S).</p>
   </div>
 </aside>
 </div>
@@ -472,7 +474,7 @@ function update(){
   if (asked.length) html += `<div style="margin-top:8px"><span class="ask">The script will ask for:</span> ${asked.map(esc).join(", ")}.</div>`;
   $("status").innerHTML = html;
   ["btnDownload","btnCopy","btnHeredoc"].forEach(b => $(b).disabled = nb > 0);
-  $("runCmd").textContent = `cd ~/instana-backend-skripta\n./install.sh --config ${current.name}\n\n# plan only, creates nothing:\n./install.sh --config ${current.name} --dry-run`;
+  $("runCmd").textContent = `cd ~/instana-backend-skripta\n./install.sh --config ${current.name} --dry-run   # plan only, creates nothing\n./install.sh --config ${current.name}`;
 }
 
 function toast(t){ const el = $("toast"); el.textContent = t; el.classList.add("on"); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove("on"), 2200); }

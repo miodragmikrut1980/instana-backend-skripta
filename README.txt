@@ -1,4 +1,4 @@
-Instana GCP lab v0.7.0 — provider layer (GCP behind providers/, groundwork for other targets); backend version chosen first; resilient installer
+Instana GCP lab v0.7.0 — parameters from a JSON file (--config, config-generator.html); provider layer (GCP behind providers/); backend version chosen first; resilient installer
 CURRENT: read IZMENE_v0.7.0.txt and IZMENE_v0.6.1.txt first, then the older IZMENE files for details.
 
 QUICK START — POKRETANJE NA UPRAVLJACKOJ VM
@@ -45,6 +45,35 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
    Bez state fajla meni nudi "clean up": unese se ime VM-a (npr. instana-0),
    skripta sama nadje zonu, izlista VM/diskove i brise posle potvrde.
 
+5) PARAMETRI IZ FAJLA UMESTO PITANJA (config-generator.html, --config):
+   a) Otvori config-generator.html (u ovom folderu) u browseru na svom
+      racunaru; radi i bez interneta. Popuni sta znas (prazno = skripta pita).
+      Kljucevi: podrazumevano ih skripta pita sakriveno; mogu i u fajl
+      (fajl je onda samo za vlasnika, 600) ili kroz promenljive okruzenja
+      INSTANA_DOWNLOAD_KEY / INSTANA_AGENT_KEY / INSTANA_SALES_KEY /
+      INSTANA_ADMIN_PASSWORD.
+   b) Prebaci fajl na VM: dugme "Copy as paste-in command" pa paste u
+      terminal VM-a (upise ~/instana-backend-skripta/instana-config-....json),
+      ili "Download file" pa gcloud compute scp.
+   c) Pokreni (prvo plan, pa pravo):
+        ./install.sh --config instana-config-<ime>.json --dry-run
+        ./install.sh --config instana-config-<ime>.json
+      Ili bez --config: u meniju "How do you want to provide the deployment
+      parameters?" izaberi "import them from a JSON file" i upisi putanju.
+   Svaka vrednost iz fajla prolazi istu proveru kao kucani odgovor. Na
+   pocetku tabela: ok (uzeto iz fajla) / ask (fali ili ne valja, sa
+   razlogom) / skip (ne vazi za ovaj deployment). Pitaju se samo ask
+   vrednosti. Bez terminala (npr. ssh komanda, cron) skripta odmah stane i
+   izlista SVE vrednosti koje fale ili ne valjaju, sa primerom ispravne.
+   Na planu: Y = start, E = promeni jednu vrednost (plan se ponovo pokaze),
+   S = sacuvaj parametre u novi fajl (bez kljuceva) i stani, N = odustani.
+     ./install.sh --export-config [fajl]   parametri sacuvani u ovom folderu
+                                           (.install-config.json) kao takav fajl
+   Rucni unos (odgovori jedan po jedan) ostaje prva opcija u meniju; za GCP
+   pitanja su ista kao ranije. Three-node vise ne pita velicinu (uvek small,
+   3x n2-standard-16). PROVIDER "ssh" (postojeci hostovi) jos nije podrzan:
+   skripta stane i objasni; dolazi u sledecem koraku.
+
 Ne klonirati repo unutar postojeceg klona (nastaje ugnjezdeni folder sa
 odvojenim state fajlovima). Ne koristiti rm -r * bez pwd provere.
 
@@ -73,7 +102,7 @@ chmod +x *.sh
 ./install.sh --dry-run
 Po pregleda plana stvarno pokretanje: ./install.sh
 
-Izaberi three-node, online, SMALL, Ubuntu 24.04 ili 22.04.
+Izaberi three-node, online, Ubuntu 24.04 ili 22.04 (velicina je fiksna: small).
 Koristi tri NOVA VM naziva i NOVI domen, npr. instana-lab.mikrut.rs.
 Postojeci single-node DNS ne menjati. Novi domen, UI i acceptore usmeri na
 external IP node0. DNS nije automatizovan. Instana production install type
@@ -125,7 +154,8 @@ installer za novu single VM.
 Stari v0.2.2 tekst opisuje prethodni release, ovaj README ima prednost.
 
 Testovi: bash syntax, 4 mock dry-run toka, test-airgap-resume.sh, config persistence tests,
-test-input-reask.sh (ponovno pitanje umesto prekida).
+test-input-reask.sh (ponovno pitanje umesto prekida), test-config-file.sh (ulazni JSON fajl,
+primeri u examples/).
 Stvarni GCP deploy NIJE testiran. IBM docs PDF145–154 i169–172;
 stanctl flags pregledani iz dostavljenog source. Confidential IBM source
 i PDF se NE distribuiraju u ZIP-u.

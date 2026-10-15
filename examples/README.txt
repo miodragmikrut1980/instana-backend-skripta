@@ -14,7 +14,7 @@ single-gcp-provider-aliases.json
   Only PROVIDER_* names. Expect: provider_normalize_params fills GCP_*; zero prompts.
 
 single-gcp-alias-conflict.json
-  GCP_ZONE=europe-west6-b vs PROVIDER_LOCATION=europe-west6-a. Expect: warn with both values + choice prompt (b / a / enter another).
+  GCP_ZONE=europe-west6-b vs PROVIDER_LOCATION=europe-west6-a. Expect: warn with both values + choice prompt (b / a / enter another); without a terminal it is listed as a problem.
 
 single-gcp-unknown-key.json
   Typo TENNANT_NAME. Expect: warn 'unknown key ... did you mean TENANT_NAME?', key ignored, TENANT_NAME asked.
@@ -41,7 +41,7 @@ single-ssh-bad-disk-and-gcp-key.json
   DISK_DEV_DATA=/dev/sdb (not by-id) and a GCP key on the ssh provider. Expect: warn + re-ask DISK_DEV_DATA; 'skip GCP_PROJECT ignored for provider ssh'.
 
 single-gcp-airgapped-existing.json
-  Air-gapped with existing package. Test replaces __ARCHIVE__ with the fake archive path. Versions in the file differ from the archive -> warn, archive wins.
+  Air-gapped with existing package. Test replaces __ARCHIVE__ with the fake archive path. Versions come from the package; the versions in the file are listed as 'skip ... ignored'.
 
 single-gcp-airgapped-missing-archive.json
   Archive path does not exist. Expect: warn + the existing air-gapped source menu.
