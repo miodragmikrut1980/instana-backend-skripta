@@ -37,3 +37,5 @@ about 20 minutes into the run, after the VM and disks were already created.
   "Total time: this run … ; all phases together …" — the second figure is
   the real installation work time across resumes.
 - A stop (error or unexpected failure) says how long the run lasted.
+- The /etc/hosts lines in the final report (screen and .install-report.txt)
+  start at column 1, so a block copy pastes cleanly into the hosts file.

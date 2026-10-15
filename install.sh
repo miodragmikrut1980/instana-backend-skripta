@@ -2227,7 +2227,7 @@ print_final_report() {
     echo "  Backend version: ${BACKEND_VERSION:-$(get_state backend_version)}   (stanctl ${STANCTL_CLI_VERSION:-$(get_state stanctl_cli_version)})"
     echo "  Total time:      this run $(run_elapsed) (started ${RUN_STARTED_AT}); all phases together $(fmt_duration "$(phases_total_seconds)")"
     echo "  /etc/hosts entries:"
-    printf '    %s %s\n' "$external_ip" "$BASE_DOMAIN" \
+    printf '%s %s\n' "$external_ip" "$BASE_DOMAIN" \
       "$external_ip" "${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}" \
       "$external_ip" "agent-acceptor.${BASE_DOMAIN}" \
       "$external_ip" "opamp-acceptor.${BASE_DOMAIN}" \
@@ -2249,7 +2249,7 @@ print_final_report() {
   echo -e "  ${BOLD}Total time:${RESET}      this run $(run_elapsed) (started ${RUN_STARTED_AT}); all phases together $(fmt_duration "$(phases_total_seconds)")"
   echo ""
   echo -e "  ${YELLOW}Ready-to-copy /etc/hosts entries:${RESET}"
-  printf '    %s %s\n' "$external_ip" "$BASE_DOMAIN" \
+  printf '%s %s\n' "$external_ip" "$BASE_DOMAIN" \
     "$external_ip" "${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}" \
     "$external_ip" "agent-acceptor.${BASE_DOMAIN}" \
     "$external_ip" "opamp-acceptor.${BASE_DOMAIN}" \
