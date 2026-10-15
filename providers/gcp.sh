@@ -26,6 +26,70 @@ prov_gcp_validate_param() {
   esac
 }
 
+# SSH keep-alive: a probe every 15 s, give up after 8 missed replies (2 min).
+# Long remote steps (stanctl up, kubectl wait) produce no traffic for minutes
+# and an idle connection is otherwise dropped by NAT or the node's sshd.
+GCP_SSH_KEEPALIVE_FLAGS=(
+  --ssh-flag="-o StrictHostKeyChecking=accept-new"
+  --ssh-flag="-o ConnectTimeout=30"
+  --ssh-flag="-o ServerAliveInterval=15"
+  --ssh-flag="-o ServerAliveCountMax=8"
+  --ssh-flag="-o TCPKeepAlive=yes"
+)
+# prov_gcp_ssh VM ZONE PROJECT COMMAND — one SSH session; exit 255 means the
+# connection failed (ssh_with_retry retries only that).
+prov_gcp_ssh() {
+  gcloud compute ssh "$1" \
+    --project="$3" \
+    --zone="$2" \
+    --command="$4" \
+    "${GCP_SSH_KEEPALIVE_FLAGS[@]}"
+}
+
+# prov_gcp_ssh_probe VM ZONE PROJECT TIMEOUT_S CONNECT_TIMEOUT_S COMMAND —
+# non-interactive single attempt for wait loops; never prompts, never retries.
+prov_gcp_ssh_probe() {
+  timeout "${4}s" gcloud compute ssh "$1" \
+    --project="$3" \
+    --zone="$2" \
+    --quiet --command="$6" \
+    --ssh-flag="-o StrictHostKeyChecking=accept-new" \
+    --ssh-flag="-o BatchMode=yes" \
+    --ssh-flag="-o ConnectTimeout=${5}"
+}
+
+# prov_gcp_scp LOCAL_FILE VM ZONE PROJECT REMOTE_PATH
+prov_gcp_scp() {
+  gcloud compute scp "$1" "${2}:${5}" --project="$4" --zone="$3" --quiet
+}
+
+# prov_gcp_get_ip VM ZONE PROJECT public|private
+prov_gcp_get_ip() {
+  local field='networkInterfaces[0].networkIP'
+  [[ "$4" == private ]] || field='networkInterfaces[0].accessConfigs[0].natIP'
+  gcloud compute instances describe "$1" --project="$3" --zone="$2" --format="value(${field})"
+}
+
+# prov_gcp_hint KIND VM ZONE PROJECT [COMMAND] — text for HOW TO RESOLVE boxes.
+#   ssh           command line to open a shell (or run COMMAND) on the VM
+#   cpu_platform  step that moves the VM to a CPU with x86-64-v3
+#   x86_machine   step for a VM that is not x86_64 at all
+prov_gcp_hint() {
+  local kind="$1" vm="$2" zone="$3" project="$4" cmd="${5:-}"
+  case "$kind" in
+    ssh)
+      if [[ -n "$cmd" ]]; then
+        printf '%s\n' "gcloud compute ssh ${vm} --zone=${zone} --project=${project} --command='${cmd}'"
+      else
+        printf '%s\n' "gcloud compute ssh ${vm} --zone=${zone} --project=${project}"
+      fi ;;
+    cpu_platform)
+      printf '%s\n' "Use an n2-standard machine type (Cascade Lake or newer), or stop the VM and set a minimum CPU platform:|gcloud compute instances stop ${vm} --zone=${zone} --project=${project} && gcloud compute instances set-min-cpu-platform ${vm} --min-cpu-platform='Intel Cascade Lake' --zone=${zone} --project=${project} && gcloud compute instances start ${vm} --zone=${zone} --project=${project}" ;;
+    x86_machine)
+      printf '%s\n' "Recreate the VM with an x86_64 machine type (n2-standard family is verified).|./install.sh" ;;
+  esac
+}
+
 # prov_gcp_disk_device_path NODE DEVICE — where an attached data disk appears on
 # the VM: GCP exposes the --device-name given at attach time under by-id.
 prov_gcp_disk_device_path() { printf '%s\n' "/dev/disk/by-id/google-$2"; }

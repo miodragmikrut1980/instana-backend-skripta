@@ -21,6 +21,11 @@ validate_config
 validate_image
 machine_type_for
 disk_device_path
+ssh
+ssh_probe
+scp
+get_ip
+hint
 "
 
 provider_name() { printf '%s\n' "${PROVIDER:-gcp}"; }

@@ -18,7 +18,7 @@ print_local_access() {
   for node in "${nodes[@]}"; do
     default="$detected"
     if [[ "$node" != "${nodes[0]}" ]]; then
-      default=$(gcloud compute instances describe "$node" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null || true)
+      default=$(provider_get_ip "$node" "$GCP_ZONE" "$GCP_PROJECT" public 2>/dev/null || true)
     fi
     [[ "$default" != unknown ]] || default=''
     while true; do

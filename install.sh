@@ -1433,27 +1433,18 @@ create_firewall_rules() {
 # =============================================================================
 # SECTION 7 — REMOTE SETUP (kernel, disks, install)
 # =============================================================================
-# SSH keep-alive: a probe every 15 s, give up after 8 missed replies (2 min).
-# Long remote steps (stanctl up, kubectl wait) produce no traffic for minutes
-# and an idle connection is otherwise dropped by NAT or the node's sshd.
-SSH_KEEPALIVE_FLAGS=(
-  --ssh-flag="-o StrictHostKeyChecking=accept-new"
-  --ssh-flag="-o ConnectTimeout=30"
-  --ssh-flag="-o ServerAliveInterval=15"
-  --ssh-flag="-o ServerAliveCountMax=8"
-  --ssh-flag="-o TCPKeepAlive=yes"
-)
 SSH_RETRY_MAX="${SSH_RETRY_MAX:-3}"
 SSH_RETRY_WAIT="${SSH_RETRY_WAIT:-20}"
 
-# ssh_with_retry GCLOUD-ARGS... — runs `gcloud compute ssh ...` and, when the
-# connection itself fails (exit 255: closed, refused, timed out), waits and
-# tries again. A non-zero exit from the remote command is never retried.
+# ssh_with_retry VM LOCATION SCOPE COMMAND — runs COMMAND on the VM through the
+# provider's SSH transport and, when the connection itself fails (exit 255:
+# closed, refused, timed out), waits and tries again. A non-zero exit from the
+# remote command is never retried.
 ssh_with_retry() {
   local attempt=1 rc=0 label="${HEARTBEAT_LABEL:-remote step on $1}"
   while :; do
     rc=0
-    spin_run "$label" gcloud compute ssh "$@" || rc=$?
+    spin_run "$label" provider_ssh "$@" || rc=$?
     if (( rc != 255 )) || (( attempt >= SSH_RETRY_MAX )); then
       return "$rc"
     fi
@@ -1468,11 +1459,7 @@ remote_exec() {
   local vm_name="$1" zone="$2" project="$3"; shift 3
   local cmd="$*" quoted rc=0
   printf -v quoted '%q' "$cmd"
-  ssh_with_retry "$vm_name" \
-    --project="$project" \
-    --zone="$zone" \
-    --command="sudo bash -lc ${quoted}" \
-    "${SSH_KEEPALIVE_FLAGS[@]}" || rc=$?
+  ssh_with_retry "$vm_name" "$zone" "$project" "sudo bash -lc ${quoted}" || rc=$?
   (( rc == 0 )) || LAST_FAILED_STEP="remote command on ${vm_name} (exit ${rc}): ${cmd:0:300}"
   return "$rc"
 }
@@ -1544,11 +1531,7 @@ with_heartbeat() { spin_run "$@"; }
 remote_user_exec() {
   local vm_name="$1" zone="$2" project="$3"; shift 3
   local cmd="$*" rc=0
-  ssh_with_retry "$vm_name" \
-    --project="$project" \
-    --zone="$zone" \
-    --command="$cmd" \
-    "${SSH_KEEPALIVE_FLAGS[@]}" || rc=$?
+  ssh_with_retry "$vm_name" "$zone" "$project" "$cmd" || rc=$?
   (( rc == 0 )) || LAST_FAILED_STEP="remote command on ${vm_name} (exit ${rc}): ${cmd:0:300}"
   return "$rc"
 }
@@ -1559,7 +1542,7 @@ upload_private_file() {
     echo -e "${YELLOW}[DRY-RUN]${RESET} Securely upload ${remote_name} to ${vm_name} (content redacted)"
     return
   fi
-  spin_run "copying ${remote_name} to ${vm_name}" gcloud compute scp "$local_file" "${vm_name}:/tmp/${remote_name}" --project="$project" --zone="$zone" --quiet
+  spin_run "copying ${remote_name} to ${vm_name}" provider_scp "$local_file" "$vm_name" "$zone" "$project" "/tmp/${remote_name}"
   remote_exec "$vm_name" "$zone" "$project" "install -o root -g root -m 600 '/tmp/${remote_name}' '/root/${remote_name}' && rm -f '/tmp/${remote_name}'"
 }
 
@@ -1610,13 +1593,13 @@ verify_cpu_x86_64_v3() {
   out=$(remote_exec "$vm_name" "$zone" "$project" "test \"\$(uname -m)\" = x86_64 || { echo 'ARCH:'\$(uname -m); exit 0; }; missing=''; for f in ${X86_64_V3_FLAGS}; do grep -qw \"\$f\" /proc/cpuinfo || missing=\"\$missing \$f\"; done; echo \"MISSING:\$missing\"; grep -m1 'model name' /proc/cpuinfo") || die "Could not read the CPU flags on ${vm_name}."
   if [[ "$out" == ARCH:* ]]; then
     die_with_steps "${vm_name} is not x86_64 (${out#ARCH:}); Instana Standard Edition requires x86-64-v3." \
-      "Recreate the VM with an x86_64 machine type (n2-standard family is verified).|./install.sh"
+      "$(provider_hint x86_machine "$vm_name" "$zone" "$project")"
   fi
   local missing; missing=$(sed -n 's/^MISSING://p' <<< "$out" | xargs)
   if [[ -n "$missing" ]]; then
     die_with_steps "CPU of ${vm_name} lacks x86-64-v3 instructions (missing:${missing}). IBM requires x86-64-v3 for this backend version." \
       "*$(grep 'model name' <<< "$out" | sed 's/.*: //')" \
-      "Use an n2-standard machine type (Cascade Lake or newer), or stop the VM and set a minimum CPU platform:|gcloud compute instances stop ${vm_name} --zone=${zone} --project=${project} && gcloud compute instances set-min-cpu-platform ${vm_name} --min-cpu-platform='Intel Cascade Lake' --zone=${zone} --project=${project} && gcloud compute instances start ${vm_name} --zone=${zone} --project=${project}" \
+      "$(provider_hint cpu_platform "$vm_name" "$zone" "$project")" \
       "Then rerun:|./install.sh --resume"
   fi
   phase_detail done "CPU of ${vm_name} provides x86-64-v3 ($(grep 'model name' <<< "$out" | sed 's/.*: //'))."
@@ -1635,13 +1618,7 @@ wait_for_ssh_loop() {
   local vm_name="$1" zone="$2" project="$3"
   local attempt=0
   while (( attempt < 30 )); do
-    if timeout 30s gcloud compute ssh "$vm_name" \
-        --project="$project" \
-        --zone="$zone" \
-        --quiet --command="echo ready" \
-        --ssh-flag="-o StrictHostKeyChecking=accept-new" \
-        --ssh-flag="-o BatchMode=yes" \
-        --ssh-flag="-o ConnectTimeout=10" >/dev/null 2>&1; then
+    if provider_ssh_probe "$vm_name" "$zone" "$project" 30 10 "echo ready" >/dev/null 2>&1; then
       return 0
     fi
     attempt=$((attempt + 1))
@@ -1821,7 +1798,7 @@ remote_value() {
 airgap_probe_failed() {
   local vm_name="$1" zone="$2" project="$3" what="$4"
   die_with_steps "Could not check ${what} on ${vm_name} (SSH or remote command failed); nothing was copied or imported." \
-    "Check that the VM is running and reachable:|gcloud compute ssh ${vm_name} --zone=${zone} --project=${project} --command='ls -l ${AIRGAP_REMOTE_ARCHIVE}* ${AIRGAP_IMPORT_MARKER}'" \
+    "Check that the VM is running and reachable:|$(provider_hint ssh "$vm_name" "$zone" "$project" "ls -l ${AIRGAP_REMOTE_ARCHIVE}* ${AIRGAP_IMPORT_MARKER}")" \
     "Continue where it stopped:|./install.sh --resume"
 }
 
@@ -1868,7 +1845,7 @@ airgap_check_space() {
   fi
   (( free_bytes >= needed )) && return 0
   die_with_steps "${vm_name} has $(( free_bytes / 1024 / 1024 / 1024 )) GB free in /var/tmp; copying and importing the package needs about $(( needed / 1024 / 1024 / 1024 )) GB." \
-    "Inspect the boot disk on the VM:|gcloud compute ssh ${vm_name} --zone=${zone} --project=${project} --command='df -h / /var/tmp'" \
+    "Inspect the boot disk on the VM:|$(provider_hint ssh "$vm_name" "$zone" "$project" "df -h / /var/tmp")" \
     "Free space (or grow the boot disk), then continue:|./install.sh --resume"
 }
 
@@ -1916,7 +1893,7 @@ install_stanctl_airgapped() {
     remote_exec "$vm_name" "$zone" "$project" "rm -f /tmp/instana-airgapped.tar.gz ${AIRGAP_REMOTE_ARCHIVE} ${AIRGAP_REMOTE_ARCHIVE}.part"
     airgap_check_space "$vm_name" "$zone" "$project" $(( 2 * local_size + AIRGAP_SPACE_MARGIN_BYTES ))
     log "Copying air-gapped package to ${vm_name} ($(du -h "$AIRGAP_ARCHIVE" 2>/dev/null | cut -f1 || echo '?'))..."
-    spin_run "copying the air-gapped package to ${vm_name}" gcloud compute scp "$AIRGAP_ARCHIVE" "${vm_name}:${AIRGAP_REMOTE_ARCHIVE}.part" --project="$project" --zone="$zone"
+    spin_run "copying the air-gapped package to ${vm_name}" provider_scp "$AIRGAP_ARCHIVE" "$vm_name" "$zone" "$project" "${AIRGAP_REMOTE_ARCHIVE}.part"
     remote_exec "$vm_name" "$zone" "$project" "mv -f ${AIRGAP_REMOTE_ARCHIVE}.part ${AIRGAP_REMOTE_ARCHIVE}"
   fi
 
@@ -1936,14 +1913,14 @@ install_stanctl_airgapped() {
   elif (( rc != 0 )); then
     die_with_steps "Air-gapped import failed on ${vm_name} (exit ${rc}); see the stanctl output above." \
       "*The package copy stays in ${AIRGAP_REMOTE_ARCHIVE} on ${vm_name}; --resume verifies it by checksum and does not copy it again." \
-      "Inspect the VM if needed:|gcloud compute ssh ${vm_name} --zone=${zone} --project=${project}" \
+      "Inspect the VM if needed:|$(provider_hint ssh "$vm_name" "$zone" "$project")" \
       "Continue where it stopped:|./install.sh --resume"
   fi
   cli_output=$(remote_value "$vm_name" "$zone" "$project" CLI "echo CLI=\$(stanctl --version 2>/dev/null | head -1)") || cli_output=""
   installed=$(stanctl_version_token "$cli_output")
   [[ "$installed" == "$STANCTL_CLI_VERSION" ]] ||
     die_with_steps "Installed stanctl on ${vm_name} reports '${cli_output:-nothing}', expected ${STANCTL_CLI_VERSION} from the archive build metadata." \
-      "Check which stanctl the VM runs:|gcloud compute ssh ${vm_name} --zone=${zone} --project=${project} --command='command -v stanctl; stanctl --version'" \
+      "Check which stanctl the VM runs:|$(provider_hint ssh "$vm_name" "$zone" "$project" "command -v stanctl; stanctl --version")" \
       "*Remove any other stanctl earlier in root's PATH, then continue:|./install.sh --resume"
   save_state stanctl_cli_version "$STANCTL_CLI_VERSION"
   save_state backend_version "$BACKEND_VERSION"
@@ -2346,9 +2323,7 @@ main_single_node() {
   # Get external IP
   local ext_ip=""
   if [[ "$DRY_RUN" != true ]]; then
-    ext_ip=$(gcloud compute instances describe "$VM_NAME" \
-      --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
-      --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "unknown")
+    ext_ip=$(provider_get_ip "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT" public 2>/dev/null || echo "unknown")
   fi
 
   print_final_report "${ext_ip:-DRY-RUN}"

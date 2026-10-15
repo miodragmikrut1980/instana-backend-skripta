@@ -61,8 +61,7 @@ lab_wait_for_reboot() {
   local node="$1" before="$2" after i
   for ((i=0; i<40; i++)); do
     sleep 10
-    after=$(timeout 20s gcloud compute ssh "$node" --quiet --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
-      --command='cat /proc/sys/kernel/random/boot_id' --ssh-flag='-o BatchMode=yes' --ssh-flag='-o ConnectTimeout=5' 2>/dev/null || true)
+    after=$(provider_ssh_probe "$node" "$GCP_ZONE" "$GCP_PROJECT" 20 5 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null || true)
     [[ -n "$after" && "$after" != "$before" ]] && return 0
   done
   return 1
@@ -111,7 +110,7 @@ main_three_node() {
   phase_start 6 "Wait for SSH, install required Ubuntu packages, verify CPU instruction flags, record private IPs, and establish verified root SSH between nodes."
   for node in "$NODE0_NAME" "$NODE1_NAME" "$NODE2_NAME"; do
     if [[ "$DRY_RUN" == true ]]; then ip=10.128.0.10; else
-      ip=$(gcloud compute instances describe "$node" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --format='value(networkInterfaces[0].networkIP)')
+      ip=$(provider_get_ip "$node" "$GCP_ZONE" "$GCP_PROJECT" private)
       wait_for_ssh "$node" "$GCP_ZONE" "$GCP_PROJECT"
     fi
     save_state "${node}_private_ip" "$ip"
@@ -164,7 +163,7 @@ main_three_node() {
   fi
   lab_checkpoint completed
   ip=DRY-RUN
-  [[ "$DRY_RUN" == true ]] || ip=$(gcloud compute instances describe "$NODE0_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --format='value(networkInterfaces[0].accessConfigs[0].natIP)')
+  [[ "$DRY_RUN" == true ]] || ip=$(provider_get_ip "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" public)
   print_final_report "$ip"
   phase_done 12 "Cluster health and local access instructions completed."
   progress_summary

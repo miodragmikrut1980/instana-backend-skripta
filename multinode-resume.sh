@@ -16,7 +16,7 @@ validate_multinode_resume() {
       "*Or remove that deployment first: ./install.sh --destroy"
   if [[ "$(get_state stanctl_up_status)" == running ]]; then
     die_with_steps "A previous 'stanctl up' on ${NODE0_NAME} may still be running or ended without a recorded result; a second installer is not started automatically." \
-      "Check on node0 whether stanctl is still running and what the cluster looks like:|gcloud compute ssh ${NODE0_NAME} --zone=${GCP_ZONE} --project=${GCP_PROJECT} --command='pgrep -a stanctl; sudo kubectl get nodes; sudo kubectl get pods -A | head -40'" \
+      "Check on node0 whether stanctl is still running and what the cluster looks like:|$(provider_hint ssh "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" 'pgrep -a stanctl; sudo kubectl get nodes; sudo kubectl get pods -A | head -40')" \
       "If the original installer is still running in screen, reattach to it (./install.sh offers it); it records the result itself, then continue:|./install.sh --resume" \
       "If no installer is running any more, the outcome cannot be confirmed automatically: inspect the cluster above, then remove the deployment with the destroy / clean-up menu option:|./install.sh --destroy"
   fi
