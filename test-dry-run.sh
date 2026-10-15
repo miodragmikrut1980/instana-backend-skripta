@@ -59,20 +59,20 @@ run_case() {
     grep -q 'sudo kubectl get nodes' output.txt
     grep -q 'sudo kubectl get pods -A' output.txt
     grep -q 'Ready-to-copy /etc/hosts entries' output.txt
-    ! grep -q "download-secret" output.txt
-    ! grep -q "agent-secret" output.txt
+    if grep -q "download-secret" output.txt; then echo "FAIL: test-dry-run.sh:62: unexpected match" >&2; exit 1; fi
+    if grep -q "agent-secret" output.txt; then echo "FAIL: test-dry-run.sh:63: unexpected match" >&2; exit 1; fi
     if [[ "$name" == single_airgapped_to_online ]]; then
       grep -q 'Air-gapped installation package' output.txt
       grep -q 'Switched to an online installation' output.txt
       grep -q -- "--instana-version 'DRY-RUN-COMPATIBLE-SELECTION'" output.txt
-      ! grep -q 'import backend' output.txt
+      if grep -q 'import backend' output.txt; then echo "FAIL: test-dry-run.sh:68: unexpected match" >&2; exit 1; fi
     elif [[ "$name" == *airgapped ]]; then
       grep -q 'Air-gapped installation package' output.txt
       grep -q 'stanctl 1.10.9 → Instana backend 3.285.123-0' output.txt
       grep -q 'extract stanctl 1.10.9 from it and import backend 3.285.123-0' output.txt
-      ! grep -q 'instana-version' output.txt
-      ! grep -q 'dpkg' output.txt
-      ! grep -q '\.deb' output.txt
+      if grep -q 'instana-version' output.txt; then echo "FAIL: test-dry-run.sh:73: unexpected match" >&2; exit 1; fi
+      if grep -q 'dpkg' output.txt; then echo "FAIL: test-dry-run.sh:74: unexpected match" >&2; exit 1; fi
+      if grep -q '\.deb' output.txt; then echo "FAIL: test-dry-run.sh:75: unexpected match" >&2; exit 1; fi
     else
       grep -q -- "--instana-version 'DRY-RUN-COMPATIBLE-SELECTION'" output.txt
     fi

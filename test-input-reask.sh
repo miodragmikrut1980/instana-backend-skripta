@@ -35,7 +35,7 @@ if run $'\ny\n' eval 'prompt_required BASE_DOMAIN "Base domain" "" validate_fqdn
   echo "FAIL: confirmed cancellation did not stop"; exit 1
 fi
 grep -q 'cancelled by the operator' err.txt out.txt
-! grep -q 'RESULT=' out.txt
+if grep -q 'RESULT=' out.txt; then echo "FAIL: test-input-reask.sh:38: unexpected match" >&2; exit 1; fi
 echo "PASS: confirmed cancellation stops the installer"
 
 # 4. Closed input (non-interactive) stops instead of looping forever.
@@ -48,7 +48,7 @@ echo "PASS: closed input stops with a message"
 # 5. Secrets: empty, continue, then a value.
 out=$(run $'\nn\ns3cret\n' eval 'prompt_secret_required SALES_KEY "Sales key" "Sales key"; echo LEN=${#SALES_KEY}' 2>err.txt)
 grep -q 'LEN=6' <<< "$out"
-! grep -q 's3cret' err.txt
+if grep -q 's3cret' err.txt; then echo "FAIL: test-input-reask.sh:51: unexpected match" >&2; exit 1; fi
 echo "PASS: secret is re-asked and never echoed"
 
 # 6. Air-gapped archive: wrong path, continue, then the real archive; versions land in globals.

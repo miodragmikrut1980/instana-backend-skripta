@@ -46,7 +46,7 @@ cp "$(dirname "$0")"/{install.sh,parameters.sh,multinode-online.sh,local-access.
   upload_stanctl_env() { :; }
   run_stanctl_up_single_node node0 zone-a project-a
   grep -q -- "--instana-version '3.321.456-0'" calls
-  ! grep -q -- '--skip-version-check' calls
+  if grep -q -- '--skip-version-check' calls; then echo "FAIL: test-version-selection.sh:49: unexpected match" >&2; exit 1; fi
 )
 
 echo 'PASS: exact stanctl selection and compatible backend pinning'

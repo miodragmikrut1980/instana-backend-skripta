@@ -19,7 +19,7 @@ SALES_KEY=secret-sales
 AGENT_KEY=secret-agent
 save_parameters
 jq -e '.parameters.GCP_PROJECT=="test-project" and .parameters.BASE_DOMAIN=="mikrut.rs"' "$CONFIG_FILE" >/dev/null
-! grep -q secret "$CONFIG_FILE"
+if grep -q secret "$CONFIG_FILE"; then echo "FAIL: test-parameters.sh:22: unexpected match" >&2; exit 1; fi
 test "$(stat -c %a "$CONFIG_FILE")" = 600
 DRY_RUN=true
 GCP_PROJECT=changed
