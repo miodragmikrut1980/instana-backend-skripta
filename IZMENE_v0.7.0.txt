@@ -141,3 +141,21 @@ creates, deletes, or reboots a host without confirmation.
 - Tests: test-ssh-provider.sh, test-ssh-host-checks.sh (each stop asserts
   what/why/fix/continue), test-ssh-disk-map.sh, ssh cases in test-dry-run,
   test-config-file and test-destroy; fakes in test-ssh-lib.inc.
+
+2026-10-15 — Existing hosts: review fixes (security and safety)
+- Saved SSH values (.install-config.json on reuse, edit, --resume) get the
+  same checks as typed answers, and phase 2 checks them again before the
+  first ssh call; a bad value stops with an explanation and is never used.
+  ssh gets the user with -l and the host after "--" (scp: -o User= and
+  "--"), so no value can become an ssh option. Disk links reported by a
+  host are used only when they are plain /dev/disk/by-id or by-path names.
+- Before a disk without a filesystem signature is formatted on an existing
+  host, its first and last megabyte are read; anything but zeros stops with
+  the exact commands to inspect and, if wanted, wipe it (GCP unchanged).
+- The first connection to a host shows the host key that is trusted from
+  then on. The host identity for --resume falls back to the DMI product
+  UUID when /etc/machine-id is missing; without any identity the run stops.
+- Tests: hostile saved values (test-ssh-hostile-config.sh), disks that are
+  mounted, partitioned or LVM members are never offered, GCP UFW keeps 22
+  with SSH_PORT exported, GCP destroy ignores hostdisk_* keys, the zero
+  check runs before mkfs.
