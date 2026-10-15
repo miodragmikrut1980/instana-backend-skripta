@@ -51,7 +51,11 @@ reask_secret() {
   done
 }
 
+# offer_saved_parameters [CHOICE] — CHOICE ("reuse saved parameters" or
+# "edit parameters (saved text values as defaults)") was already made in the
+# parameter-source menu; without it the question is asked here.
 offer_saved_parameters() {
+  local preset="${1:-}"
   if [[ ! -f "$CONFIG_FILE" ]]; then
     [[ "${RESUME:-false}" != true ]] || die "Resume requires the original .install-config.json alongside install.sh."
     return 1
@@ -67,6 +71,8 @@ offer_saved_parameters() {
   if [[ "${RESUME:-false}" == true ]]; then
     echo "Resume mode: automatically reusing locked saved parameters; editing is disabled." >&2
     choice="reuse saved parameters"
+  elif [[ -n "$preset" ]]; then
+    choice="$preset"
   else
     choice=$(prompt_choice "Previous configuration found:" \
       "reuse saved parameters" "edit parameters (saved text values as defaults)")

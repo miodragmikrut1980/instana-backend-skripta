@@ -15,7 +15,7 @@
 #   - Ubuntu 22.04
 #
 # Usage:
-#   ./install.sh [--dry-run]
+#   ./install.sh [--dry-run] [--config FILE]   (see ./install.sh --help)
 # =============================================================================
 
 set -euo pipefail
@@ -28,7 +28,7 @@ readonly REPORT_FILE="${SCRIPT_DIR}/.install-report.txt"
 umask 077
 # The installer is split over several files; a missing one (partial copy,
 # accidental delete) must produce a clear fix instead of a bash source error.
-for _companion in parameters.sh progress.sh multinode-online.sh local-access.sh multinode-resume.sh hardware-input.sh capacity-fallback.sh providers/common.sh providers/gcp.sh; do
+for _companion in parameters.sh input-config.sh progress.sh multinode-online.sh local-access.sh multinode-resume.sh hardware-input.sh capacity-fallback.sh providers/common.sh providers/gcp.sh; do
   if [[ ! -f "${SCRIPT_DIR}/${_companion}" ]]; then
     echo "[ERROR] ${_companion} is missing from ${SCRIPT_DIR}; the installer needs all its files side by side." >&2
     echo "  Restore them from git in that folder:   git checkout -- . && git pull origin main" >&2
@@ -38,6 +38,7 @@ for _companion in parameters.sh progress.sh multinode-online.sh local-access.sh 
 done
 unset _companion
 source "${SCRIPT_DIR}/parameters.sh"
+source "${SCRIPT_DIR}/input-config.sh"
 readonly LOG_FILE="${SCRIPT_DIR}/install-$(date +%Y%m%d-%H%M%S).log"
 readonly INSTANA_APT_REPO="deb [signed-by=/usr/share/keyrings/instana-archive-keyring.gpg] https://artifact-public.instana.io/artifactory/rel-debian-public-virtual generic main"
 readonly INSTANA_KEYRING_URL="https://artifact-public.instana.io/artifactory/api/security/keypair/public/repositories/rel-debian-public-virtual"
@@ -151,6 +152,12 @@ Usage: ./install.sh [option]
 
   (no option)   interactive start menu: install, dry-run, resume, destroy
   --dry-run     show the full plan and simulate every phase; creates nothing
+  --config FILE take the parameters from FILE (JSON made with config-generator.html
+                or --export-config); only missing or invalid values are asked.
+                Combine with --dry-run to see the plan first.
+  --export-config [FILE]
+                write the parameters saved in this folder (.install-config.json)
+                as such a file, without keys and password, and stop
   --resume      continue an interrupted deployment recorded in this folder
   --destroy     delete the GCP resources recorded in this folder (runs destroy.sh);
                 combine with --dry-run to only preview what would be deleted
@@ -161,8 +168,27 @@ USAGE
 }
 
 DESTROY=false
-for arg in "$@"; do
+EXPORT_CONFIG=false
+EXPORT_CONFIG_PATH=""
+_args=("$@")
+for (( _i = 0; _i < ${#_args[@]}; _i++ )); do
+  arg="${_args[_i]}"
   case "$arg" in
+    --config|--config=*)
+      if [[ "$arg" == --config=* ]]; then INPUT_CONFIG="${arg#--config=}"
+      elif (( _i + 1 < ${#_args[@]} )) && [[ "${_args[_i+1]}" != --* ]]; then INPUT_CONFIG="${_args[_i+1]}"; (( ++_i ))
+      else INPUT_CONFIG=""; fi
+      [[ -n "$INPUT_CONFIG" ]] ||
+        die_with_steps "--config needs the path of the JSON input file." \
+          "Give the file after --config:|./install.sh --config instana-config.json" \
+          "*Create the file with config-generator.html (in this folder)."
+      INPUT_CONFIG=$(input_expand_path "$INPUT_CONFIG")
+      [[ "$INPUT_CONFIG" == /* ]] || INPUT_CONFIG="${PWD}/${INPUT_CONFIG}"
+      INPUT_NONINTERACTIVE=1 ;;
+    --export-config|--export-config=*)
+      EXPORT_CONFIG=true
+      if [[ "$arg" == --export-config=* ]]; then EXPORT_CONFIG_PATH="${arg#--export-config=}"
+      elif (( _i + 1 < ${#_args[@]} )) && [[ "${_args[_i+1]}" != --* ]]; then EXPORT_CONFIG_PATH="${_args[_i+1]}"; (( ++_i )); fi ;;
     --resume) RESUME=true ;;
     --dry-run) DRY_RUN=true ;;
     --destroy) DESTROY=true ;;
@@ -173,6 +199,16 @@ for arg in "$@"; do
     *) err "Unknown argument: $arg"; usage; ERROR_REPORTED=true; exit 1 ;;
   esac
 done
+unset _args _i
+if [[ -n "$INPUT_CONFIG" && "$RESUME" == true ]]; then
+  die_with_steps "--config cannot be combined with --resume: a started deployment keeps the parameters it was started with." \
+    "Continue the deployment recorded in this folder without --config:|./install.sh --resume" \
+    "*To install something else from the file, use a new folder (each folder holds one deployment)."
+fi
+if [[ "$EXPORT_CONFIG" == true && ( -n "$INPUT_CONFIG" || "$RESUME" == true || "$DESTROY" == true ) ]]; then
+  die_with_steps "--export-config only writes a file and stops; it cannot be combined with --config, --resume or --destroy." \
+    "Export on its own:|./install.sh --export-config"
+fi
 [[ "$DRY_RUN" != true || "$DESTROY" == true ]] || warn "Dry-run mode — no GCP resources will be created."
 
 # --destroy hands over to destroy.sh (same folder, same state file) so the
@@ -332,6 +368,8 @@ prompt() {
     default="$(jq -r --arg k "$var_name" '.parameters[$k] // empty' "$CONFIG_FILE")"
     [[ -n "$default" ]] || default="${3:-}"
   fi
+  # Changing one value from the plan: its current value is the default.
+  [[ -n "${EDIT_KEY:-}" && "$var_name" == "$EDIT_KEY" && -n "${EDIT_DEFAULT:-}" ]] && default="$EDIT_DEFAULT"
   local value
   if [[ -n "$default" ]]; then
     read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text} [${default}]: ")" value || return 1
@@ -396,6 +434,22 @@ prompt_yes_no() {
       y|yes) return 0 ;;
       n|no)  return 1 ;;
       *) echo "  Please answer y (yes) or n (no)." >&2 ;;
+    esac
+  done
+}
+
+# The plan's question for a new deployment: prints yes, edit, save or no.
+# Enter (or closed input) = no, like every other start confirmation.
+prompt_plan_decision() {
+  local answer
+  while true; do
+    read -rp "$(echo -e "${CYAN}?${RESET} Start now? Y = start, E = edit a value, S = save to a file, N = cancel [y/e/s/N] (Enter = no): ")" answer || { echo no; return 0; }
+    case "${answer,,}" in
+      y|yes) echo yes; return 0 ;;
+      e|edit) echo edit; return 0 ;;
+      s|save) echo save; return 0 ;;
+      ""|n|no) echo no; return 0 ;;
+      *) echo "  Please answer y (start), e (edit a value), s (save to a file) or n (cancel)." >&2 ;;
     esac
   done
 }
@@ -502,102 +556,126 @@ collect_parameters() {
   echo -e "${BOLD}  Instana Standard Edition — GCP Deployment Setup${RESET}"
   echo -e "${BOLD}════════════════════════════════════════════════════════════════${RESET}"
   echo ""
+  # Every question first takes a usable value from an input file (use_imported,
+  # input-config.sh); without one it is asked exactly as before.
 
   # Topology
-  hint "single-node: everything on one VM (labs, demos, small setups)." \
-       "three-node: Instana spread over three VMs, IBM 'production' type, needs 3x n2-standard-16."
-  TOPOLOGY=$(prompt_choice "Select deployment topology:" \
-    "single-node" \
-    "three-node")
+  use_imported TOPOLOGY || {
+    hint "single-node: everything on one VM (labs, demos, small setups)." \
+         "three-node: Instana spread over three VMs, IBM 'production' type, needs 3x n2-standard-16."
+    TOPOLOGY=$(prompt_choice "Select deployment topology:" \
+      "single-node" \
+      "three-node")
+  }
 
-  hint "online: the Instana VM downloads stanctl and images from the Instana repository itself (simplest)." \
-       "air-gapped: everything comes from one instana-airgapped.tar.gz package; you will be guided to obtain or build it."
-  INSTALL_MODE=$(prompt_choice "Select installation connectivity mode:" \
-    "online" \
-    "air-gapped")
+  use_imported INSTALL_MODE || {
+    hint "online: the Instana VM downloads stanctl and images from the Instana repository itself (simplest)." \
+         "air-gapped: everything comes from one instana-airgapped.tar.gz package; you will be guided to obtain or build it."
+    INSTALL_MODE=$(prompt_choice "Select installation connectivity mode:" \
+      "online" \
+      "air-gapped")
+  }
 
   # Install type
   if [[ "$TOPOLOGY" == "single-node" ]]; then
-    hint "demo: smaller disks/resources for evaluation. production: IBM-sized disks (larger, more expensive)."
-    INSTALL_TYPE=$(prompt_choice "Select installation type:" \
-      "demo" \
-      "production")
+    use_imported INSTALL_TYPE || {
+      hint "demo: smaller disks/resources for evaluation. production: IBM-sized disks (larger, more expensive)."
+      INSTALL_TYPE=$(prompt_choice "Select installation type:" \
+        "demo" \
+        "production")
+    }
   else
     INSTALL_TYPE="production"
     log "Three-node clusters require production installation type (per documentation)."
   fi
 
   # Ubuntu version — from docs: Ubuntu 24.04 and 22.04 only
-  hint "Operating system image for the new VM(s). 24.04 is the current IBM-supported default."
-  UBUNTU_VERSION=$(prompt_choice "Select Ubuntu version (supported: 24.04, 22.04):" \
-    "ubuntu-2404-lts-amd64" \
-    "ubuntu-2204-lts")
+  use_imported UBUNTU_VERSION || {
+    hint "Operating system image for the new VM(s). 24.04 is the current IBM-supported default."
+    UBUNTU_VERSION=$(prompt_choice "Select Ubuntu version (supported: 24.04, 22.04):" \
+      "ubuntu-2404-lts-amd64" \
+      "ubuntu-2204-lts")
+  }
 
   provider_collect_location_params
-  hint "Which public IP address may open SSH to the VM(s). Default = this machine's own public IP with /32 (only this machine)." \
-       "0.0.0.0/0 would allow the whole internet; avoid it."
-  prompt_required "SSH_SOURCE_CIDR" "CIDR allowed to SSH to the VM(s)" "$(detect_public_cidr)" validate_cidr
+  use_imported SSH_SOURCE_CIDR || {
+    hint "Which public IP address may open SSH to the VM(s). Default = this machine's own public IP with /32 (only this machine)." \
+         "0.0.0.0/0 would allow the whole internet; avoid it."
+    prompt_required "SSH_SOURCE_CIDR" "CIDR allowed to SSH to the VM(s)" "$(detect_public_cidr)" validate_cidr
+  }
   if [[ "$TOPOLOGY" == "single-node" ]]; then
-    hint "Name of the new VM in GCP; the four data disks will be named <vm>-analytics/-metrics/-objects/-data." \
-         "Lowercase letters, digits and hyphens. Must not already exist in the zone."
-    prompt_required "VM_NAME" "VM name" "instana-backend"
+    use_imported VM_NAME || {
+      hint "Name of the new VM in GCP; the four data disks will be named <vm>-analytics/-metrics/-objects/-data." \
+           "Lowercase letters, digits and hyphens. Must not already exist in the zone."
+      prompt_required "VM_NAME" "VM name" "instana-backend" validate_vm_name VM_NAME
+    }
   else
-    hint "Names of the three new VMs. Node 0 runs the backend and stanctl, node 1 the data stores, node 2 the rest."
-    prompt_required "NODE0_NAME" "Node 0 name (instana-0, backend)" "instana-0"
-    prompt_required "NODE1_NAME" "Node 1 name (instana-1, data store)" "instana-1"
-    prompt_required "NODE2_NAME" "Node 2 name (instana-2, other)" "instana-2"
+    imported_usable NODE0_NAME NODE1_NAME NODE2_NAME ||
+      hint "Names of the three new VMs. Node 0 runs the backend and stanctl, node 1 the data stores, node 2 the rest."
+    use_imported NODE0_NAME || prompt_required "NODE0_NAME" "Node 0 name (instana-0, backend)" "instana-0" validate_node_name NODE0_NAME
+    use_imported NODE1_NAME || prompt_required "NODE1_NAME" "Node 1 name (instana-1, data store)" "instana-1" validate_node_name NODE1_NAME
+    use_imported NODE2_NAME || prompt_required "NODE2_NAME" "Node 2 name (instana-2, other)" "instana-2" validate_node_name NODE2_NAME
   fi
 
   # Machine type selection
   show_hw_requirements_and_pick_machine_type
 
   # FQDN
-  echo ""
-  log "DNS entries required (all must point to the VM's external IP):"
-  log "  <base_domain>"
-  log "  agent-acceptor.<base_domain>"
-  log "  opamp-acceptor.<base_domain>"
-  log "  otlp-http.<base_domain>"
-  log "  otlp-grpc.<base_domain>"
-  log "  <unit>-<tenant>.<base_domain>"
-  echo ""
-  hint "Domain under which Instana will be reached, e.g. instana.example.com. You must own it and be able to add DNS records;" \
-       "for a lab you can instead put the entries printed at the end into /etc/hosts on your computer."
-  prompt_required "BASE_DOMAIN" "Base domain (e.g. instana.example.com)" "" validate_fqdn
+  use_imported BASE_DOMAIN || {
+    echo ""
+    log "DNS entries required (all must point to the VM's external IP):"
+    log "  <base_domain>"
+    log "  agent-acceptor.<base_domain>"
+    log "  opamp-acceptor.<base_domain>"
+    log "  otlp-http.<base_domain>"
+    log "  otlp-grpc.<base_domain>"
+    log "  <unit>-<tenant>.<base_domain>"
+    echo ""
+    hint "Domain under which Instana will be reached, e.g. instana.example.com. You must own it and be able to add DNS records;" \
+         "for a lab you can instead put the entries printed at the end into /etc/hosts on your computer."
+    prompt_required "BASE_DOMAIN" "Base domain (e.g. instana.example.com)" "" validate_fqdn
+  }
   # Tenant / unit names
-  hint "Tenant and unit are Instana's two-level naming; they form the UI address <unit>-<tenant>.<domain>." \
-       "Any short lowercase names are fine (e.g. company name and 'prod' or 'lab')."
-  prompt_required "TENANT_NAME" "Tenant name (max 15 chars, lowercase alphanumeric, start with letter)" "tenant0" validate_tenant_unit_name "Tenant name"
-  prompt_required "UNIT_NAME" "Unit name (max 15 chars, lowercase alphanumeric, start with letter)" "unit0" validate_tenant_unit_name "Unit name"
+  imported_usable TENANT_NAME UNIT_NAME ||
+    hint "Tenant and unit are Instana's two-level naming; they form the UI address <unit>-<tenant>.<domain>." \
+         "Any short lowercase names are fine (e.g. company name and 'prod' or 'lab')."
+  use_imported TENANT_NAME || prompt_required "TENANT_NAME" "Tenant name (max 15 chars, lowercase alphanumeric, start with letter)" "tenant0" validate_tenant_unit_name "Tenant name"
+  use_imported UNIT_NAME || prompt_required "UNIT_NAME" "Unit name (max 15 chars, lowercase alphanumeric, start with letter)" "unit0" validate_tenant_unit_name "Unit name"
   # Admin password
-  echo ""
-  log "Instana admin password (will not be stored in any file or log)"
-  hint "Password you choose now for the first UI user admin@instana.local. Typing shows • per character."
-  prompt_secret_required "ADMIN_PASSWORD" "Instana admin password" "Admin password"
+  use_imported_secret ADMIN_PASSWORD || {
+    echo ""
+    log "Instana admin password (will not be stored in any file or log)"
+    hint "Password you choose now for the first UI user admin@instana.local. Typing shows • per character."
+    prompt_secret_required "ADMIN_PASSWORD" "Instana admin password" "Admin password"
+  }
   # Instana keys — never logged or stored in local state/logs
-  echo ""
-  log "Instana license keys (will not be stored in any file or log)"
-  hint "The three keys come from your Instana/IBM entitlement (Instana portal or the IBM license center):" \
-       "download key = access to the software repository; agent key = lets agents connect; sales key = your license." \
-       "Paste each one (typing shows • per character)."
-  prompt_secret_required "DOWNLOAD_KEY" "Instana download key" "Download key"
-  prompt_secret_required "AGENT_KEY" "Instana agent key" "Agent key"
-  prompt_secret_required "SALES_KEY" "Instana sales key" "Sales key"
+  if ! imported_usable_secret DOWNLOAD_KEY AGENT_KEY SALES_KEY; then
+    echo ""
+    log "Instana license keys (will not be stored in any file or log)"
+    hint "The three keys come from your Instana/IBM entitlement (Instana portal or the IBM license center):" \
+         "download key = access to the software repository; agent key = lets agents connect; sales key = your license." \
+         "Paste each one (typing shows • per character)."
+  fi
+  use_imported_secret DOWNLOAD_KEY || prompt_secret_required "DOWNLOAD_KEY" "Instana download key" "Download key"
+  use_imported_secret AGENT_KEY || prompt_secret_required "AGENT_KEY" "Instana agent key" "Agent key"
+  use_imported_secret SALES_KEY || prompt_secret_required "SALES_KEY" "Instana sales key" "Sales key"
   if [[ "$INSTALL_MODE" == "air-gapped" ]]; then
     obtain_airgapped_archive
   fi
   select_versions_upfront
 
   # TLS certificate
-  hint "HTTPS certificate for the UI. Self-signed is generated automatically (browser will warn; fine for a lab)." \
-       "Custom = you provide a certificate and key file for the domain (needed for production)."
-  TLS_MODE=$(prompt_choice "TLS certificate:" \
-    "auto-generate (self-signed)" \
-    "provide custom certificate files")
+  use_imported TLS_MODE || {
+    hint "HTTPS certificate for the UI. Self-signed is generated automatically (browser will warn; fine for a lab)." \
+         "Custom = you provide a certificate and key file for the domain (needed for production)."
+    TLS_MODE=$(prompt_choice "TLS certificate:" \
+      "auto-generate (self-signed)" \
+      "provide custom certificate files")
+  }
 
   if [[ "$TLS_MODE" == "provide custom certificate files" ]]; then
-    prompt_required "TLS_CRT_PATH" "Full path to TLS certificate file (.crt)" "" validate_file_exists "TLS certificate file"
-    prompt_required "TLS_KEY_PATH" "Full path to TLS key file (.key)" "" validate_file_exists "TLS key file"
+    use_imported TLS_CRT_PATH || prompt_required "TLS_CRT_PATH" "Full path to TLS certificate file (.crt)" "" validate_file_exists "TLS certificate file"
+    use_imported TLS_KEY_PATH || prompt_required "TLS_KEY_PATH" "Full path to TLS key file (.key)" "" validate_file_exists "TLS key file"
   fi
 }
 
@@ -663,7 +741,28 @@ explain_airgapped_package() {
 }
 
 obtain_airgapped_archive() {
-  local choice default
+  local choice default source=""
+  # From an input file: an existing package, or "build" (asks before the long download).
+  if [[ "$PARAMS_SOURCE" == import ]]; then
+    use_imported AIRGAP_SOURCE && source="$AIRGAP_SOURCE"
+    [[ -n "$source" || -z "${IMPORTED[AIRGAP_ARCHIVE]:-}" ]] || source=existing
+    if [[ "$source" == existing ]]; then
+      if use_imported AIRGAP_ARCHIVE; then
+        if [[ "${AIRGAP_INSPECTED:-}" == "$AIRGAP_ARCHIVE" ]] || inspect_airgapped_archive "$AIRGAP_ARCHIVE"; then
+          AIRGAP_INSPECTED="$AIRGAP_ARCHIVE"
+          return 0
+        fi
+        warn "The package ${AIRGAP_ARCHIVE} from $(input_source_label) cannot be used (reason above); choose how to provide the package below."
+      fi
+    elif [[ "$source" == build ]]; then
+      explain_airgapped_package
+      if build_airgapped_package_locally && inspect_airgapped_archive "$AIRGAP_ARCHIVE"; then
+        AIRGAP_INSPECTED="$AIRGAP_ARCHIVE"
+        return 0
+      fi
+      warn "The package was not created; choose how to provide it below."
+    fi
+  fi
   explain_airgapped_package
   while true; do
     default=$(default_airgapped_archive)
@@ -677,12 +776,12 @@ obtain_airgapped_archive() {
       "use an existing"*)
         prompt_required "AIRGAP_ARCHIVE" "Local path to instana-airgapped.tar.gz" "$default" validate_file_exists "Air-gapped archive"
         # inspect_airgapped_archive sets BACKEND_VERSION / STANCTL_CLI_VERSION in this shell.
-        inspect_airgapped_archive "$AIRGAP_ARCHIVE" && return 0
+        inspect_airgapped_archive "$AIRGAP_ARCHIVE" && { AIRGAP_INSPECTED="$AIRGAP_ARCHIVE"; return 0; }
         warn "That archive cannot be used; choose again."
         ;;
       "create the package"*)
         if build_airgapped_package_locally; then
-          inspect_airgapped_archive "$AIRGAP_ARCHIVE" && return 0
+          inspect_airgapped_archive "$AIRGAP_ARCHIVE" && { AIRGAP_INSPECTED="$AIRGAP_ARCHIVE"; return 0; }
           warn "The created archive failed inspection; choose again."
         else
           warn "The package was not created; choose again."
@@ -750,7 +849,7 @@ select_and_install_local_stanctl() {
   installed=$(dpkg-query -W -f='${Version}' stanctl 2>/dev/null || true)
   echo "" >&2
   echo -e "${BOLD}Available stanctl package versions (newest first)${RESET}${installed:+; currently installed: ${installed}}:" >&2
-  selected=$(prompt_choice "$prompt" "${stanctl_versions[@]}") ||
+  selected=$(pick_from_list STANCTL_VERSION "$prompt" "${stanctl_versions[@]}") ||
     { err "stanctl version selection was cancelled."; return 1; }
   if [[ "$installed" != "$selected" ]]; then
     log "Installing stanctl ${selected} on this machine..."
@@ -784,7 +883,7 @@ select_local_backend_version() {
     { err "stanctl ${STANCTL_CLI_VERSION} returned no supported backend versions (check the download key)."; return 1; }
   echo "" >&2
   echo -e "${BOLD}Backend versions supported by stanctl ${STANCTL_CLI_VERSION}:${RESET}" >&2
-  selected=$(prompt_choice "$prompt" "${backend_versions[@]}") ||
+  selected=$(pick_from_list BACKEND_VERSION "$prompt" "${backend_versions[@]}") ||
     { err "Backend version selection was cancelled."; return 1; }
   BACKEND_VERSION="$selected"
   ok "Selected: stanctl ${STANCTL_CLI_VERSION} → backend ${BACKEND_VERSION}"
@@ -807,16 +906,26 @@ select_versions_upfront() {
   local os_id
   echo "" >&2
   log "Backend version selection"
+  imported_usable STANCTL_VERSION BACKEND_VERSION ||
   hint "Choose the exact Instana backend version to install, e.g. the version your customer runs." \
        "The matching stanctl is installed on this machine first (needs sudo, Ubuntu/Debian and access to" \
        "artifact-public.instana.io with your download key) so the list below is the one IBM publishes for it." \
        "The versions are pinned for this run and shown in the plan and the final report."
   if [[ "$DRY_RUN" == true ]]; then
     REQUESTED_STANCTL_APT_VERSION="DRY-RUN-SELECTION"; REQUESTED_BACKEND_VERSION="DRY-RUN-COMPATIBLE-SELECTION"
+    # Dry-run cannot reach the repository: versions from an input file are only
+    # format-checked here and shown in the plan.
+    if use_imported STANCTL_VERSION; then REQUESTED_STANCTL_APT_VERSION="$STANCTL_VERSION"; fi
+    if use_imported BACKEND_VERSION; then REQUESTED_BACKEND_VERSION="$BACKEND_VERSION"; fi
     return 0
   fi
   os_id=$(. /etc/os-release 2>/dev/null && printf '%s %s' "${ID:-}" "${ID_LIKE:-}")
   if [[ "$os_id" != *ubuntu* && "$os_id" != *debian* ]] || ! command -v sudo >/dev/null 2>&1; then
+    if use_imported STANCTL_VERSION && use_imported BACKEND_VERSION; then
+      REQUESTED_STANCTL_APT_VERSION="$STANCTL_VERSION"; REQUESTED_BACKEND_VERSION="$BACKEND_VERSION"
+      warn "This machine is not Ubuntu/Debian with sudo; the versions from $(input_source_label) are checked on the Instana VM in phase 10."
+      return 0
+    fi
     warn "This machine is not Ubuntu/Debian with sudo; the version will be chosen on the Instana VM in phase 10 instead."
     return 0
   fi
@@ -854,8 +963,11 @@ build_airgapped_package_locally() {
   log "artifact-public.instana.io reachable (HTTP ${http_code})."
   # Output directory: IBM requires 20-30 GB free where the package is created.
   # Below 20 GB the download would fail part-way, so the directory is re-asked.
+  local from_file=true
   while true; do
-    prompt_required "AIRGAP_OUTPUT_DIR" "Directory for the package (will be created)" "${HOME}/instana-airgap"
+    if [[ "$from_file" == true ]] && use_imported AIRGAP_OUTPUT_DIR; then :
+    else prompt_required "AIRGAP_OUTPUT_DIR" "Directory for the package (will be created)" "${HOME}/instana-airgap"; fi
+    from_file=false
     out_dir="$AIRGAP_OUTPUT_DIR"
     mkdir -p "$out_dir" || { err "Cannot create ${out_dir}."; confirm_cancel; continue; }
     free_gb=$(df -Pk "$out_dir" 2>/dev/null | awk 'NR==2 {printf "%d", $4/1024/1024}')
@@ -944,50 +1056,48 @@ validate_cidr() {
 
 show_hw_requirements_and_pick_machine_type() {
   if [[ "$TOPOLOGY" == "single-node" ]]; then
-    show_single_node_requirements "$INSTALL_TYPE"
     local min_cpu min_ram
     case "$INSTALL_TYPE" in
       demo)       min_cpu=16;  min_ram=64 ;;
       production) min_cpu=28;  min_ram=112 ;;
     esac
-    echo -e "  Official minimum: ${BOLD}${min_cpu} vCPUs, ${min_ram} GB RAM${RESET}"
-    echo ""
-    SIZE_CHOICE=$(prompt_choice "Machine size:" \
-      "minimum (${min_cpu} vCPUs / ${min_ram} GB) — from documentation" \
-      "production recommended (production-small: 28 vCPUs / 112 GB)" \
-      "custom — enter manually")
+    if use_imported SIZE; then
+      SIZE_CHOICE="$SIZE"
+    else
+      show_single_node_requirements "$INSTALL_TYPE"
+      echo -e "  Official minimum: ${BOLD}${min_cpu} vCPUs, ${min_ram} GB RAM${RESET}"
+      echo ""
+      SIZE_CHOICE=$(prompt_choice "Machine size:" \
+        "minimum (${min_cpu} vCPUs / ${min_ram} GB) — from documentation" \
+        "production recommended (production-small: 28 vCPUs / 112 GB)" \
+        "custom — enter manually")
+    fi
 
     case "$SIZE_CHOICE" in
       "minimum"*)
-        VM_CPUS=$min_cpu; VM_RAM_GB=$min_ram ;;
-      "production recommended"*)
-        VM_CPUS=28; VM_RAM_GB=112 ;;
+        SIZE=minimum; VM_CPUS=$min_cpu; VM_RAM_GB=$min_ram ;;
+      "production"*)
+        SIZE=production; VM_CPUS=28; VM_RAM_GB=112 ;;
       "custom"*)
-        collect_cpu_ram VM_CPUS VM_RAM_GB "$min_cpu" "$min_ram" "single-node $INSTALL_TYPE"
+        SIZE=custom
+        if ! { use_imported VM_CPUS && use_imported VM_RAM_GB; }; then
+          collect_cpu_ram VM_CPUS VM_RAM_GB "$min_cpu" "$min_ram" "single-node $INSTALL_TYPE"
+        fi
         ;;
     esac
     # Map to the provider's machine type
     MACHINE_TYPE=$(provider_machine_type_for "$VM_CPUS" "$VM_RAM_GB")
 
   else
-    # Three-node: fixed minimum per node from docs (Small VM: 12 vCPUs, 48 GB)
+    # Three-node lab: one fixed size, nothing to choose (the lab creates
+    # 3x n2-standard-16 and supports only the documented small profile).
     show_three_node_requirements
-    hint "The three-node lab always creates 3x n2-standard-16 (16 vCPUs / 64 GB per node) and supports only the small profile;" \
-         "large and custom are refused when the lab is prepared, right after the parameters (nothing is created before that)."
-    SIZE_CHOICE=$(prompt_choice "Machine size for all nodes:" \
-      "small (12 vCPUs / 48 GB) — documented minimum" \
-      "large (24-32 vCPUs / 96-128 GB) — documented large size" \
-      "custom — enter manually")
-    case "$SIZE_CHOICE" in
-      "small"*)
-        NODE_CPUS=12; NODE_RAM_GB=48 ;;
-      "large"*)
-        NODE_CPUS=24; NODE_RAM_GB=96
-        warn "For instana-1 (data store), docs specify 32 vCPUs / 128 GB for large. Adjust manually if needed." ;;
-      "custom"*)
-        collect_cpu_ram NODE_CPUS NODE_RAM_GB 12 48 "three-node (per node)"
-        ;;
-    esac
+    log "Three-node lab size is fixed: small profile (12 vCPUs / 48 GB per node, documented minimum) on 3x n2-standard-16."
+    if [[ "$PARAMS_SOURCE" == import && -n "${IMPORTED[SIZE]:-}" && "${IMPORTED[SIZE]}" != small ]]; then
+      warn "SIZE '${IMPORTED[SIZE]}' from $(input_source_label) is ignored: three-node uses the fixed small size."
+    fi
+    SIZE=small
+    NODE_CPUS=12; NODE_RAM_GB=48
     MACHINE_TYPE=$(provider_machine_type_for "$NODE_CPUS" "$NODE_RAM_GB")
   fi
 }
@@ -1073,9 +1183,22 @@ show_plan() {
   else
     echo "  Enter Y and press Enter to START creating GCP resources and installing Instana."
   fi
+  if [[ "${PLAN_EDITABLE:-false}" == true ]]; then
+    echo "  Enter E to change one of the values above first."
+    echo "  Enter S to save these parameters to a JSON file (without keys) for a later run, and stop."
+  fi
   echo "  Enter N, or press Enter without typing anything, to cancel without starting."
   echo ""
-  prompt_yes_no "Start now? Type Y to continue or N to cancel" N || { log "Installation was not started; no action was approved from this plan."; exit 0; }
+  if [[ "${PLAN_EDITABLE:-false}" == true ]]; then
+    case "$(prompt_plan_decision)" in
+      yes) ;;
+      edit) return 3 ;;
+      save) save_plan_to_file; log "Installation was not started; the parameters were saved for later."; exit 0 ;;
+      *) log "Installation was not started; no action was approved from this plan."; exit 0 ;;
+    esac
+  else
+    prompt_yes_no "Start now? Type Y to continue or N to cancel" N || { log "Installation was not started; no action was approved from this plan."; exit 0; }
+  fi
   save_state "provider" "$(provider_name)"
   save_state "gcp_project" "$GCP_PROJECT"
   save_state "gcp_zone" "$GCP_ZONE"
@@ -1991,6 +2114,24 @@ main_single_node() {
 # =============================================================================
 # ENTRY POINT
 # =============================================================================
+# validate_vm_name VALUE [KEY] — GCP resource name rules (also used for the disks).
+validate_vm_name() {
+  [[ "$1" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+    { err "${2:-VM name} '${1}' is invalid: use lowercase letters, digits and hyphens, start with a letter, max 63 characters, no dots."; return 1; }
+}
+
+# validate_node_name VALUE KEY — as validate_vm_name, and different from the
+# nodes asked before it (node 1 from node 0, node 2 from nodes 0 and 1).
+validate_node_name() {
+  local value="$1" key="$2" other
+  validate_vm_name "$value" "$key" || return 1
+  for other in NODE0_NAME NODE1_NAME; do
+    [[ "$other" < "$key" ]] || continue
+    [[ "$(input_ctx "$other")" != "$value" ]] ||
+      { err "${key} '${value}' is already used for ${other}; each node needs its own name."; return 1; }
+  done
+}
+
 validate_vm_names() {
   local name
   local names=("${VM_NAME:-}")
@@ -2141,6 +2282,24 @@ ensure_detachable_session() {
   fi
 }
 
+# Three-node only: an older deployment recorded in this folder is resumed or
+# set aside first (an imported file can only start a NEW deployment), then the
+# lab is prepared.
+prepare_topology() {
+  [[ "$TOPOLOGY" == three-node ]] || return 0
+  # Phase 1 has just written its own progress checkpoint into the state file;
+  # that is not an existing deployment. Only a state with resources/identity is.
+  if [[ -f "$STATE_FILE" && "$RESUME" != true ]] && ! state_is_only_progress; then
+    handle_existing_state_for_new_deployment
+    if [[ "$RESUME" == true && "$PARAMS_SOURCE" == import ]]; then
+      die_with_steps "The deployment recorded in this folder can only be resumed with the parameters it was started with; the values from ${INPUT_LABEL:-the input file} cannot change it." \
+        "Continue that deployment without --config (its saved parameters are used):|./install.sh --resume" \
+        "*To install the deployment from the file instead, run it in a new folder, or choose 'set the old state file aside' when asked."
+    fi
+  fi
+  prepare_multinode_lab
+}
+
 main() {
   if [[ -n "${INSTANA_EXIT_MARKER:-}" ]]; then
     trap 'rc=$?; on_exit_report "$rc" "$BASH_COMMAND"; echo "$rc" > "$INSTANA_EXIT_MARKER"' EXIT
@@ -2148,6 +2307,11 @@ main() {
   if [[ "$DESTROY" == true ]]; then
     run_destroy
   fi
+  if [[ "$EXPORT_CONFIG" == true ]]; then
+    export_saved_parameters "$EXPORT_CONFIG_PATH"
+    exit 0
+  fi
+  [[ -z "$INPUT_CONFIG" ]] || input_prepare_cli_file
   ensure_detachable_session "$@"
   if [[ $# -eq 0 && -t 0 ]]; then
     start_menu
@@ -2157,33 +2321,36 @@ main() {
 
   progress_init
   phase_start 1 "Verify required command-line tools, acquire the installer lock, authenticate to GCP, and collect or reuse saved non-secret parameters."
-  resolve_provider || exit 1
+  if [[ -n "$INPUT_CONFIG" ]]; then
+    input_resolve_provider
+  else
+    resolve_provider || exit 1
+  fi
   check_local_tools
   exec 9>"${SCRIPT_DIR}/.install.lock"
   flock -n 9 || die "Another installer is running from this deployment folder."
   provider_check_auth
-  if ! offer_saved_parameters; then
-    collect_parameters
-  fi
+  choose_parameter_source
   save_parameters
   validate_vm_names
   phase_done 1 "Local prerequisites and non-secret parameters are ready."
-  if [[ "$TOPOLOGY" == three-node ]]; then
-    # Phase 1 has just written its own progress checkpoint into the state file;
-    # that is not an existing deployment. Only a state with resources/identity is.
-    if [[ -f "$STATE_FILE" && "$RESUME" != true ]] && ! state_is_only_progress; then
-      handle_existing_state_for_new_deployment
-    fi
-    prepare_multinode_lab
-  fi
+  prepare_topology
   phase_start 2 "Validate project, region, zone, VPC, subnet and Ubuntu image, then display the complete plan before resources are changed."
-  provider_validate_config
-  if [[ "$RESUME" == true && "$TOPOLOGY" != three-node ]]; then
-    validate_resume
-  else
-    provider_validate_image
-  fi
-  show_plan
+  while true; do
+    provider_validate_config
+    if [[ "$RESUME" == true && "$TOPOLOGY" != three-node ]]; then
+      validate_resume
+    else
+      provider_validate_image
+    fi
+    show_plan && break
+    # "E" in the plan: change one value, then check and show the plan again.
+    edit_parameters_before_start
+    save_parameters
+    validate_vm_names
+    prepare_topology
+  done
+  offer_blank_input_secrets
   phase_done 2 "GCP configuration and installation plan were validated."
 
   case "$TOPOLOGY" in

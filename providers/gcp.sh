@@ -112,36 +112,54 @@ prov_gcp_validate_image() {
 }
 
 # Project, region, zone, VPC network and subnet questions of collect_parameters.
+# A usable value from an input file (use_imported, input-config.sh) skips its question.
 prov_gcp_collect_location_params() {
-  hint "The Google Cloud project that will own and pay for the VM(s). It is the project ID (lowercase, e.g. instana-support-test-account)," \
-       "not the display name. Enter accepts the default; 'gcloud projects list' shows the projects your account can use."
-  prompt_required "GCP_PROJECT" "GCP Project ID" "$(default_gcp_project)" validate_gcp_project_id
-  # Default region/zone: where this machine runs when it is itself a GCE VM
-  # (metadata server), so the deployment lands close to it. That matters most
-  # for air-gapped installs, where the ~30 GB package is copied to the VM.
-  local local_zone local_region
-  local_zone=$(detect_local_gce_zone)
-  if [[ -n "$local_zone" ]]; then
-    local_region="${local_zone%-*}"
-    log "This machine is a GCE VM in zone ${local_zone}; offering region ${local_region} as the default (fastest transfer to the Instana VM)."
+  use_imported GCP_PROJECT || {
+    hint "The Google Cloud project that will own and pay for the VM(s). It is the project ID (lowercase, e.g. instana-support-test-account)," \
+         "not the display name. Enter accepts the default; 'gcloud projects list' shows the projects your account can use."
+    prompt_required "GCP_PROJECT" "GCP Project ID" "$(default_gcp_project)" validate_gcp_project_id
+  }
+  if use_imported GCP_REGION; then
+    use_imported GCP_ZONE || prompt_required "GCP_ZONE" "GCP Zone" "${GCP_REGION}-a" validate_gcp_zone_in_region
   else
-    local_region="us-central1"
+    # Default region/zone: where this machine runs when it is itself a GCE VM
+    # (metadata server), so the deployment lands close to it. That matters most
+    # for air-gapped installs, where the ~30 GB package is copied to the VM.
+    local local_zone local_region
+    local_zone=$(detect_local_gce_zone)
+    if [[ -n "$local_zone" ]]; then
+      local_region="${local_zone%-*}"
+      log "This machine is a GCE VM in zone ${local_zone}; offering region ${local_region} as the default (fastest transfer to the Instana VM)."
+    else
+      local_region="us-central1"
+    fi
+    hint "Region = geographic area (e.g. europe-west6 = Zurich, us-central1 = Iowa); zone = a data center inside it (suffix -a/-b/-c)." \
+         "Keep the defaults unless you need another location."
+    prompt_required "GCP_REGION" "GCP Region" "$local_region" validate_gcp_region
+    if use_imported GCP_ZONE; then :
+    elif [[ -n "$local_zone" && "$GCP_REGION" == "$local_region" ]]; then
+      prompt_required "GCP_ZONE" "GCP Zone" "$local_zone" validate_gcp_zone_in_region
+    else
+      prompt_required "GCP_ZONE" "GCP Zone" "${GCP_REGION}-a" validate_gcp_zone_in_region
+    fi
+    if [[ -n "$local_zone" && "$GCP_REGION" != "$local_region" && "$INSTALL_MODE" == "air-gapped" ]]; then
+      warn "Air-gapped: the package (tens of GB) will be copied from ${local_region} to ${GCP_REGION}; a cross-region copy is several times slower than staying in ${local_region}."
+      prompt_yes_no "Keep region ${GCP_REGION} anyway?" N || { prompt_required "GCP_REGION" "GCP Region" "$local_region" validate_gcp_region; prompt_required "GCP_ZONE" "GCP Zone" "$([[ "$GCP_REGION" == "$local_region" ]] && echo "$local_zone" || echo "${GCP_REGION}-a")" validate_gcp_zone_in_region; }
+    fi
   fi
-  hint "Region = geographic area (e.g. europe-west6 = Zurich, us-central1 = Iowa); zone = a data center inside it (suffix -a/-b/-c)." \
-       "Keep the defaults unless you need another location."
-  prompt_required "GCP_REGION" "GCP Region" "$local_region"
-  if [[ -n "$local_zone" && "$GCP_REGION" == "$local_region" ]]; then
-    prompt_required "GCP_ZONE" "GCP Zone" "$local_zone"
-  else
-    prompt_required "GCP_ZONE" "GCP Zone" "${GCP_REGION}-a"
-  fi
-  if [[ -n "$local_zone" && "$GCP_REGION" != "$local_region" && "$INSTALL_MODE" == "air-gapped" ]]; then
-    warn "Air-gapped: the package (tens of GB) will be copied from ${local_region} to ${GCP_REGION}; a cross-region copy is several times slower than staying in ${local_region}."
-    prompt_yes_no "Keep region ${GCP_REGION} anyway?" N || { prompt_required "GCP_REGION" "GCP Region" "$local_region"; prompt_required "GCP_ZONE" "GCP Zone" "$([[ "$GCP_REGION" == "$local_region" ]] && echo "$local_zone" || echo "${GCP_REGION}-a")"; }
-  fi
-  hint "VPC network and subnet the VM(s) attach to. Every project has one called 'default'; keep it unless your admin gave you another."
-  prompt_required "GCP_NETWORK" "VPC Network name" "default"
-  prompt_required "GCP_SUBNET" "Subnet name" "default"
+  imported_usable GCP_NETWORK GCP_SUBNET ||
+    hint "VPC network and subnet the VM(s) attach to. Every project has one called 'default'; keep it unless your admin gave you another."
+  use_imported GCP_NETWORK || prompt_required "GCP_NETWORK" "VPC Network name" "default" validate_gcp_network_name
+  use_imported GCP_SUBNET || prompt_required "GCP_SUBNET" "Subnet name" "default" validate_gcp_network_name
+}
+
+# prompt_required validators (VALUE [LABEL]) for the location answers.
+validate_gcp_region() { prov_gcp_validate_param GCP_REGION "$1"; }
+validate_gcp_network_name() { prov_gcp_validate_param GCP_NETWORK "$1"; }
+validate_gcp_zone_in_region() {
+  prov_gcp_validate_param GCP_ZONE "$1" || return 1
+  [[ -z "${GCP_REGION:-}" || "$1" == "${GCP_REGION}-"? ]] ||
+    { err "Zone '${1}' is not in region '${GCP_REGION}' (a zone is its region plus -a, -b or -c, e.g. ${GCP_REGION}-b)."; return 1; }
 }
 
 check_gcp_login() {
