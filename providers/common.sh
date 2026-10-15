@@ -41,6 +41,7 @@ destroy_by_name
 # The active provider lives in ACTIVE_PROVIDER, set only by resolve_provider;
 # PROVIDER is the saved parameter, so a PROVIDER variable that happens to be in
 # the environment never changes the dispatch.
+ACTIVE_PROVIDER=""
 provider_name() { printf '%s\n' "${ACTIVE_PROVIDER:-gcp}"; }
 
 for _op in $PROVIDER_CONTRACT_OPS; do

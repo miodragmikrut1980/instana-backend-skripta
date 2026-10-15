@@ -189,6 +189,7 @@ run_destroy() {
   fi
   # No state file here (fresh clone, state already removed, or the deployment
   # was made from another folder): find the resources by VM name instead.
+  resolve_provider || exit 1
   provider_destroy_by_name
 }
 

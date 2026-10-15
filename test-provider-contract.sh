@@ -71,3 +71,23 @@ GCP_PROJECT=a PROVIDER_SCOPE=b
 if provider_normalize_params 2>/dev/null; then echo "FAIL: conflicting aliases accepted" >&2; exit 1; fi
 echo 'PASS: parameter validation and PROVIDER_*/GCP_* aliases'
 TEST
+
+# show_plan records the provider in the state file once the plan is confirmed.
+TEST_DIR=$(mktemp -d)
+trap 'rm -rf "$TEST_DIR"' EXIT
+cp -R "$(dirname "$0")"/*.sh "$(dirname "$0")"/providers "$TEST_DIR/"
+(
+  cd "$TEST_DIR"
+  export ACTIVE_PROVIDER=bogus
+  source ./install.sh
+  test -z "$ACTIVE_PROVIDER"
+  DRY_RUN=false
+  prompt_yes_no() { return 0; }
+  TOPOLOGY=single-node INSTALL_TYPE=demo INSTALL_MODE=online UBUNTU_VERSION=ubuntu-2404-lts-amd64
+  GCP_PROJECT=test-project GCP_ZONE=us-central1-a MACHINE_TYPE=n2-standard-16 VM_NAME=instana-backend
+  BASE_DOMAIN=instana.example.com TENANT_NAME=tenant0 UNIT_NAME=unit0 TLS_MODE=auto SSH_SOURCE_CIDR=203.0.113.10/32
+  show_plan > /dev/null
+  jq -e '.provider == "gcp" and .gcp_project == "test-project"' .install-state.json > /dev/null
+)
+echo 'PASS: the confirmed plan records the provider in the state file; ACTIVE_PROVIDER from the environment is ignored'
+
