@@ -1,0 +1,5 @@
+{
+  "schema": "instana-installer-input",
+  "schema_version": 1,
+  "parameters": {
+    "PROVIDER": "gcp",
