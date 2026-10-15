@@ -1,4 +1,4 @@
-Instana GCP lab v0.7.0 — parameters from a JSON file (--config, config-generator.html); provider layer (GCP behind providers/); backend version chosen first; resilient installer
+Instana GCP lab v0.7.0 — install on existing hosts over SSH (PROVIDER ssh); parameters from a JSON file (--config, config-generator.html); provider layer (GCP behind providers/); backend version chosen first; resilient installer
 CURRENT: read IZMENE_v0.7.0.txt and IZMENE_v0.6.1.txt first, then the older IZMENE files for details.
 
 QUICK START — POKRETANJE NA UPRAVLJACKOJ VM
@@ -73,8 +73,36 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
                                            (.install-config.json) kao takav fajl
    Rucni unos (odgovori jedan po jedan) ostaje prva opcija u meniju; za GCP
    pitanja su ista kao ranije. Three-node vise ne pita velicinu (uvek small,
-   3x n2-standard-16). PROVIDER "ssh" (postojeci hostovi) jos nije podrzan:
-   skripta stane i objasni; dolazi u sledecem koraku.
+   3x n2-standard-16).
+
+6) INSTALACIJA NA POSTOJECE HOSTOVE (PROVIDER ssh, bez GCP-a):
+   Skripta se poveze SSH-om na 1 ili 3 Ubuntu hosta koje vec imas (kod
+   korisnika, on-prem, bilo koji cloud). Ne pravi, ne brise i bez pitanja ne
+   restartuje hostove. Pokretanje:
+     INSTANA_PROVIDER=ssh ./install.sh --dry-run      (plan, nista se ne menja)
+     INSTANA_PROVIDER=ssh ./install.sh
+   ili iz fajla: config-generator.html -> "Existing hosts (SSH)", pa --config.
+   Hostovi moraju imati: Ubuntu 22.04/24.04 x86_64; za single-node demo bar
+   16 vCPU / 64 GB (production 28/112), three-node bar 12 vCPU / 48 GB po
+   nodu; / od najmanje 100 GB (three-node: ispod 270 GB samo upozorenje);
+   SSH korisnika sa sudo BEZ lozinke; po jedan prazan disk za svaki Instana
+   direktorijum (single-node 4; three-node: node 0 objects, node 1 data/
+   metrics/analytics); bez aktivnog firewalld i bez postojeceg k3s.
+   Three-node: sshd mora da slusa i na portu 22 (stanctl multi-node).
+   SSH kljuc sa lozinkom (passphrase) mora biti u ssh-agent-u:
+     eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519
+   (skripta u terminalu jednom pokrene ssh-add; lozinku nikad ne cita/cuva).
+   Tok: pitanja (hostovi, korisnik, kljuc, port; imena = imena hostova) ->
+   skripta procita hostove (samo citanje) -> izbor diskova (nude se samo
+   neiskorisceni diskovi dovoljne velicine, pamti se /dev/disk/by-id/...) ->
+   plan -> Y -> posebna potvrda izmena na hostovima (kernel + RESTART,
+   UFW, root SSH izmedju nodova, formatiranje praznih diskova) -> faze 3-5:
+   provera hostova, diskova i spisak portova koje mreza mora da propusti
+   (TCP <ssh port>, 80, 443, 8443; three-node i portovi izmedju nodova).
+   Svako zaustavljanje kaze sta je nadjeno i na kom hostu, zasto to
+   blokira instalaciju, tacne komande za popravku i kako nastaviti.
+   --destroy za ssh brise SAMO lokalni state ovog foldera; na hostovima
+   ostaje sve (skripta ispise sta i kako se rucno uklanja).
 
 Ne klonirati repo unutar postojeceg klona (nastaje ugnjezdeni folder sa
 odvojenim state fajlovima). Ne koristiti rm -r * bez pwd provere.

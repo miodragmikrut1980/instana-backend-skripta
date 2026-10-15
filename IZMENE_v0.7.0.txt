@@ -99,3 +99,45 @@ still checks every value and asks only what is missing or wrong.
   symbolic-link input files; the new stop texts; a failing state write at
   the plan. README: copy-pasteable --config commands and the note that
   without a terminal a complete file still stops at the plan (Y needed).
+
+2026-10-15 — Install on existing hosts over SSH (PROVIDER ssh)
+Why: support cases and customer environments often have their own machines
+(on-prem, another cloud). The installer now installs on 1 or 3 existing
+Ubuntu hosts over plain SSH, with the same phases 6-12 as on GCP. It never
+creates, deletes, or reboots a host without confirmation.
+- New providers/ssh.sh. Start with INSTANA_PROVIDER=ssh ./install.sh, or a
+  file with "PROVIDER": "ssh" (config-generator.html: "Existing hosts").
+- Questions: host(s), SSH user, key, port. Ubuntu image, SSH source CIDR
+  and machine size are not asked. Each host is read once over SSH
+  (read-only): OS, CPU, RAM, size of /, sudo, k3s, firewalld, disks.
+  Names default to the hosts' own names. One dedicated disk per Instana data
+  directory is chosen from the unused whole disks that are large enough;
+  the stable /dev/disk/by-id path is stored, never /dev/sdX.
+- SSH key with a passphrase: must be in ssh-agent; in a terminal the
+  installer runs ssh-add once (ssh-add asks). The passphrase is never read,
+  stored or logged. Without an agent it stops with the ssh-agent commands.
+- Phase 3 checks every host: Ubuntu 22.04/24.04, x86_64, CPU/RAM minimum,
+  / at least 100 GB (IBM; three-node below 270 GB only warns), passwordless
+  sudo, no active firewalld (stop with the disable command; the installer
+  never disables it), no existing k3s, three-node sshd on port 22, and on
+  resume the same machine-id as at the start. Phase 4 re-verifies the
+  chosen disks (state keys hostdisk_*). Phase 5 lists the ports the network
+  must allow and asks to confirm them (or NETWORK_RULES_CONFIRMED in a file).
+- After "Start now?" the changes on the hosts (kernel + reboot, UFW, root
+  SSH between nodes, disk formatting, k3s) are confirmed separately, always
+  in a terminal; an input file cannot pre-approve them.
+- Every stop says what was found on which host, why it blocks the
+  installation, the exact fix and how to continue (host_stop).
+- UFW keeps the configured SSH port open (GCP: 22 as before).
+- --destroy for ssh removes only the local state and lists what stays on
+  the hosts. A known_hosts file of its own (.ssh-known-hosts) makes a
+  changed host key a hard stop.
+- config-generator.html: the "not available yet" note is gone; three nodes
+  ask only the disks the layout uses (node 0 objects, node 1 data, metrics,
+  analytics); /dev/sdX is refused. --config: GCP-only keys are ignored with
+  the reason for ssh.
+- GCP behaviour and output are unchanged (provider hooks with the original
+  texts; the dry-run output of the GCP cases is identical).
+- Tests: test-ssh-provider.sh, test-ssh-host-checks.sh (each stop asserts
+  what/why/fix/continue), test-ssh-disk-map.sh, ssh cases in test-dry-run,
+  test-config-file and test-destroy; fakes in test-ssh-lib.inc.
