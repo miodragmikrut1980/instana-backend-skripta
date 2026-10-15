@@ -14,6 +14,7 @@ ssh_fakes_setup() {
 #!/usr/bin/env bash
 echo "ssh $*" >> "$SSH_LOG"
 host=""; prev=""; for a in "$@"; do [[ "$prev" == "--" && -z "$host" ]] && host="$a"; prev="$a"; done
+echo "$host" >> "$SCEN/known"   # accept-new: the host key is now known
 cmd="${!#}"
 rc=0; [[ -f "$SCEN/$host.rc" ]] && rc=$(cat "$SCEN/$host.rc")
 if (( rc != 0 )); then cat "$SCEN/$host.err" >&2 2>/dev/null; exit "$rc"; fi
@@ -34,6 +35,9 @@ echo "ssh-keygen $*" >> "$SSH_LOG"
 case "$*" in
   *"-y -P"*) [[ "${FAKE_KEY_LOCKED:-no}" == yes ]] && exit 1; exit 0 ;;
   *-lf*) echo "256 SHA256:fakefingerprint comment (ED25519)" ;;
+  *"-l -F"*)
+    name="${3#[}"; name="${name%%]*}"
+    grep -qx "$name" "$SCEN/known" 2>/dev/null && echo "$3 ED25519 SHA256:hostkey-of-${name}" ;;
 esac
 FAKE
   cat > "$FAKE_ROOT/bin/ssh-add" <<'FAKE'
@@ -62,7 +66,7 @@ host_facts() {
   local host="$1"; shift
   local -A f=([HOSTNAME]="${host%%.*}" [OS_ID]=ubuntu [OS_VERSION]=24.04 [OS_NAME]="Ubuntu 24.04.1 LTS"
     [ARCH]=x86_64 [CPUS]=32 [MEM_KB]=131900000 [ROOT_SIZE]=300000000000 [ROOT_FREE]=250000000000
-    [SUDO]=ok [K3S]=no [STANCTL]=no [FIREWALLD]=inactive [MACHINE_ID]="mid-${host}" [SSHD22]=yes [NTP]=yes)
+    [SUDO]=ok [K3S]=no [STANCTL]=no [FIREWALLD]=inactive [MACHINE_ID]="mid-${host}" [PRODUCT_UUID]="uuid-${host}" [SSHD22]=yes [NTP]=yes)
   local kv
   for kv in "$@"; do f[${kv%%=*}]="${kv#*=}"; done
   {

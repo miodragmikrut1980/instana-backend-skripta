@@ -306,6 +306,7 @@ if test -e /etc/rancher/k3s/k3s.yaml; then echo K3S=yes; else echo K3S=no; fi
 if command -v stanctl >/dev/null 2>&1; then echo STANCTL=yes; else echo STANCTL=no; fi
 echo "FIREWALLD=$(systemctl is-active firewalld 2>/dev/null || true)"
 echo "MACHINE_ID=$(cat /etc/machine-id 2>/dev/null)"
+echo "PRODUCT_UUID=$(sudo -n cat /sys/class/dmi/id/product_uuid 2>/dev/null)"
 if ss -ltnH 2>/dev/null | awk "{print \$4}" | grep -Eq "(^|:)22\$"; then echo SSHD22=yes; else echo SSHD22=no; fi
 echo "NTP=$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo unknown)"
 lsblk -bdpn -o NAME,SIZE,TYPE 2>/dev/null | while read -r n s t; do
@@ -351,7 +352,7 @@ prov_ssh_gather_facts() {
         # Paths come from the host's udev; only plain stable names are used.
         [[ "${value%%|*}" =~ ^/dev/disk/by-(id|path)/[A-Za-z0-9._:+@-]+$ && "${value#*|}" =~ ^/dev/[A-Za-z0-9/_-]+$ ]] || continue
         links+=("$value"); SSH_FACT_LINKS+=("${host}|${value}") ;;
-      HOSTNAME|OS_ID|OS_VERSION|OS_NAME|ARCH|CPUS|MEM_KB|ROOT_SIZE|ROOT_FREE|SUDO|K3S|STANCTL|FIREWALLD|MACHINE_ID|SSHD22|NTP)
+      HOSTNAME|OS_ID|OS_VERSION|OS_NAME|ARCH|CPUS|MEM_KB|ROOT_SIZE|ROOT_FREE|SUDO|K3S|STANCTL|FIREWALLD|MACHINE_ID|PRODUCT_UUID|SSHD22|NTP)
         SSH_FACT["${host}|${key}"]="$value" ;;
     esac
   done <<< "$out"
@@ -375,6 +376,23 @@ prov_ssh_gather_facts() {
 }
 
 prov_ssh_fact() { printf '%s' "${SSH_FACT["$1|$2"]:-}"; }
+
+# Identity of the machine behind an address: /etc/machine-id, otherwise the
+# DMI product UUID (read with sudo -n); empty when neither is available.
+prov_ssh_host_id() {
+  local id
+  id=$(prov_ssh_fact "$1" MACHINE_ID)
+  [[ -n "$id" ]] || { id=$(prov_ssh_fact "$1" PRODUCT_UUID); [[ -z "$id" ]] || id="dmi:${id}"; }
+  printf '%s' "$id"
+}
+
+# The host key ssh accepted for HOST on first contact (known_hosts of this folder).
+prov_ssh_known_key() {
+  local name="$1"
+  [[ "${SSH_PORT:-22}" == 22 ]] || name="[$1]:${SSH_PORT}"
+  # Nothing recorded yet is a normal answer (first contact), not an error.
+  { ssh-keygen -l -F "$name" -f "$SSH_KNOWN_HOSTS_FILE" 2>/dev/null | grep -v '^#' | head -1; } || true
+}
 prov_ssh_ensure_facts() { [[ -n "${SSH_FACT["$1|GATHERED"]:-}" ]] || prov_ssh_gather_facts "$1"; }
 
 # Ubuntu image name the rest of the installer and the plan use.
@@ -445,10 +463,17 @@ prov_ssh_collect_location_params() {
     SSH_VIA_PRIVATE="${SSH_VIA_PRIVATE:-false}"
   fi
   prov_ssh_agent_preflight
-  local host
+  local host known
   while IFS= read -r host; do
     log "Connecting to ${SSH_USER}@${host}:${SSH_PORT} (read-only checks)..."
+    known=$(prov_ssh_known_key "$host")
     prov_ssh_gather_facts "$host"
+    if [[ -z "$known" ]]; then
+      known=$(prov_ssh_known_key "$host")
+      warn "First connection to ${host}: its SSH host key is now trusted for this deployment: ${known:-not recorded}."
+      hint "Compare it with the key on the host's console if you can (sudo ssh-keygen -l -f /etc/ssh/ssh_host_ed25519_key.pub)." \
+           "From now on a different key on this address stops the installer."
+    fi
     ok "${host}: $(prov_ssh_fact "$host" OS_NAME), $(prov_ssh_fact "$host" CPUS) vCPUs, $(( $(prov_ssh_fact "$host" MEM_KB) / 1000000 )) GB RAM, hostname $(prov_ssh_fact "$host" HOSTNAME)."
   done < <(prov_ssh_hosts)
   UBUNTU_VERSION=$(prov_ssh_ubuntu_version "$(prov_ssh_hosts | head -1)")
@@ -744,9 +769,15 @@ prov_ssh_check_host() {
       "$cont" \
       "Let sshd also listen on port 22 (add 'Port 22' next to the existing Port line), then:|sudo systemctl restart ssh"
   fi
+  if [[ -z "$(prov_ssh_host_id "$host")" ]]; then
+    host_stop "$host" "it has no machine identity: /etc/machine-id is missing or empty and /sys/class/dmi/id/product_uuid cannot be read." \
+      "the installer records the identity of every host and compares it on --resume, so that an address that now leads to another machine is never continued; without an identity that check is impossible." \
+      "$cont" \
+      "Create a machine ID on the host (systemd does this on a normal boot):|sudo systemd-machine-id-setup && cat /etc/machine-id"
+  fi
   rid=$(get_state "hostid_${node}")
-  if [[ -n "$rid" && "$rid" != "$(prov_ssh_fact "$host" MACHINE_ID)" ]]; then
-    host_stop "$host" "its machine ID ($(prov_ssh_fact "$host" MACHINE_ID)) differs from the one recorded when this deployment started (${rid})." \
+  if [[ -n "$rid" && "$rid" != "$(prov_ssh_host_id "$host")" ]]; then
+    host_stop "$host" "its machine ID ($(prov_ssh_host_id "$host")) differs from the one recorded when this deployment started (${rid})." \
       "the address now leads to another machine (or the host was reinstalled); continuing would install half a deployment on the wrong machine." \
       "./install.sh --resume" \
       "Point ${node} back at the original machine (DNS / IP), or remove this deployment's local state and start a new one:|./install.sh --destroy"
@@ -766,7 +797,7 @@ prov_ssh_ensure_vms() {
     prov_ssh_check_host "$node"
     if [[ "$DRY_RUN" != true ]]; then
       save_state "host_${node}" checked
-      [[ -n "$(get_state "hostid_${node}")" ]] || save_state "hostid_${node}" "$(prov_ssh_fact "$host" MACHINE_ID)"
+      [[ -n "$(get_state "hostid_${node}")" ]] || save_state "hostid_${node}" "$(prov_ssh_host_id "$host")"
     fi
   done
 }

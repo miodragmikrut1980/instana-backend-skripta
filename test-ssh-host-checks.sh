@@ -103,3 +103,33 @@ host_facts h1 ROOT_SIZE=150000000000; host_facts h2; host_facts h3
 run_checks three-node
 grep -q 'h1: root filesystem (/) is 150 GB; the GCP labs of this installer use 270 GB' "$OUT"
 echo 'PASS: three-node root between the IBM minimum and the lab size only warns'
+
+# No /etc/machine-id: the DMI product UUID is the identity; neither → stop.
+host_facts h1 MACHINE_ID=
+run_checks single-node
+echo '{"provider":"ssh"}' > .install-state.json
+( set --; source ./install.sh; INSTANA_PROVIDER=ssh resolve_provider; DRY_RUN=false TOPOLOGY=single-node INSTALL_TYPE=demo SSH_USER=ubuntu SSH_KEY_PATH="$FAKE_KEY" SSH_PORT=22 VM_NAME=lab VM_HOST=h1; provider_ensure_vms ) > "$OUT" 2>&1
+test "$(jq -r .hostid_lab .install-state.json)" = dmi:uuid-h1
+rm -f .install-state.json
+echo 'PASS: without /etc/machine-id the DMI product UUID identifies the host'
+host_facts h1 MACHINE_ID= PRODUCT_UUID=
+stop_case "no machine identity" single-node "Host h1: it has no machine identity: /etc/machine-id is missing or empty and /sys/class/dmi/id/product_uuid cannot be read." \
+  "the installer records the identity of every host" "sudo systemd-machine-id-setup"
+host_facts h1
+
+# First contact shows the host key that is trusted from now on; later contacts do not.
+first_contact() {
+  (
+    set --; source ./install.sh; INSTANA_PROVIDER=ssh resolve_provider
+    DRY_RUN=true TOPOLOGY=single-node PARAMS_SOURCE=import
+    IMPORTED=([VM_HOST]=h1 [SSH_USER]=ubuntu [SSH_KEY_PATH]="$FAKE_KEY" [SSH_PORT]=22)
+    prov_ssh_collect_location_params
+  ) > "$OUT" 2>&1
+}
+rm -f "$SCEN/known"
+first_contact
+grep -q 'First connection to h1: its SSH host key is now trusted for this deployment: h1 ED25519 SHA256:hostkey-of-h1' "$OUT"
+first_contact
+if grep -q 'First connection' "$OUT"; then echo "FAIL: known host shown as first contact" >&2; exit 1; fi
+echo 'PASS: the host key fingerprint is shown on first contact only'
+
