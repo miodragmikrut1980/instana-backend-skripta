@@ -52,7 +52,7 @@ get_state() {
   jq -r --arg k "$1" '.[$k] // empty' "$STATE_FILE"
 }
 
-for _provider_file in common.sh gcp.sh; do
+for _provider_file in common.sh gcp.sh ssh.sh; do
   [[ -f "${SCRIPT_DIR}/providers/${_provider_file}" ]] ||
     die "providers/${_provider_file} is missing from ${SCRIPT_DIR}; restore it from git (git checkout -- . && git pull origin main)."
   source "${SCRIPT_DIR}/providers/${_provider_file}"

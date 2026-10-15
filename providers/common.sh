@@ -5,7 +5,7 @@
 # Provider code calls its CLI (gcloud, ...) by bare name so the test mocks
 # (shell functions or fake binaries on PATH) keep working.
 
-PROVIDERS_SUPPORTED="gcp"
+PROVIDERS_SUPPORTED="gcp ssh"
 
 # The contract: every provider defines prov_<name>_<op> for each op below
 # (checked by test-provider-contract.sh).

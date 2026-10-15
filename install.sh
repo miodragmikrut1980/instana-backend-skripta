@@ -28,7 +28,7 @@ readonly REPORT_FILE="${SCRIPT_DIR}/.install-report.txt"
 umask 077
 # The installer is split over several files; a missing one (partial copy,
 # accidental delete) must produce a clear fix instead of a bash source error.
-for _companion in parameters.sh input-config.sh progress.sh multinode-online.sh local-access.sh multinode-resume.sh hardware-input.sh capacity-fallback.sh providers/common.sh providers/gcp.sh; do
+for _companion in parameters.sh input-config.sh progress.sh multinode-online.sh local-access.sh multinode-resume.sh hardware-input.sh capacity-fallback.sh providers/common.sh providers/gcp.sh providers/ssh.sh; do
   if [[ ! -f "${SCRIPT_DIR}/${_companion}" ]]; then
     echo "[ERROR] ${_companion} is missing from ${SCRIPT_DIR}; the installer needs all its files side by side." >&2
     echo "  Restore them from git in that folder:   git checkout -- . && git pull origin main" >&2
@@ -550,6 +550,18 @@ validate_fqdn() {
 # =============================================================================
 # SECTION 4 — COLLECT ALL PARAMETERS
 # =============================================================================
+# use_provider_default_name VAR TEXT_KEY — in a run from an input file, a name
+# the file leaves out is taken from the provider when it offers one (existing
+# hosts: the host's own name) instead of being asked. GCP offers none.
+use_provider_default_name() {
+  local var="$1" name
+  [[ "$PARAMS_SOURCE" == import && "$var" != "$EDIT_KEY" && -z "${IMPORTED[$var]:-}" ]] || return 1
+  name=$(provider_text "$2")
+  [[ -n "$name" ]] && validate_vm_name "$name" "$var" >/dev/null 2>&1 || return 1
+  printf -v "$var" '%s' "$name"
+  log "${var} = ${name} (not in $(input_source_label); the host's own name)"
+}
+
 collect_parameters() {
   echo ""
   echo -e "${BOLD}════════════════════════════════════════════════════════════════${RESET}"
@@ -607,20 +619,20 @@ collect_parameters() {
     prompt_required "SSH_SOURCE_CIDR" "CIDR allowed to SSH to the VM(s)" "$(detect_public_cidr)" validate_cidr
   }
   if [[ "$TOPOLOGY" == "single-node" ]]; then
-    use_imported VM_NAME || {
+    use_imported VM_NAME || use_provider_default_name VM_NAME default_vm_name || {
       local -a name_hint
       mapfile -t name_hint < <(provider_text_or vm_name_hint \
         "Name of the new VM in GCP; the four data disks will be named <vm>-analytics/-metrics/-objects/-data." \
         "Lowercase letters, digits and hyphens. Must not already exist in the zone.")
       hint "${name_hint[@]}"
-      prompt_required "VM_NAME" "VM name" "instana-backend" validate_vm_name VM_NAME
+      prompt_required "VM_NAME" "VM name" "$(provider_text_or default_vm_name instana-backend)" validate_vm_name VM_NAME
     }
   else
     imported_usable NODE0_NAME NODE1_NAME NODE2_NAME ||
       hint "$(provider_text_or node_names_hint "Names of the three new VMs. Node 0 runs the backend and stanctl, node 1 the data stores, node 2 the rest.")"
-    use_imported NODE0_NAME || prompt_required "NODE0_NAME" "Node 0 name (instana-0, backend)" "instana-0" validate_node_name NODE0_NAME
-    use_imported NODE1_NAME || prompt_required "NODE1_NAME" "Node 1 name (instana-1, data store)" "instana-1" validate_node_name NODE1_NAME
-    use_imported NODE2_NAME || prompt_required "NODE2_NAME" "Node 2 name (instana-2, other)" "instana-2" validate_node_name NODE2_NAME
+    use_imported NODE0_NAME || use_provider_default_name NODE0_NAME default_node0_name || prompt_required "NODE0_NAME" "Node 0 name (instana-0, backend)" "$(provider_text_or default_node0_name instana-0)" validate_node_name NODE0_NAME
+    use_imported NODE1_NAME || use_provider_default_name NODE1_NAME default_node1_name || prompt_required "NODE1_NAME" "Node 1 name (instana-1, data store)" "$(provider_text_or default_node1_name instana-1)" validate_node_name NODE1_NAME
+    use_imported NODE2_NAME || use_provider_default_name NODE2_NAME default_node2_name || prompt_required "NODE2_NAME" "Node 2 name (instana-2, other)" "$(provider_text_or default_node2_name instana-2)" validate_node_name NODE2_NAME
   fi
 
   # Machine type selection
@@ -2348,6 +2360,7 @@ source "${SCRIPT_DIR}/capacity-fallback.sh"
 source "${SCRIPT_DIR}/progress.sh"
 source "${SCRIPT_DIR}/providers/common.sh"
 source "${SCRIPT_DIR}/providers/gcp.sh"
+source "${SCRIPT_DIR}/providers/ssh.sh"
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   main "$@"
