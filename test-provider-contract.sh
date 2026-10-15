@@ -22,20 +22,40 @@ for op in $PROVIDER_CONTRACT_OPS; do
 done
 echo 'PASS: every provider implements the whole contract'
 
-unset PROVIDER INSTANA_PROVIDER
-CONFIG_FILE=/nonexistent STATE_FILE=/nonexistent
+unset PROVIDER INSTANA_PROVIDER ACTIVE_PROVIDER
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+CONFIG_FILE="$tmp/config.json" STATE_FILE="$tmp/state.json"
+refused() { if resolve_provider "$@" 2>"$tmp/err"; then echo "FAIL: resolve_provider $* was accepted" >&2; exit 1; fi; }
 resolve_provider
 test "$PROVIDER" = gcp
 test "$PROVIDER_LABEL" = GCP
 test "$(provider_disk_device_path node0 disk-data)" = /dev/disk/by-id/google-disk-data
-tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-echo '{"gcp_project":"p","gcp_zone":"z"}' > "$tmp/state.json"
-STATE_FILE="$tmp/state.json"; unset PROVIDER
+PROVIDER=bogus
+test "$(provider_label)" = GCP
+echo 'PASS: default is gcp; a stray PROVIDER variable does not change the dispatch'
+
+INSTANA_PROVIDER=nope refused
+grep -q "Unsupported provider 'nope' (from INSTANA_PROVIDER)" "$tmp/err"
+refused nope
+grep -q "Unsupported provider 'nope' (from --provider)" "$tmp/err"
+test "$(provider_name)" = gcp
+echo 'PASS: an unsupported provider is refused with its source; the active provider is unchanged'
+
+echo '{"gcp_project":"p","gcp_zone":"z","vm_a":"created"}' > "$STATE_FILE"
 resolve_provider
 test "$PROVIDER" = gcp
-if INSTANA_PROVIDER=nope resolve_provider 2>/dev/null; then echo "FAIL: unknown provider accepted" >&2; exit 1; fi
-test "$PROVIDER" = gcp
-echo 'PASS: an existing state file without a provider resolves to gcp; unknown providers are refused'
+INSTANA_PROVIDER=ssh refused
+grep -q "Provider 'ssh' was requested (INSTANA_PROVIDER) but this folder records provider 'gcp' (.install-state.json)" "$tmp/err"
+refused ssh .install-config-input.json
+grep -q "requested (.install-config-input.json)" "$tmp/err"
+echo '{"parameters":{"PROVIDER":"ssh"}}' > "$CONFIG_FILE"
+refused
+grep -q "The saved parameters name provider 'ssh'" "$tmp/err"
+rm -f "$STATE_FILE"
+INSTANA_PROVIDER=gcp refused
+grep -q "records provider 'ssh' (.install-config.json)" "$tmp/err"
+rm -f "$CONFIG_FILE"
+echo 'PASS: a recorded deployment (old state = gcp) wins and never switches silently'
 
 provider_validate_param GCP_PROJECT instana-support-test-account
 provider_validate_param PROVIDER_LOCATION europe-west6-b

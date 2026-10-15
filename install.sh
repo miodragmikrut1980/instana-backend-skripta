@@ -1168,6 +1168,7 @@ show_plan() {
   echo "  Enter N, or press Enter without typing anything, to cancel without starting."
   echo ""
   prompt_yes_no "Start now? Type Y to continue or N to cancel" N || { log "Installation was not started; no action was approved from this plan."; exit 0; }
+  save_state "provider" "$(provider_name)"
   save_state "gcp_project" "$GCP_PROJECT"
   save_state "gcp_zone" "$GCP_ZONE"
   save_state "topology" "$TOPOLOGY"
@@ -2248,7 +2249,7 @@ main() {
 
   progress_init
   phase_start 1 "Verify required command-line tools, acquire the installer lock, authenticate to GCP, and collect or reuse saved non-secret parameters."
-  resolve_provider || die "Set INSTANA_PROVIDER to one of: ${PROVIDERS_SUPPORTED} (or unset it for gcp)."
+  resolve_provider || exit 1
   check_local_tools
   exec 9>"${SCRIPT_DIR}/.install.lock"
   flock -n 9 || die "Another installer is running from this deployment folder."
