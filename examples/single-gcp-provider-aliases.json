@@ -1,0 +1,31 @@
+{
+  "schema": "instana-installer-input",
+  "schema_version": 1,
+  "parameters": {
+    "PROVIDER": "gcp",
+    "TOPOLOGY": "single-node",
+    "INSTALL_MODE": "online",
+    "INSTALL_TYPE": "demo",
+    "UBUNTU_VERSION": "ubuntu-2404-lts-amd64",
+    "SSH_SOURCE_CIDR": "203.0.113.10/32",
+    "VM_NAME": "test-lab",
+    "SIZE": "minimum",
+    "BASE_DOMAIN": "instana.lab.example.com",
+    "TENANT_NAME": "tenant0",
+    "UNIT_NAME": "unit0",
+    "TLS_MODE": "auto-generate (self-signed)",
+    "BACKEND_VERSION": "3.323.470-0",
+    "STANCTL_VERSION": "3.323.470-0",
+    "PROVIDER_SCOPE": "instana-support-test-account",
+    "PROVIDER_REGION": "europe-west6",
+    "PROVIDER_LOCATION": "europe-west6-b",
+    "PROVIDER_NETWORK": "default",
+    "PROVIDER_SUBNET": "default"
+  },
+  "secrets": {
+    "DOWNLOAD_KEY": "test-download-key-0000",
+    "AGENT_KEY": "test-agent-key-0000",
+    "SALES_KEY": "test-sales-key-0000",
+    "ADMIN_PASSWORD": "Test-Admin-Pass-0000"
+  }
+}

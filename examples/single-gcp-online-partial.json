@@ -1,0 +1,27 @@
+{
+  "schema": "instana-installer-input",
+  "schema_version": 1,
+  "parameters": {
+    "PROVIDER": "gcp",
+    "TOPOLOGY": "single-node",
+    "INSTALL_MODE": "online",
+    "INSTALL_TYPE": "demo",
+    "UBUNTU_VERSION": "ubuntu-2404-lts-amd64",
+    "GCP_PROJECT": "instana-support-test-account",
+    "GCP_REGION": "europe-west6",
+    "GCP_ZONE": "europe-west6-b",
+    "GCP_NETWORK": "default",
+    "GCP_SUBNET": "default",
+    "VM_NAME": "test-lab",
+    "SIZE": "minimum",
+    "TENANT_NAME": "tenant0",
+    "UNIT_NAME": "unit0",
+    "TLS_MODE": "auto-generate (self-signed)"
+  },
+  "secrets": {
+    "DOWNLOAD_KEY": "",
+    "AGENT_KEY": "",
+    "SALES_KEY": "",
+    "ADMIN_PASSWORD": ""
+  }
+}

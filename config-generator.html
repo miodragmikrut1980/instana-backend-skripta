@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Instana installer config</title>
+<style>
+:root{
+  --paper:#EDF1F4; --sheet:#FFFFFF; --ink:#16212B; --muted:#5A6B7A; --line:#CBD5DE;
+  --accent:#0F6E74; --accent-soft:#DCEEEF; --warn:#8A5300; --warn-soft:#FBF0DC;
+  --err:#B3261E; --err-soft:#FBE4E2; --ok:#2E7D4F; --code-bg:#13202A; --code-ink:#D6E2EA;
+  --code-key:#8FD3D8; --code-str:#F2C98B; --code-dim:#6E8494;
+  --ui:"Avenir Next","Segoe UI",system-ui,-apple-system,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{--paper:#0F171D; --sheet:#17222B; --ink:#E3EAF0; --muted:#93A4B2; --line:#2B3A46;
+    --accent:#4FB3B8; --accent-soft:#16363A; --warn:#E3A84A; --warn-soft:#33270F;
+    --err:#F08A80; --err-soft:#3A1A18; --ok:#6CC28F; --code-bg:#0A1116;}
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 var(--ui)}
+header{padding:28px 24px 8px;max-width:1280px;margin:0 auto}
+header h1{margin:0;font-size:26px;font-weight:600;letter-spacing:-.01em}
+header p{margin:6px 0 0;color:var(--muted);max-width:70ch}
+.wrap{max-width:1280px;margin:0 auto;padding:16px 24px 48px;display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,480px);gap:28px;align-items:start}
+@media (max-width:960px){.wrap{grid-template-columns:minmax(0,1fr);padding:12px 16px 40px}header{padding:20px 16px 4px}}
+section.step{background:var(--sheet);border:1px solid var(--line);border-radius:10px;
+  padding:18px 20px 20px;margin-bottom:16px;display:grid;grid-template-columns:32px 1fr;gap:0 12px}
+section.step[hidden]{display:none}
+.num{width:28px;height:28px;border-radius:50%;border:1.5px solid var(--accent);color:var(--accent);
+  display:grid;place-items:center;font-size:13px;font-weight:600}
+.step h2{margin:2px 0 2px;font-size:17px;font-weight:600}
+.step .lead{margin:0 0 12px;color:var(--muted);font-size:14px}
+.body{grid-column:2;min-width:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px 16px}
+.field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.field.wide{grid-column:1/-1}
+label.lbl{font-size:13px;font-weight:600}
+.help{font-size:12.5px;color:var(--muted)}
+input[type=text],input[type=password],input[type=number],select{
+  font:14px var(--ui);color:var(--ink);background:var(--paper);border:1px solid var(--line);
+  border-radius:6px;padding:8px 10px;width:100%}
+input.path,input.code{font-family:var(--mono);font-size:13px}
+input:focus,select:focus,button:focus-visible,.seg input:focus-visible+span{outline:2px solid var(--accent);outline-offset:1px}
+.field.bad input,.field.bad select{border-color:var(--err);background:var(--err-soft)}
+.msg{font-size:12.5px;min-height:0}
+.field.bad .msg{color:var(--err)}
+.field.ask .msg{color:var(--warn)}
+.seg{display:flex;flex-wrap:wrap;gap:8px}
+.seg label{position:relative;cursor:pointer}
+.seg input{position:absolute;opacity:0;pointer-events:none}
+.seg span{display:block;padding:8px 14px;border:1px solid var(--line);border-radius:6px;background:var(--paper);font-size:14px}
+.seg input:checked+span{border-color:var(--accent);background:var(--accent-soft);color:var(--ink);box-shadow:inset 0 0 0 1px var(--accent)}
+.seg input:disabled+span{opacity:.45;cursor:not-allowed}
+.seg small{display:block;font-size:11.5px;color:var(--muted)}
+.note{font-size:13px;padding:10px 12px;border-radius:6px;background:var(--accent-soft);margin-top:12px}
+.note.warn{background:var(--warn-soft);color:var(--ink)}
+table.disks{border-collapse:collapse;width:100%;font-size:13px;margin-top:4px}
+table.disks th{text-align:left;font-weight:600;padding:4px 6px;color:var(--muted)}
+table.disks td{padding:3px 4px;vertical-align:top}
+table.disks td:first-child{white-space:nowrap;font-weight:600;padding-right:8px}
+table.disks input{min-width:150px}
+.disks-scroll{overflow-x:auto}
+.secret-row{display:flex;gap:6px}
+.secret-row button{flex:none}
+button{font:600 13.5px var(--ui);border-radius:6px;border:1px solid var(--line);background:var(--sheet);
+  color:var(--ink);padding:8px 12px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button:disabled{opacity:.5;cursor:not-allowed}
+/* Output panel */
+main,aside{min-width:0}
+aside{position:sticky;top:16px}
+@media (max-width:960px){aside{position:static}}
+.panel{background:var(--code-bg);color:var(--code-ink);border-radius:10px;overflow:hidden}
+.panel-head{padding:14px 16px 10px;display:flex;justify-content:space-between;align-items:baseline;gap:8px;border-bottom:1px solid #22323E}
+.panel-head h2{margin:0;font-size:15px;font-weight:600;color:#fff}
+.panel-head .file{font-family:var(--mono);font-size:12px;color:var(--code-dim)}
+pre#preview{margin:0;padding:14px 16px;font:12.5px/1.55 var(--mono);max-height:52vh;overflow:auto;white-space:pre}
+pre#preview .k{color:var(--code-key)} pre#preview .s{color:var(--code-str)} pre#preview .e{color:var(--code-dim)}
+pre#preview .x{color:#F08A80;text-decoration:underline wavy #F08A80}
+.status{background:var(--sheet);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-top:12px;font-size:13.5px}
+.status ul{margin:6px 0 0;padding-left:18px}
+.status li{margin:2px 0}
+.status .bad{color:var(--err)} .status .ask{color:var(--warn)} .status .good{color:var(--ok);font-weight:600}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.cmd{margin-top:12px}
+.cmd pre{margin:4px 0 0;background:var(--code-bg);color:var(--code-ink);font:12.5px/1.5 var(--mono);padding:10px 12px;border-radius:6px;overflow-x:auto;white-space:pre}
+.toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:var(--paper);
+  padding:8px 14px;border-radius:6px;font-size:13.5px;opacity:0;transition:opacity .2s}
+.toast.on{opacity:1}
+@media (prefers-reduced-motion: reduce){.toast{transition:none}}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+@media (max-width:600px){section.step{grid-template-columns:1fr;padding:16px}.body{grid-column:1}.num{margin-bottom:6px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Instana backend installer: deployment file</h1>
+  <p>Fill in what you know, then download the file and run <code>./install.sh --config</code>. Anything you leave empty is asked by the script in the terminal, so a half-filled file is fine.</p>
+</header>
+
+<div class="wrap">
+<main id="form">
+
+<section class="step" data-step>
+  <div class="num">1</div>
+  <div class="body">
+    <h2>Where to install</h2>
+    <p class="lead">Create new VMs in Google Cloud, or install on machines you already have.</p>
+    <div class="seg" role="radiogroup" aria-label="Provider">
+      <label><input type="radio" name="PROVIDER" value="gcp" checked><span>Google Cloud<small>creates the VMs</small></span></label>
+      <label><input type="radio" name="PROVIDER" value="ssh"><span>Existing hosts (SSH)<small>you provide the machines</small></span></label>
+      <label><input type="radio" name="PROVIDER" value="aws" disabled><span>AWS<small>coming later</small></span></label>
+      <label><input type="radio" name="PROVIDER" value="azure" disabled><span>Azure<small>coming later</small></span></label>
+    </div>
+  </div>
+</section>
+
+<section class="step" data-step>
+  <div class="num">2</div>
+  <div class="body">
+    <h2>Deployment shape</h2>
+    <p class="lead">Three-node always runs the production profile.</p>
+    <div class="grid">
+      <div class="field"><span class="lbl">Topology</span>
+        <div class="seg"><label><input type="radio" name="TOPOLOGY" value="single-node" checked><span>Single node</span></label>
+        <label><input type="radio" name="TOPOLOGY" value="three-node"><span>Three nodes</span></label></div></div>
+      <div class="field"><span class="lbl">Connectivity</span>
+        <div class="seg"><label><input type="radio" name="INSTALL_MODE" value="online" checked><span>Online</span></label>
+        <label><input type="radio" name="INSTALL_MODE" value="air-gapped"><span>Air-gapped</span></label></div></div>
+      <div class="field" id="f-type"><span class="lbl">Installation type</span>
+        <div class="seg"><label><input type="radio" name="INSTALL_TYPE" value="demo" checked><span>Demo</span></label>
+        <label><input type="radio" name="INSTALL_TYPE" value="production"><span>Production</span></label></div></div>
+      <div class="field"><label class="lbl" for="UBUNTU_VERSION">Ubuntu image</label>
+        <select id="UBUNTU_VERSION"><option value="ubuntu-2404-lts-amd64">Ubuntu 24.04 LTS</option><option value="ubuntu-2204-lts">Ubuntu 22.04 LTS</option></select></div>
+    </div>
+  </div>
+</section>
+
+<section class="step" data-step data-when="gcp">
+  <div class="num">3</div>
+  <div class="body">
+    <h2>Google Cloud</h2>
+    <p class="lead">The project and zone where the VMs, disks and firewall rules are created.</p>
+    <div class="grid">
+      <div class="field"><label class="lbl" for="GCP_PROJECT">Project ID</label><input type="text" class="code" id="GCP_PROJECT" value="instana-support-test-account"><span class="msg"></span></div>
+      <div class="field"><label class="lbl" for="GCP_ZONE">Zone</label><input type="text" class="code" id="GCP_ZONE" value="europe-west6-b" list="zones"><span class="help">Region follows from the zone: <b id="regionOut">europe-west6</b></span><span class="msg"></span></div>
+      <div class="field"><label class="lbl" for="GCP_NETWORK">Network</label><input type="text" class="code" id="GCP_NETWORK" value="default"><span class="msg"></span></div>
+      <div class="field"><label class="lbl" for="GCP_SUBNET">Subnet</label><input type="text" class="code" id="GCP_SUBNET" value="default"><span class="msg"></span></div>
+      <div class="field wide"><label class="lbl" for="SSH_SOURCE_CIDR">Who may SSH to the VMs</label><input type="text" class="code" id="SSH_SOURCE_CIDR" value="auto"><span class="help"><code>auto</code> uses the public IP of the machine running the script (/32). Or enter a CIDR such as 203.0.113.10/32.</span><span class="msg"></span></div>
+    </div>
+    <datalist id="zones"><option value="europe-west6-b"><option value="europe-west6-a"><option value="europe-west3-c"><option value="europe-west4-a"><option value="us-central1-a"><option value="us-east1-b"></datalist>
+  </div>
+</section>
+
+<section class="step" data-step data-when="ssh">
+  <div class="num">3</div>
+  <div class="body">
+    <h2>Existing hosts</h2>
+    <p class="lead">The script connects with SSH from the control VM, checks the hardware and installs. It does not create or delete machines.</p>
+    <div class="grid">
+      <div class="field"><label class="lbl" for="SSH_USER">SSH user</label><input type="text" class="code" id="SSH_USER" placeholder="ubuntu"><span class="msg"></span></div>
+      <div class="field"><label class="lbl" for="SSH_PORT">Port</label><input type="text" class="code" id="SSH_PORT" value="22"><span class="msg"></span></div>
+      <div class="field wide"><label class="lbl" for="SSH_KEY_PATH">Private key path on the control VM</label><input type="text" class="path" id="SSH_KEY_PATH" placeholder="~/.ssh/id_ed25519"><span class="help">Only the path goes into the file, never the key itself.</span><span class="msg"></span></div>
+      <div class="field wide"><span class="lbl">Address to connect to</span>
+        <div class="seg"><label><input type="radio" name="SSH_VIA_PRIVATE" value="false" checked><span>Public address</span></label>
+        <label><input type="radio" name="SSH_VIA_PRIVATE" value="true"><span>Private address (same network)</span></label></div></div>
+    </div>
+    <div class="grid" id="hosts" style="margin-top:12px"></div>
+    <div style="margin-top:16px">
+      <span class="lbl">Data disks per host</span>
+      <p class="help" style="margin:2px 0 6px">Use the stable <code>/dev/disk/by-id/…</code> path of each disk. List them on a host with <code>ls -l /dev/disk/by-id/</code>. Empty cells are asked by the script.</p>
+      <div class="disks-scroll"><table class="disks" id="disks"></table></div>
+    </div>
+  </div>
+</section>
+
+<section class="step" data-step data-when="gcp">
+  <div class="num">4</div>
+  <div class="body">
+    <h2>VM names and size</h2>
+    <p class="lead">Lowercase letters, digits and hyphens. Put your name in it so the lab is easy to find and clean up.</p>
+    <div class="grid" id="names"></div>
+    <div id="sizeSingle" style="margin-top:14px">
+      <span class="lbl">Machine size</span>
+      <div class="seg" style="margin-top:4px">
+        <label><input type="radio" name="SIZE" value="minimum" checked><span>Minimum<small id="minLbl">16 vCPU / 64 GB</small></span></label>
+        <label><input type="radio" name="SIZE" value="production"><span>Production<small>28 vCPU / 112 GB</small></span></label>
+        <label><input type="radio" name="SIZE" value="custom"><span>Custom</span></label>
+      </div>
+      <div class="grid" id="customSize" style="margin-top:12px" hidden>
+        <div class="field"><label class="lbl" for="VM_CPUS">vCPUs</label><input type="number" id="VM_CPUS" min="1"><span class="msg"></span></div>
+        <div class="field"><label class="lbl" for="VM_RAM_GB">RAM (GB)</label><input type="number" id="VM_RAM_GB" min="1"><span class="msg"></span></div>
+      </div>
+    </div>
+    <p class="note" id="sizeThree" hidden>Three-node uses a fixed size: 3 × n2-standard-16 (16 vCPU / 64 GB each). There is nothing to choose here.</p>
+  </div>
+</section>
+
+<section class="step" data-step>
+  <div class="num" data-n>5</div>
+  <div class="body">
+    <h2>Instana domain and tenant</h2>
+    <p class="lead">The UI will be at <b id="uiUrl">https://unit0-tenant0.example.com</b>.</p>
+    <div class="grid">
+      <div class="field wide"><label class="lbl" for="BASE_DOMAIN">Base domain</label><input type="text" class="code" id="BASE_DOMAIN" placeholder="instana.lab.example.com"><span class="msg"></span></div>
+      <div class="field"><label class="lbl" for="TENANT_NAME">Tenant</label><input type="text" class="code" id="TENANT_NAME" value="tenant0"><span class="msg"></span></div>
+      <div class="field"><label class="lbl" for="UNIT_NAME">Unit</label><input type="text" class="code" id="UNIT_NAME" value="unit0"><span class="msg"></span></div>
+    </div>
+    <div style="margin-top:14px"><span class="lbl">TLS certificate</span>
+      <div class="seg" style="margin-top:4px">
+        <label><input type="radio" name="TLS_MODE" value="auto-generate (self-signed)" checked><span>Generate self-signed</span></label>
+        <label><input type="radio" name="TLS_MODE" value="provide custom certificate files"><span>Use my certificate files</span></label>
+      </div></div>
+    <div class="grid" id="tlsFiles" style="margin-top:12px" hidden>
+      <div class="field wide"><label class="lbl" for="TLS_CRT_PATH">Certificate path on the control VM</label><input type="text" class="path" id="TLS_CRT_PATH" placeholder="~/certs/instana.crt"><span class="msg"></span></div>
+      <div class="field wide"><label class="lbl" for="TLS_KEY_PATH">Key path on the control VM</label><input type="text" class="path" id="TLS_KEY_PATH" placeholder="~/certs/instana.key"><span class="msg"></span></div>
+    </div>
+  </div>
+</section>
+
+<section class="step" data-step data-when-mode="air-gapped">
+  <div class="num" data-n>6</div>
+  <div class="body">
+    <h2>Air-gapped package</h2>
+    <p class="lead">Versions come from the package, so they are not chosen here.</p>
+    <div class="seg">
+      <label><input type="radio" name="AIRGAP_SOURCE" value="existing" checked><span>I already have the package</span></label>
+      <label><input type="radio" name="AIRGAP_SOURCE" value="build"><span>Build it on the control VM</span></label>
+    </div>
+    <div class="grid" style="margin-top:12px">
+      <div class="field wide" id="f-archive"><label class="lbl" for="AIRGAP_ARCHIVE">Package path on the control VM</label><input type="text" class="path" id="AIRGAP_ARCHIVE" placeholder="~/instana-airgap/instana-airgapped.tar.gz"><span class="msg"></span></div>
+      <div class="field wide" id="f-outdir" hidden><label class="lbl" for="AIRGAP_OUTPUT_DIR">Where to build it</label><input type="text" class="path" id="AIRGAP_OUTPUT_DIR" value="~/instana-airgap"><span class="help">Needs at least 20 GB free, 40 GB recommended.</span><span class="msg"></span></div>
+    </div>
+  </div>
+</section>
+
+<section class="step" data-step id="s-versions">
+  <div class="num" data-n>7</div>
+  <div class="body">
+    <h2>Versions</h2>
+    <p class="lead">Leave empty to pick from the live list in the script. A version typed here is still checked against the repository.</p>
+    <div class="grid">
+      <div class="field"><label class="lbl" for="BACKEND_VERSION">Instana backend</label><input type="text" class="code" id="BACKEND_VERSION" list="backendVersions" placeholder="choose in the script"><span class="msg"></span></div>
+      <div class="field"><label class="lbl" for="STANCTL_VERSION">stanctl</label><input type="text" class="code" id="STANCTL_VERSION" placeholder="matching the backend"><span class="msg"></span></div>
+    </div>
+    <datalist id="backendVersions"><option value="3.323.470-0"><option value="3.321.456-0"><option value="3.319.465-0"></datalist>
+    <p class="help" style="margin-top:8px">Suggestions are versions known when this page was made. Newer ones may exist.</p>
+  </div>
+</section>
+
+<section class="step" data-step>
+  <div class="num" data-n>8</div>
+  <div class="body">
+    <h2>Keys and admin password</h2>
+    <p class="lead">From your IBM entitlement: download key, agent key, sales key, then the password for the Instana admin user.</p>
+    <div class="seg">
+      <label><input type="radio" name="SECRETS_MODE" value="ask" checked><span>Ask me in the terminal<small>recommended, typed hidden</small></span></label>
+      <label><input type="radio" name="SECRETS_MODE" value="file"><span>Store them in the file<small>file must stay private</small></span></label>
+    </div>
+    <div id="secretFields" hidden>
+      <p class="note warn">Keys in the file are plain text. The script sets the file to owner-only (600) and offers to blank them after the install starts. Don't email or commit this file.</p>
+      <div class="grid" style="margin-top:12px">
+        <div class="field wide"><label class="lbl" for="DOWNLOAD_KEY">Download key</label><div class="secret-row"><input type="password" class="code" id="DOWNLOAD_KEY" autocomplete="off"><button type="button" data-show="DOWNLOAD_KEY">Show</button></div><span class="msg"></span></div>
+        <div class="field wide"><label class="lbl" for="AGENT_KEY">Agent key</label><div class="secret-row"><input type="password" class="code" id="AGENT_KEY" autocomplete="off"><button type="button" data-show="AGENT_KEY">Show</button></div><span class="msg"></span></div>
+        <div class="field wide"><label class="lbl" for="SALES_KEY">Sales key</label><div class="secret-row"><input type="password" class="code" id="SALES_KEY" autocomplete="off"><button type="button" data-show="SALES_KEY">Show</button></div><span class="msg"></span></div>
+        <div class="field wide"><label class="lbl" for="ADMIN_PASSWORD">Admin password</label><div class="secret-row"><input type="password" class="code" id="ADMIN_PASSWORD" autocomplete="new-password"><button type="button" data-show="ADMIN_PASSWORD">Show</button></div><span class="msg"></span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<aside>
+  <div class="panel">
+    <div class="panel-head"><h2>The file</h2><span class="file" id="fname">instana-config.json</span></div>
+    <pre id="preview" aria-live="polite"></pre>
+  </div>
+  <div class="status" id="status"></div>
+  <div class="actions">
+    <button class="primary" id="btnDownload">Download file</button>
+    <button id="btnCopy">Copy JSON</button>
+    <button id="btnHeredoc">Copy as paste-in command</button>
+    <button id="btnImport">Open a file…</button>
+    <input type="file" id="importFile" accept=".json,application/json" class="sr" tabindex="-1">
+  </div>
+  <div class="cmd">
+    <span class="lbl">Then on the control VM</span>
+    <pre id="runCmd"></pre>
+    <p class="help">“Copy as paste-in command” gives you a block to paste into the VM terminal; it writes the file with owner-only permissions, no upload needed.</p>
+  </div>
+</aside>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const radio = n => (document.querySelector(`input[name="${n}"]:checked`)||{}).value || "";
+const ROLES = ["ANALYTICS","METRICS","OBJECTS","DATA"];
+const val = id => ($(id) ? $(id).value.trim() : "");
+
+// Validators mirror install.sh; "" means "the script will ask".
+const V = {
+  project: v => /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(v) || "6–30 chars: lowercase letters, digits, hyphens; starts with a letter",
+  zone: v => /^[a-z]+-[a-z]+[0-9]+-[a-z]$/.test(v) || "Looks like europe-west6-b",
+  netname: v => /^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$/.test(v) || "Lowercase letters, digits, hyphens",
+  cidr: v => {
+    if (v === "auto") return true;
+    const m = v.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d|[12]\d|3[0-2])$/);
+    if (!m || m.slice(1,5).some(o => +o > 255)) return "Use auto or a CIDR such as 203.0.113.10/32";
+    return true;
+  },
+  vmname: v => /^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$/.test(v) || "Lowercase letters, digits, hyphens; starts with a letter",
+  fqdn: v => /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(v) || "Use a domain such as instana.lab.example.com",
+  tu: v => (/^[a-z][a-z0-9]*$/.test(v) && v.length <= 15) || "Lowercase letters and digits, starts with a letter, max 15",
+  host: v => /^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(v) || "Hostname or IPv4 address",
+  port: v => (/^\d+$/.test(v) && +v >= 1 && +v <= 65535) || "1–65535",
+  user: v => /^[a-z_][a-z0-9_-]*$/.test(v) || "Linux user name, e.g. ubuntu",
+  path: v => (/^(~|\/)/.test(v) && !/\s/.test(v)) || "Absolute path or ~/…, no spaces",
+  disk: v => /^\/dev\/disk\/by-id\/\S+$/.test(v) || "Must start with /dev/disk/by-id/",
+  version: v => /^[0-9][0-9A-Za-z.+~-]*$/.test(v) || "Version such as 3.323.470-0",
+  secret: v => !/[\r\n]/.test(v) || "No line breaks",
+};
+
+// ---------- dynamic parts ----------
+function renderNames(){
+  const three = radio("TOPOLOGY") === "three-node";
+  const prev = {}; document.querySelectorAll("#names input").forEach(i => prev[i.id] = i.value);
+  const keys = three ? ["NODE0_NAME","NODE1_NAME","NODE2_NAME"] : ["VM_NAME"];
+  const defs = {VM_NAME:"instana-backend",NODE0_NAME:"instana-0",NODE1_NAME:"instana-1",NODE2_NAME:"instana-2"};
+  $("names").innerHTML = keys.map((k,i) => `<div class="field"><label class="lbl" for="${k}">${three?`Node ${i}`:"VM name"}</label>
+    <input type="text" class="code" id="${k}" value="${prev[k] ?? defs[k]}"><span class="msg"></span></div>`).join("");
+}
+function renderHosts(){
+  const three = radio("TOPOLOGY") === "three-node";
+  const prev = {}; document.querySelectorAll("#hosts input,#disks input").forEach(i => prev[i.id] = i.value);
+  const hosts = three ? ["NODE0_HOST","NODE1_HOST","NODE2_HOST"] : ["VM_HOST"];
+  $("hosts").innerHTML = hosts.map((k,i) => `<div class="field"><label class="lbl" for="${k}">${three?`Node ${i} host`:"Host"}</label>
+    <input type="text" class="code" id="${k}" placeholder="10.0.0.${11+i}" value="${prev[k]??""}"><span class="msg"></span></div>`).join("");
+  const rows = three ? [0,1,2].map(n => ({label:`Node ${n}`, pre:`DISK_DEV_NODE${n}_`})) : [{label:"Host", pre:"DISK_DEV_"}];
+  $("disks").innerHTML = `<thead><tr><th></th>${ROLES.map(r=>`<th>${r[0]+r.slice(1).toLowerCase()}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map(r => `<tr><td>${r.label}</td>${ROLES.map(role => { const id = r.pre+role;
+      return `<td><div class="field"><input type="text" class="path" id="${id}" aria-label="${r.label} ${role} disk" placeholder="/dev/disk/by-id/…" value="${prev[id]??""}"><span class="msg"></span></div></td>`; }).join("")}</tr>`).join("") + "</tbody>";
+}
+
+function layout(){
+  const prov = radio("PROVIDER"), three = radio("TOPOLOGY") === "three-node", air = radio("INSTALL_MODE") === "air-gapped";
+  document.querySelectorAll("[data-when]").forEach(s => s.hidden = s.dataset.when !== prov);
+  document.querySelectorAll("[data-when-mode]").forEach(s => s.hidden = !air);
+  $("f-type").hidden = three;
+  $("sizeSingle").hidden = three; $("sizeThree").hidden = !three;
+  $("customSize").hidden = radio("SIZE") !== "custom";
+  $("minLbl").textContent = radio("INSTALL_TYPE") === "production" ? "28 vCPU / 112 GB" : "16 vCPU / 64 GB";
+  $("tlsFiles").hidden = radio("TLS_MODE") !== "provide custom certificate files";
+  const build = radio("AIRGAP_SOURCE") === "build";
+  $("f-archive").hidden = build; $("f-outdir").hidden = !build;
+  $("s-versions").hidden = air && !build;
+  $("secretFields").hidden = radio("SECRETS_MODE") !== "file";
+  // renumber visible steps so the sequence never skips
+  let n = 0; document.querySelectorAll("section.step").forEach(s => { if (!s.hidden) s.querySelector(".num").textContent = ++n; });
+}
+
+// ---------- collect + validate ----------
+function collect(){
+  const prov = radio("PROVIDER"), three = radio("TOPOLOGY") === "three-node";
+  const air = radio("INSTALL_MODE") === "air-gapped", build = radio("AIRGAP_SOURCE") === "build";
+  const P = {}, checks = []; // checks: [key, value, validatorName]
+  const put = (k, v, rule) => { P[k] = v; if (rule) checks.push([k, v, rule]); };
+  put("PROVIDER", prov);
+  put("TOPOLOGY", radio("TOPOLOGY"));
+  put("INSTALL_MODE", radio("INSTALL_MODE"));
+  put("INSTALL_TYPE", three ? "production" : radio("INSTALL_TYPE"));
+  put("UBUNTU_VERSION", val("UBUNTU_VERSION"));
+  if (prov === "gcp") {
+    put("GCP_PROJECT", val("GCP_PROJECT"), "project");
+    const z = val("GCP_ZONE");
+    put("GCP_REGION", /^[a-z]+-[a-z]+[0-9]+-[a-z]$/.test(z) ? z.replace(/-[a-z]$/,"") : "");
+    put("GCP_ZONE", z, "zone");
+    put("GCP_NETWORK", val("GCP_NETWORK"), "netname");
+    put("GCP_SUBNET", val("GCP_SUBNET"), "netname");
+    put("SSH_SOURCE_CIDR", val("SSH_SOURCE_CIDR"), "cidr");
+    (three ? ["NODE0_NAME","NODE1_NAME","NODE2_NAME"] : ["VM_NAME"]).forEach(k => put(k, val(k), "vmname"));
+    if (three) put("SIZE", "small");
+    else {
+      put("SIZE", radio("SIZE"));
+      if (radio("SIZE") === "custom") { put("VM_CPUS", val("VM_CPUS"), "cpus"); put("VM_RAM_GB", val("VM_RAM_GB"), "ram"); }
+    }
+  } else {
+    put("SSH_USER", val("SSH_USER"), "user");
+    put("SSH_KEY_PATH", val("SSH_KEY_PATH"), "path");
+    put("SSH_PORT", val("SSH_PORT"), "port");
+    put("SSH_VIA_PRIVATE", radio("SSH_VIA_PRIVATE"));
+    (three ? ["NODE0_HOST","NODE1_HOST","NODE2_HOST"] : ["VM_HOST"]).forEach(k => put(k, val(k), "host"));
+    const pres = three ? [0,1,2].map(n => `DISK_DEV_NODE${n}_`) : ["DISK_DEV_"];
+    pres.forEach(p => ROLES.forEach(r => put(p+r, val(p+r), "disk")));
+  }
+  put("BASE_DOMAIN", val("BASE_DOMAIN"), "fqdn");
+  put("TENANT_NAME", val("TENANT_NAME"), "tu");
+  put("UNIT_NAME", val("UNIT_NAME"), "tu");
+  put("TLS_MODE", radio("TLS_MODE"));
+  if (P.TLS_MODE === "provide custom certificate files") { put("TLS_CRT_PATH", val("TLS_CRT_PATH"), "path"); put("TLS_KEY_PATH", val("TLS_KEY_PATH"), "path"); }
+  if (air) {
+    put("AIRGAP_SOURCE", radio("AIRGAP_SOURCE"));
+    if (build) put("AIRGAP_OUTPUT_DIR", val("AIRGAP_OUTPUT_DIR"), "path"); else put("AIRGAP_ARCHIVE", val("AIRGAP_ARCHIVE"), "path");
+  }
+  if (!air || build) { put("BACKEND_VERSION", val("BACKEND_VERSION"), "version"); put("STANCTL_VERSION", val("STANCTL_VERSION"), "version"); }
+  const S = {DOWNLOAD_KEY:"",AGENT_KEY:"",SALES_KEY:"",ADMIN_PASSWORD:""};
+  if (radio("SECRETS_MODE") === "file") Object.keys(S).forEach(k => { S[k] = $(k).value; checks.push([k, S[k], "secret"]); });
+  return {P, S, checks, three};
+}
+
+function validate({P, checks, three}){
+  const bad = {}, ask = [];
+  const minC = P.INSTALL_TYPE === "production" ? 28 : 16, minR = P.INSTALL_TYPE === "production" ? 112 : 64;
+  for (const [k, v, rule] of checks) {
+    if (v === "") { ask.push(k); continue; }
+    let r;
+    if (rule === "cpus") r = (/^\d+$/.test(v) && +v >= minC) || `At least ${minC} vCPUs for ${P.INSTALL_TYPE}`;
+    else if (rule === "ram") r = (/^\d+$/.test(v) && +v >= minR) || `At least ${minR} GB for ${P.INSTALL_TYPE}`;
+    else r = V[rule](v);
+    if (r !== true) bad[k] = r;
+  }
+  // cross-field rules
+  const uniq = (keys, msg) => { const seen = {}; keys.forEach(k => { const v = P[k]; if (!v) return; if (seen[v]) bad[k] = msg; seen[v] = 1; }); };
+  if (three && P.PROVIDER === "gcp") uniq(["NODE0_NAME","NODE1_NAME","NODE2_NAME"], "Each node needs its own name");
+  if (three && P.PROVIDER === "ssh") uniq(["NODE0_HOST","NODE1_HOST","NODE2_HOST"], "Each node needs its own host");
+  if (P.PROVIDER === "ssh") (three ? [0,1,2].map(n => `DISK_DEV_NODE${n}_`) : ["DISK_DEV_"]).forEach(p => uniq(ROLES.map(r => p+r), "Same disk used twice on this host"));
+  return {bad, ask};
+}
+
+function paint(res, data){
+  document.querySelectorAll("#form .field").forEach(f => f.classList.remove("bad","ask"));
+  const mark = (k, cls, text) => { const i = $(k); if (!i) return; const f = i.closest(".field"); if (!f) return;
+    f.classList.add(cls); const m = f.querySelector(".msg"); if (m) m.textContent = text; };
+  document.querySelectorAll("#form .msg").forEach(m => m.textContent = "");
+  data.checks.forEach(([k]) => { if (res.ask.includes(k) && !(k in res.bad)) mark(k, "ask", "Empty: the script will ask"); });
+  Object.entries(res.bad).forEach(([k, t]) => mark(k, "bad", t));
+}
+
+// ---------- output ----------
+const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;");
+function fileObject({P, S}){ return {schema:"instana-installer-input", schema_version:1, parameters:P, secrets:S}; }
+function previewHTML(obj, bad){
+  const masked = JSON.parse(JSON.stringify(obj));
+  Object.keys(masked.secrets).forEach(k => { if (masked.secrets[k]) masked.secrets[k] = "•".repeat(8); });
+  return esc(JSON.stringify(masked, null, 2)).replace(/^(\s*)"([^"]+)": ("(?:[^"\\]|\\.)*"|\d+)(,?)$/gm, (m, sp, k, v, c) => {
+    const cls = v === '""' ? "e" : (bad[k] ? "x" : "s");
+    return `${sp}<span class="k">"${k}"</span>: <span class="${cls}">${v}</span>${c}`;
+  }).replace(/^(\s*)"([^"]+)": \{/gm, '$1<span class="k">"$2"</span>: {');
+}
+function fname(P){ const n = P.VM_NAME || P.NODE0_NAME || P.VM_HOST || P.NODE0_HOST || "lab"; return `instana-config-${n.replace(/[^a-z0-9.-]/gi,"_")}.json`; }
+
+let current = null;
+function update(){
+  layout();
+  const data = collect(); const res = validate(data); paint(res, data);
+  const obj = fileObject(data); current = {obj, res, name: fname(data.P)};
+  $("preview").innerHTML = previewHTML(obj, res.bad);
+  $("fname").textContent = current.name;
+  const nb = Object.keys(res.bad).length, na = res.ask.length;
+  const label = k => { const i = $(k); const l = i && (document.querySelector(`label[for="${k}"]`) || null); return l ? l.textContent : (i && i.getAttribute("aria-label")) || k; };
+  let html = nb ? `<span class="bad"><b>${nb} value${nb>1?"s":""} to fix</b> before the file can be saved:</span><ul>${Object.entries(res.bad).map(([k,t]) => `<li class="bad">${esc(label(k))}: ${esc(t)}</li>`).join("")}</ul>`
+              : `<span class="good">Ready to save.</span>`;
+  const secretsAsked = radio("SECRETS_MODE") === "ask";
+  const disks = res.ask.filter(k => k.startsWith("DISK_DEV_")).length;
+  const asked = [...res.ask.filter(k => !k.startsWith("DISK_DEV_")).map(label), ...(disks ? [`${disks} disk path${disks>1?"s":""}`] : []), ...(secretsAsked?["the 3 keys and the admin password (hidden input)"]:[])];
+  if (asked.length) html += `<div style="margin-top:8px"><span class="ask">The script will ask for:</span> ${asked.map(esc).join(", ")}.</div>`;
+  $("status").innerHTML = html;
+  ["btnDownload","btnCopy","btnHeredoc"].forEach(b => $(b).disabled = nb > 0);
+  $("runCmd").textContent = `cd ~/instana-backend-skripta\n./install.sh --config ${current.name}\n\n# plan only, creates nothing:\n./install.sh --config ${current.name} --dry-run`;
+}
+
+function toast(t){ const el = $("toast"); el.textContent = t; el.classList.add("on"); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove("on"), 2200); }
+async function copy(text, what){
+  try { await navigator.clipboard.writeText(text); }
+  catch { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); }
+  toast(`${what} copied`);
+}
+const json = () => JSON.stringify(current.obj, null, 2) + "\n";
+$("btnDownload").onclick = () => {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([json()], {type:"application/json"}));
+  a.download = current.name; a.click(); URL.revokeObjectURL(a.href); toast(`Saved ${current.name}`);
+};
+$("btnCopy").onclick = () => copy(json(), "JSON");
+$("btnHeredoc").onclick = () => copy(`(umask 077; cat > ~/instana-backend-skripta/${current.name} <<'INSTANA_EOF'\n${json()}INSTANA_EOF\n)\n`, "Paste-in command");
+$("btnImport").onclick = () => $("importFile").click();
+$("importFile").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    const o = JSON.parse(await f.text());
+    if (o.schema !== "instana-installer-input" || o.schema_version !== 1) throw new Error("not a file from this page (schema)");
+    load(o); toast(`Opened ${f.name}`);
+  } catch (err) { toast(`Could not open ${f.name}: ${err.message}`); }
+  e.target.value = "";
+};
+function setRadio(n, v){ const r = document.querySelector(`input[name="${n}"][value="${CSS.escape(v)}"]`); if (r && !r.disabled) r.checked = true; }
+function load(o){
+  const P = {...o.parameters};
+  // accept provider-neutral aliases for gcp
+  [["PROVIDER_SCOPE","GCP_PROJECT"],["PROVIDER_LOCATION","GCP_ZONE"],["PROVIDER_NETWORK","GCP_NETWORK"],["PROVIDER_SUBNET","GCP_SUBNET"]]
+    .forEach(([a,g]) => { if (P[a] && !P[g]) P[g] = P[a]; });
+  ["PROVIDER","TOPOLOGY","INSTALL_MODE","INSTALL_TYPE","SIZE","TLS_MODE","AIRGAP_SOURCE","SSH_VIA_PRIVATE"].forEach(k => P[k] && setRadio(k, P[k]));
+  layout(); renderNames(); renderHosts();
+  Object.entries(P).forEach(([k, v]) => { const i = $(k); if (i && i.type !== "radio") i.value = v; });
+  const S = o.secrets || {}; const has = Object.values(S).some(Boolean);
+  setRadio("SECRETS_MODE", has ? "file" : "ask");
+  Object.entries(S).forEach(([k, v]) => { if ($(k)) $(k).value = v; });
+  update();
+}
+
+document.addEventListener("click", e => { const b = e.target.closest("[data-show]"); if (!b) return;
+  const i = $(b.dataset.show); const show = i.type === "password"; i.type = show ? "text" : "password"; b.textContent = show ? "Hide" : "Show"; });
+$("form").addEventListener("input", update);
+$("form").addEventListener("change", e => { if (e.target.name === "TOPOLOGY") { renderNames(); renderHosts(); } update(); });
+$("GCP_ZONE").addEventListener("input", () => { const z = val("GCP_ZONE"); $("regionOut").textContent = /-[a-z]$/.test(z) ? z.replace(/-[a-z]$/,"") : "—"; });
+const urlUpdate = () => { $("uiUrl").textContent = `https://${val("UNIT_NAME")||"unit0"}-${val("TENANT_NAME")||"tenant0"}.${val("BASE_DOMAIN")||"example.com"}`; };
+["BASE_DOMAIN","TENANT_NAME","UNIT_NAME"].forEach(k => $(k).addEventListener("input", urlUpdate));
+
+renderNames(); renderHosts(); update(); urlUpdate();
+})();
+</script>
+</body>
+</html>

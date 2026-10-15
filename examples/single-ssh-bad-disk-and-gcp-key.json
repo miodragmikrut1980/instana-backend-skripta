@@ -1,0 +1,33 @@
+{
+  "schema": "instana-installer-input",
+  "schema_version": 1,
+  "parameters": {
+    "PROVIDER": "ssh",
+    "TOPOLOGY": "single-node",
+    "INSTALL_MODE": "online",
+    "INSTALL_TYPE": "demo",
+    "UBUNTU_VERSION": "ubuntu-2404-lts-amd64",
+    "SSH_USER": "ubuntu",
+    "SSH_KEY_PATH": "~/.ssh/id_ed25519",
+    "SSH_PORT": "22",
+    "SSH_VIA_PRIVATE": "false",
+    "BASE_DOMAIN": "instana.lab.example.com",
+    "TENANT_NAME": "tenant0",
+    "UNIT_NAME": "unit0",
+    "TLS_MODE": "auto-generate (self-signed)",
+    "BACKEND_VERSION": "3.323.470-0",
+    "STANCTL_VERSION": "3.323.470-0",
+    "VM_HOST": "10.0.0.21",
+    "DISK_DEV_ANALYTICS": "/dev/disk/by-id/scsi-0TEST_DISK_DEV_analytics",
+    "DISK_DEV_METRICS": "/dev/disk/by-id/scsi-0TEST_DISK_DEV_metrics",
+    "DISK_DEV_OBJECTS": "/dev/disk/by-id/scsi-0TEST_DISK_DEV_objects",
+    "DISK_DEV_DATA": "/dev/sdb",
+    "GCP_PROJECT": "instana-support-test-account"
+  },
+  "secrets": {
+    "DOWNLOAD_KEY": "test-download-key-0000",
+    "AGENT_KEY": "test-agent-key-0000",
+    "SALES_KEY": "test-sales-key-0000",
+    "ADMIN_PASSWORD": "Test-Admin-Pass-0000"
+  }
+}
