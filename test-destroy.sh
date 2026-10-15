@@ -37,17 +37,18 @@ run_destroy() {
 # 1. Confirmed run: VMs, then disks, then firewall rules; missing resources are skipped.
 run_destroy full "$FULL_STATE" 'DELETE test-project/us-central1-a'
 d="$TEST_ROOT/full"
-grep ' delete ' "$d/gcloud.log" | awk '{print $2, $4}' > "$d/deletes.txt"
+# Full command lines: a dropped --project, --zone or --quiet (gcloud would wait
+# for Y/n) must fail the test.
+grep ' delete ' "$d/gcloud.log" > "$d/deletes.txt"
 diff -u - "$d/deletes.txt" <<'EXPECTED'
-instances node-a
-instances node-b
-disks node-a-data
-firewall-rules lab-node-a-ssh
-firewall-rules instana-allow-ssh
-firewall-rules instana-allow-internal
+compute instances delete node-a --project=test-project --zone=us-central1-a --quiet
+compute instances delete node-b --project=test-project --zone=us-central1-a --quiet
+compute disks delete node-a-data --project=test-project --zone=us-central1-a --quiet
+compute firewall-rules delete lab-node-a-ssh --project=test-project --quiet
+compute firewall-rules delete instana-allow-ssh --project=test-project --quiet
+compute firewall-rules delete instana-allow-internal --project=test-project --quiet
 EXPECTED
-grep -q -- '--project=test-project' "$d/gcloud.log"
-grep -q -- '--zone=us-central1-a' "$d/gcloud.log"
+grep -qx 'compute disks describe gone-disk --project=test-project --zone=us-central1-a' "$d/gcloud.log"
 grep -q 'Disk gone-disk not found' "$d/output.txt"
 grep -q 'Deleted 6 resource(s); 1 recorded resource(s) no longer existed.' "$d/output.txt"
 if [[ -e "$d/.install-state.json" ]]; then echo "FAIL: state file kept after destroy" >&2; exit 1; fi
