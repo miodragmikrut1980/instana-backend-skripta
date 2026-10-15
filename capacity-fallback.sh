@@ -9,7 +9,7 @@ placement_command() {
   # Do not call a set -e function in a conditional: run the raw API command.
   local name="$1" machine="$2" zone="$3" project="$4" network="$5" subnet="$6" image="$7"
   local metadata=() labels=()
-  [[ "$TOPOLOGY" != three-node || "$INSTALL_MODE" != online ]] || metadata=(--metadata=enable-oslogin=false)
+  [[ "$TOPOLOGY" != three-node ]] || metadata=(--metadata=enable-oslogin=false)
   [[ -z "${DEPLOYMENT_ID:-}" ]] || labels=("--labels=instana-lab-id=$DEPLOYMENT_ID")
   gcloud compute instances create "$name" --project="$project" --zone="$zone" \
     --machine-type="$machine" --image-family="$image" --image-project=ubuntu-os-cloud \

@@ -1177,6 +1177,8 @@ show_hw_requirements_and_pick_machine_type() {
   else
     # Three-node: fixed minimum per node from docs (Small VM: 12 vCPUs, 48 GB)
     show_three_node_requirements
+    hint "The three-node lab always creates 3x n2-standard-16 (16 vCPUs / 64 GB per node) and supports only the small profile;" \
+         "large and custom are refused when the lab is prepared, right after the parameters (nothing is created before that)."
     SIZE_CHOICE=$(prompt_choice "Machine size for all nodes:" \
       "small (12 vCPUs / 48 GB) — documented minimum" \
       "large (24-32 vCPUs / 96-128 GB) — documented large size" \
@@ -1225,7 +1227,11 @@ show_plan() {
   printf "  %-30s %s\n" "Ubuntu version:"    "$UBUNTU_VERSION"
   printf "  %-30s %s\n" "GCP Project:"       "$GCP_PROJECT"
   printf "  %-30s %s\n" "Zone:"              "$GCP_ZONE"
-  printf "  %-30s %s\n" "Machine type:"      "$MACHINE_TYPE"
+  if [[ "$TOPOLOGY" == three-node ]]; then
+    printf "  %-30s %s\n" "Machine type:"      "n2-standard-16 on each node (three-node lab, fixed)"
+  else
+    printf "  %-30s %s\n" "Machine type:"      "$MACHINE_TYPE"
+  fi
   printf "  %-30s %s\n" "Base domain:"       "$BASE_DOMAIN"
   printf "  %-30s %s\n" "Tenant/Unit:"       "${TENANT_NAME}/${UNIT_NAME}"
   printf "  %-30s %s\n" "UI URL (after DNS):" "https://${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}"
@@ -1268,6 +1274,11 @@ show_plan() {
     echo "    ${NODE1_NAME}-data      :  500 GB SSD (pd-ssd)  → /mnt/instana/stanctl/data"
     echo "    ${NODE1_NAME}-metrics   : 1000 GB SSD (pd-ssd)  → /mnt/instana/stanctl/metrics"
     echo "    ${NODE1_NAME}-analytics : 1200 GB SSD (pd-ssd)  → /mnt/instana/stanctl/analytics"
+    if [[ "$INSTALL_MODE" == air-gapped ]]; then
+      echo ""
+      echo "  Note: the nodes still use the internet for Ubuntu packages (apt-get in phase 6);"
+      echo "  only the Instana artifacts come from the air-gapped package."
+    fi
   fi
 
   if [[ "$DRY_RUN" == true ]]; then
@@ -1317,7 +1328,7 @@ create_vm_once() {
   log "Creating VM: ${name} (${machine_type}, zone: ${zone})..."
   local metadata_args=()
   local label_args=()
-  [[ "$TOPOLOGY" == three-node && "$INSTALL_MODE" == online ]] && metadata_args=(--metadata=enable-oslogin=false)
+  [[ "$TOPOLOGY" == three-node ]] && metadata_args=(--metadata=enable-oslogin=false)
   [[ -z "${DEPLOYMENT_ID:-}" ]] || label_args=("--labels=instana-lab-id=$DEPLOYMENT_ID")
   run gcloud compute instances create "$name" \
     --project="$project" \
@@ -1534,7 +1545,7 @@ ssh_with_retry() {
     if (( rc != 255 )) || (( attempt >= SSH_RETRY_MAX )); then
       return "$rc"
     fi
-    warn "SSH connection to the node was lost (attempt ${attempt}/${SSH_RETRY_MAX}). Retrying in ${SSH_RETRY_WAIT}s ..."
+    warn "SSH connection to the node was lost (attempt ${attempt}/${SSH_RETRY_MAX}). Retrying in ${SSH_RETRY_WAIT}s ..." >&2
     sleep "$SSH_RETRY_WAIT"
     (( attempt++ ))
   done
@@ -1727,35 +1738,6 @@ wait_for_ssh_loop() {
   return 1
 }
 
-apply_kernel_parameters() {
-  # From docs (Kernel parameters section — same for single-node and three-node):
-  # 1. vm.swappiness=0
-  # 2. fs.inotify.max_user_instances=8192
-  # 3. Transparent Huge Pages disabled (Ubuntu: via GRUB + update-grub)
-  local vm_name="$1" zone="$2" project="$3"
-  log "Applying kernel parameters on ${vm_name} (from documentation)..."
-
-  remote_exec_dry "$vm_name" "$zone" "$project" \
-    "printf '%s\\n' 'vm.swappiness=0' 'fs.inotify.max_user_instances=8192' > /etc/sysctl.d/99-stanctl.conf && sysctl --system"
-
-  # THP — Ubuntu path (from docs: sed + update-grub)
-  remote_exec_dry "$vm_name" "$zone" "$project" \
-    'if ! grep -q "transparent_hugepage=never" /etc/default/grub; then sed -i "s/^GRUB_CMDLINE_LINUX=\"\(.*\)\"/GRUB_CMDLINE_LINUX=\"\1 transparent_hugepage=never\"/" /etc/default/grub; fi; update-grub'
-
-  # Reboot required for THP change
-  log "Rebooting ${vm_name} for THP change to take effect..."
-  if [[ "$DRY_RUN" != true ]]; then
-    remote_exec "$vm_name" "$zone" "$project" "shutdown -r +1"
-    log "Graceful reboot scheduled in one minute."
-    spin_run "waiting for ${vm_name} to reboot" sleep 75
-    wait_for_ssh "$vm_name" "$zone" "$project"
-    # Verify THP disabled — from docs: expected output is: always madvise [never]
-    remote_exec "$vm_name" "$zone" "$project" \
-      "cat /sys/kernel/mm/transparent_hugepage/enabled | grep -q '\[never\]' || (echo 'THP not disabled!' && exit 1)"
-  fi
-  ok "Kernel parameters applied on ${vm_name}."
-}
-
 format_and_mount_disk() {
   # From docs: mkfs.ext4 then UUID-based fstab entry
   local vm_name="$1" zone="$2" project="$3" device="$4" mount_point="$5"
@@ -1899,26 +1881,163 @@ inspect_airgapped_archive() {
   ok "Air-gapped package: stanctl ${STANCTL_CLI_VERSION} → Instana backend ${BACKEND_VERSION}"
 }
 
+# The package is copied to /var/tmp (kept across a reboot, unlike /tmp) under a
+# .part name and renamed only when the transfer finished, so the final name
+# always holds a complete copy. A resumed run reuses a copy (or a full-size
+# .part) after a SHA-256 comparison instead of transferring tens of GB again.
+# A finished import is recorded on the VM itself (AIRGAP_IMPORT_MARKER: backend
+# version, stanctl version, package size) before the copy is deleted, so a
+# connection lost after the import never leaves the run without a way back.
+AIRGAP_REMOTE_ARCHIVE=/var/tmp/instana-airgapped.tar.gz
+AIRGAP_IMPORT_MARKER=/var/lib/instana-airgap/imported
+AIRGAP_SPACE_MARGIN_BYTES=$(( 5 * 1024 * 1024 * 1024 ))
+
+# remote_value VM ZONE PROJECT KEY COMMAND — runs COMMAND remotely (spinner
+# included) and prints the value of its last "KEY=value" output line, so ssh
+# banners or retry notices never end up in the value. COMMAND always prints
+# the KEY= line (empty value = "not there"); a failed SSH call or a missing
+# KEY= line returns 1, so "could not ask the VM" is never mistaken for "absent".
+remote_value() {
+  local vm_name="$1" zone="$2" project="$3" key="$4" out line; shift 4
+  out=$(remote_exec "$vm_name" "$zone" "$project" "$*") || return 1
+  line=$(grep "^${key}=" <<< "$out" | tail -1) || return 1
+  printf '%s' "${line#"${key}="}"
+}
+
+# The VM could not be asked about the package or import: stop instead of
+# guessing (a wrong guess costs a transfer of tens of GB and a re-import).
+airgap_probe_failed() {
+  local vm_name="$1" zone="$2" project="$3" what="$4"
+  die_with_steps "Could not check ${what} on ${vm_name} (SSH or remote command failed); nothing was copied or imported." \
+    "Check that the VM is running and reachable:|gcloud compute ssh ${vm_name} --zone=${zone} --project=${project} --command='ls -l ${AIRGAP_REMOTE_ARCHIVE}* ${AIRGAP_IMPORT_MARKER}'" \
+    "Continue where it stopped:|./install.sh --resume"
+}
+
+# Exact version token from 'stanctl --version' output ("stanctl version 1.11.0");
+# empty when there is none.
+stanctl_version_token() { grep -oE '[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+~-]*' <<< "$1" | head -1 || true; }
+
+# airgap_reuse_remote_copy VM ZONE PROJECT — 0 when the VM holds a complete,
+# checksum-identical copy at AIRGAP_REMOTE_ARCHIVE (a full-size .part is
+# verified and renamed); anything else that does not match is removed.
+airgap_reuse_remote_copy() {
+  local vm_name="$1" zone="$2" project="$3" local_size local_sum="" path size remote_sum
+  local_size=$(wc -c < "$AIRGAP_ARCHIVE" | tr -d ' ')
+  for path in "$AIRGAP_REMOTE_ARCHIVE" "${AIRGAP_REMOTE_ARCHIVE}.part"; do
+    size=$(remote_value "$vm_name" "$zone" "$project" SIZE "echo SIZE=\$(test -f ${path} && wc -c < ${path})") ||
+      airgap_probe_failed "$vm_name" "$zone" "$project" "the package copy ${path}"
+    [[ -n "$size" ]] || continue
+    if [[ "$size" != "$local_size" ]]; then
+      log "${vm_name} holds an incomplete or different ${path##*/} (${size} of ${local_size} bytes); it will be replaced."
+      continue
+    fi
+    log "${vm_name} already holds ${path##*/} with the package's exact size from an earlier run; comparing SHA-256 checksums before reusing it..."
+    remote_sum=$(HEARTBEAT_LABEL="SHA-256 of ${path##*/} on ${vm_name}" remote_value "$vm_name" "$zone" "$project" SUM "echo SUM=\$(sha256sum ${path} | cut -d' ' -f1)") ||
+      airgap_probe_failed "$vm_name" "$zone" "$project" "the checksum of ${path}"
+    # Computed at most once per run, and only when a full-size copy exists.
+    [[ -n "$local_sum" ]] || local_sum=$(spin_run "SHA-256 of the local package" sha256sum "$AIRGAP_ARCHIVE" | cut -d' ' -f1)
+    if [[ -n "$remote_sum" && "$remote_sum" == "$local_sum" ]]; then
+      [[ "$path" == "$AIRGAP_REMOTE_ARCHIVE" ]] || remote_exec "$vm_name" "$zone" "$project" "mv -f ${path} ${AIRGAP_REMOTE_ARCHIVE}"
+      return 0
+    fi
+    log "${path##*/} on ${vm_name} differs from ${AIRGAP_ARCHIVE} (checksum mismatch); it will be replaced."
+  done
+  return 1
+}
+
+# airgap_check_space VM ZONE PROJECT NEEDED_BYTES — stops before a copy or
+# import that cannot fit; an unreadable df only warns.
+airgap_check_space() {
+  local vm_name="$1" zone="$2" project="$3" needed="$4" free_bytes
+  free_bytes=$(remote_value "$vm_name" "$zone" "$project" FREE "echo FREE=\$(df -B1 --output=avail /var/tmp 2>/dev/null | tail -1 | tr -d ' ')") || free_bytes=""
+  if [[ ! "$free_bytes" =~ ^[0-9]+$ ]]; then
+    warn "Free space in /var/tmp on ${vm_name} could not be read; continuing without the space check."
+    return 0
+  fi
+  (( free_bytes >= needed )) && return 0
+  die_with_steps "${vm_name} has $(( free_bytes / 1024 / 1024 / 1024 )) GB free in /var/tmp; copying and importing the package needs about $(( needed / 1024 / 1024 / 1024 )) GB." \
+    "Inspect the boot disk on the VM:|gcloud compute ssh ${vm_name} --zone=${zone} --project=${project} --command='df -h / /var/tmp'" \
+    "Free space (or grow the boot disk), then continue:|./install.sh --resume"
+}
+
 install_stanctl_airgapped() {
-  local vm_name="$1" zone="$2" project="$3"
-  log "Copying air-gapped package to ${vm_name}..."
+  local vm_name="$1" zone="$2" project="$3" marker expected cli_output installed local_size q_backend q_cli rc=0
   if [[ "$DRY_RUN" == true ]]; then
-    warn "Dry-run: would copy $(basename "$AIRGAP_ARCHIVE"), extract stanctl ${STANCTL_CLI_VERSION} from it and import backend ${BACKEND_VERSION}."
+    warn "Dry-run: would copy $(basename "$AIRGAP_ARCHIVE") to ${vm_name}, extract stanctl ${STANCTL_CLI_VERSION} from it and import backend ${BACKEND_VERSION}."
     return
   fi
-  spin_run "copying the air-gapped package to ${vm_name}" gcloud compute scp "$AIRGAP_ARCHIVE" "${vm_name}:/tmp/instana-airgapped.tar.gz" --project="$project" --zone="$zone"
+  verify_airgap_archive_matches_state
+  local_size=$(wc -c < "$AIRGAP_ARCHIVE" | tr -d ' ')
+  expected="backend=${BACKEND_VERSION} stanctl=${STANCTL_CLI_VERSION} size="
+
+  # Import already finished (this or an earlier run): the VM marker and the
+  # installed stanctl must both match the archive exactly.
+  marker=$(remote_value "$vm_name" "$zone" "$project" MARKER "echo MARKER=\$(cat ${AIRGAP_IMPORT_MARKER} 2>/dev/null)") ||
+    airgap_probe_failed "$vm_name" "$zone" "$project" "the import marker ${AIRGAP_IMPORT_MARKER}"
+  if [[ -n "$marker" ]]; then
+    cli_output=$(remote_value "$vm_name" "$zone" "$project" CLI "echo CLI=\$(stanctl --version 2>/dev/null | head -1)") ||
+      airgap_probe_failed "$vm_name" "$zone" "$project" "the installed stanctl version"
+    installed=$(stanctl_version_token "$cli_output")
+    if [[ "$marker" == "$expected"* && "$installed" == "$STANCTL_CLI_VERSION" ]]; then
+      save_state stanctl_cli_version "$STANCTL_CLI_VERSION"
+      save_state backend_version "$BACKEND_VERSION"
+      save_state "step_airgap_imported_${vm_name}" completed
+      remote_exec "$vm_name" "$zone" "$project" "rm -f ${AIRGAP_REMOTE_ARCHIVE} ${AIRGAP_REMOTE_ARCHIVE}.part" ||
+        warn "Could not remove the leftover package copy on ${vm_name}; remove ${AIRGAP_REMOTE_ARCHIVE} by hand to free space."
+      phase_detail done "Air-gapped package was already imported (stanctl ${STANCTL_CLI_VERSION} → backend ${BACKEND_VERSION}); no copy or import repeated"
+      ok "Air-gapped import on ${vm_name} verified (marker and stanctl ${installed}); not repeated."
+      return 0
+    fi
+    if [[ "$marker" != "$expected"* ]]; then
+      die_with_steps "${vm_name} already imported a different air-gapped package (${marker}); this run uses stanctl ${STANCTL_CLI_VERSION} / backend ${BACKEND_VERSION}." \
+        "Put the original package back at ${AIRGAP_ARCHIVE}, then continue:|./install.sh --resume" \
+        "*Or remove this deployment and start a new one with the new package: ./install.sh --destroy"
+    fi
+    warn "${vm_name} records this import, but stanctl there reports '${installed:-nothing}' instead of ${STANCTL_CLI_VERSION}; importing again."
+  fi
+
+  if airgap_reuse_remote_copy "$vm_name" "$zone" "$project"; then
+    ok "Reusing the verified package copy on ${vm_name}; no new transfer."
+    airgap_check_space "$vm_name" "$zone" "$project" $(( local_size + AIRGAP_SPACE_MARGIN_BYTES ))
+  else
+    # Old releases left the archive in /tmp after a failed import; it only takes space.
+    remote_exec "$vm_name" "$zone" "$project" "rm -f /tmp/instana-airgapped.tar.gz ${AIRGAP_REMOTE_ARCHIVE} ${AIRGAP_REMOTE_ARCHIVE}.part"
+    airgap_check_space "$vm_name" "$zone" "$project" $(( 2 * local_size + AIRGAP_SPACE_MARGIN_BYTES ))
+    log "Copying air-gapped package to ${vm_name} ($(du -h "$AIRGAP_ARCHIVE" 2>/dev/null | cut -f1 || echo '?'))..."
+    spin_run "copying the air-gapped package to ${vm_name}" gcloud compute scp "$AIRGAP_ARCHIVE" "${vm_name}:${AIRGAP_REMOTE_ARCHIVE}.part" --project="$project" --zone="$zone"
+    remote_exec "$vm_name" "$zone" "$project" "mv -f ${AIRGAP_REMOTE_ARCHIVE}.part ${AIRGAP_REMOTE_ARCHIVE}"
+  fi
+
   # Documented sequence: extract the bundled stanctl binary to /usr/local/bin,
-  # then import the package. The archive stays until import succeeds so a
-  # failed import can be retried without another transfer.
-  HEARTBEAT_LABEL="air-gapped import on ${vm_name}" remote_exec "$vm_name" "$zone" "$project" \
-    "set -e; tar -xzf /tmp/instana-airgapped.tar.gz -C /usr/local/bin --strip-components 1 airgapped/stanctl; chmod 0755 /usr/local/bin/stanctl; hash -r; stanctl --version; stanctl air-gapped import --file /tmp/instana-airgapped.tar.gz; rm -f /tmp/instana-airgapped.tar.gz" ||
-    die "Air-gapped import failed on ${vm_name}; the archive remains in /tmp on the VM for inspection."
-  local cli_output
-  cli_output=$(remote_exec "$vm_name" "$zone" "$project" "stanctl --version" 2>/dev/null || true)
-  grep -Fq "$STANCTL_CLI_VERSION" <<< "$cli_output" ||
-    die "Installed stanctl reports '${cli_output}', expected ${STANCTL_CLI_VERSION} from the archive build metadata."
+  # then import the package. The import is not idempotent, so it is never
+  # retried automatically (SSH_RETRY_MAX=1) and a lock refuses a second import
+  # while one is still running. The marker is written before anything is
+  # deleted; the copy is removed only afterwards, as a separate step.
+  # Children get 9>&- so nothing stanctl starts keeps holding the lock.
+  printf -v q_backend '%q' "$BACKEND_VERSION"; printf -v q_cli '%q' "$STANCTL_CLI_VERSION"
+  SSH_RETRY_MAX=1 HEARTBEAT_LABEL="air-gapped import on ${vm_name}" remote_exec "$vm_name" "$zone" "$project" \
+    "set -e; exec 9>/var/lock/instana-airgap-import.lock; flock -n 9 || { echo 'STOP: another air-gapped import is still running on this VM.' >&2; exit 3; }; tar -xzf ${AIRGAP_REMOTE_ARCHIVE} -C /usr/local/bin --strip-components 1 airgapped/stanctl 9>&-; chmod 0755 /usr/local/bin/stanctl; hash -r; stanctl --version 9>&-; stanctl air-gapped import --file ${AIRGAP_REMOTE_ARCHIVE} 9>&-; install -d -m 0755 ${AIRGAP_IMPORT_MARKER%/*}; printf 'backend=%s stanctl=%s size=%s\n' ${q_backend} ${q_cli} ${local_size} > ${AIRGAP_IMPORT_MARKER}.tmp; mv -f ${AIRGAP_IMPORT_MARKER}.tmp ${AIRGAP_IMPORT_MARKER}" || rc=$?
+  if (( rc == 255 )); then
+    die_with_steps "The SSH connection to ${vm_name} was lost during the air-gapped import; it was not retried automatically because an import must not run twice at once." \
+      "*The package copy stays in ${AIRGAP_REMOTE_ARCHIVE} on ${vm_name}. --resume checks whether the import finished (marker ${AIRGAP_IMPORT_MARKER}) and otherwise imports again from that copy, without a new transfer." \
+      "Continue when the VM is reachable again:|./install.sh --resume"
+  elif (( rc != 0 )); then
+    die_with_steps "Air-gapped import failed on ${vm_name} (exit ${rc}); see the stanctl output above." \
+      "*The package copy stays in ${AIRGAP_REMOTE_ARCHIVE} on ${vm_name}; --resume verifies it by checksum and does not copy it again." \
+      "Inspect the VM if needed:|gcloud compute ssh ${vm_name} --zone=${zone} --project=${project}" \
+      "Continue where it stopped:|./install.sh --resume"
+  fi
+  cli_output=$(remote_value "$vm_name" "$zone" "$project" CLI "echo CLI=\$(stanctl --version 2>/dev/null | head -1)") || cli_output=""
+  installed=$(stanctl_version_token "$cli_output")
+  [[ "$installed" == "$STANCTL_CLI_VERSION" ]] ||
+    die_with_steps "Installed stanctl on ${vm_name} reports '${cli_output:-nothing}', expected ${STANCTL_CLI_VERSION} from the archive build metadata." \
+      "Check which stanctl the VM runs:|gcloud compute ssh ${vm_name} --zone=${zone} --project=${project} --command='command -v stanctl; stanctl --version'" \
+      "*Remove any other stanctl earlier in root's PATH, then continue:|./install.sh --resume"
   save_state stanctl_cli_version "$STANCTL_CLI_VERSION"
   save_state backend_version "$BACKEND_VERSION"
+  save_state "step_airgap_imported_${vm_name}" completed
+  remote_exec "$vm_name" "$zone" "$project" "rm -f ${AIRGAP_REMOTE_ARCHIVE} ${AIRGAP_REMOTE_ARCHIVE}.part" ||
+    warn "Could not remove the package copy on ${vm_name}; remove ${AIRGAP_REMOTE_ARCHIVE} by hand to free space."
   phase_detail done "Imported air-gapped package: stanctl ${STANCTL_CLI_VERSION} → backend ${BACKEND_VERSION}"
   ok "Air-gapped stanctl package imported on ${vm_name}."
 }
@@ -2061,43 +2180,6 @@ configure_ufw_multi_node() {
   remote_exec_dry "$vm_name" "$zone" "$project" "ufw --force enable && ufw --force reload"
 
   ok "UFW configured on ${vm_name}."
-}
-
-setup_ssh_keys_multi_node() {
-  # From docs (SSH configuration):
-  # The root user must have passwordless SSH access to all three nodes.
-  # Generate SSH key pair on node0, copy public key to node1 and node2.
-  local node0_name="$1" zone="$2" project="$3" node1_ip="$4" node2_ip="$5"
-  log "Setting up passwordless SSH from ${node0_name} to other nodes (from documentation)..."
-
-  # Generate SSH key on node0 if not present
-  remote_exec_dry "$node0_name" "$zone" "$project" \
-    "[ -f ~/.ssh/id_rsa ] || ssh-keygen -t rsa -N '' -f ~/.ssh/id_rsa"
-
-  # Get public key from node0
-  if [[ "$DRY_RUN" != true ]]; then
-    local pub_key
-    pub_key=$(remote_exec "$node0_name" "$zone" "$project" "cat ~/.ssh/id_rsa.pub")
-
-    # Copy to node1 and node2
-    for node_ip in "$node1_ip" "$node2_ip"; do
-      local node_name
-      node_name=$(gcloud compute instances list \
-        --project="$project" \
-        --filter="networkInterfaces[0].networkIP=${node_ip}" \
-        --format="value(name)" | head -1)
-      remote_exec "$node_name" "$zone" "$project" \
-        "mkdir -p ~/.ssh && echo '${pub_key}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
-    done
-
-    # Test SSH connections
-    remote_exec "$node0_name" "$zone" "$project" \
-      "ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 ${node1_ip} 'echo node1 ok'"
-    remote_exec "$node0_name" "$zone" "$project" \
-      "ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 ${node2_ip} 'echo node2 ok'"
-  fi
-
-  ok "Passwordless SSH configured."
 }
 
 # =============================================================================
@@ -2362,130 +2444,6 @@ main_single_node() {
   progress_summary
 }
 
-legacy_main_three_node() {
-  phase_start 3 "Check quota and create the three VMs required by the selected multi-node profile."
-  check_gcp_quota "$GCP_PROJECT" "$GCP_ZONE" $(( NODE_CPUS * 3 ))
-  check_duplicate_vms "$GCP_PROJECT" "$GCP_ZONE" \
-    "$NODE0_NAME" "$NODE1_NAME" "$NODE2_NAME"
-
-  # Create all three VMs
-  create_vm "$NODE0_NAME" "$MACHINE_TYPE" "$GCP_ZONE" "$GCP_PROJECT" \
-    "$GCP_NETWORK" "$GCP_SUBNET" "$UBUNTU_VERSION"
-  create_vm "$NODE1_NAME" "$MACHINE_TYPE" "$GCP_ZONE" "$GCP_PROJECT" \
-    "$GCP_NETWORK" "$GCP_SUBNET" "$UBUNTU_VERSION"
-  create_vm "$NODE2_NAME" "$MACHINE_TYPE" "$GCP_ZONE" "$GCP_PROJECT" \
-    "$GCP_NETWORK" "$GCP_SUBNET" "$UBUNTU_VERSION"
-  phase_done 3 "All three VMs were created."
-
-  # Disks — layout from documentation:
-  # node0: objects disk (1000 GB)
-  # node1: data (500), metrics (1000), analytics (1200)
-  # node2: no extra disk
-  phase_start 4 "Create and attach the documented dedicated SSD data disks using stable device names."
-  create_and_attach_disk "$NODE0_NAME" "${NODE0_NAME}-objects"   1000 "$GCP_ZONE" "$GCP_PROJECT" "disk-objects"
-  create_and_attach_disk "$NODE1_NAME" "${NODE1_NAME}-data"       500 "$GCP_ZONE" "$GCP_PROJECT" "disk-data"
-  create_and_attach_disk "$NODE1_NAME" "${NODE1_NAME}-metrics"   1000 "$GCP_ZONE" "$GCP_PROJECT" "disk-metrics"
-  create_and_attach_disk "$NODE1_NAME" "${NODE1_NAME}-analytics" 1200 "$GCP_ZONE" "$GCP_PROJECT" "disk-analytics"
-  phase_done 4 "All multi-node data disks are attached."
-
-  phase_start 5 "Create GCP VPC rules for SSH, public Instana endpoints, and node-to-node cluster communication."
-  create_firewall_rules "$GCP_PROJECT" "$GCP_NETWORK"
-  phase_done 5 "GCP firewall rules are present."
-
-  # Get private IPs
-  phase_start 6 "Record private IP addresses and wait until every node accepts non-interactive SSH."
-  local node0_ip node1_ip node2_ip
-  if [[ "$DRY_RUN" != true ]]; then
-    node0_ip=$(gcloud compute instances describe "$NODE0_NAME" \
-      --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
-      --format="value(networkInterfaces[0].networkIP)")
-    node1_ip=$(gcloud compute instances describe "$NODE1_NAME" \
-      --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
-      --format="value(networkInterfaces[0].networkIP)")
-    node2_ip=$(gcloud compute instances describe "$NODE2_NAME" \
-      --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
-      --format="value(networkInterfaces[0].networkIP)")
-  else
-    node0_ip="10.0.0.1"; node1_ip="10.0.0.2"; node2_ip="10.0.0.3"
-  fi
-
-  save_state "node0_ip" "$node0_ip"
-  save_state "node1_ip" "$node1_ip"
-  save_state "node2_ip" "$node2_ip"
-
-  # Wait for SSH on all nodes
-  if [[ "$DRY_RUN" != true ]]; then
-    wait_for_ssh "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
-    wait_for_ssh "$NODE1_NAME" "$GCP_ZONE" "$GCP_PROJECT"
-    wait_for_ssh "$NODE2_NAME" "$GCP_ZONE" "$GCP_PROJECT"
-  fi
-  local n
-  for n in "$NODE0_NAME" "$NODE1_NAME" "$NODE2_NAME"; do
-    verify_cpu_x86_64_v3 "$n" "$GCP_ZONE" "$GCP_PROJECT"
-  done
-  phase_done 6 "All nodes are reachable over SSH and meet the x86-64-v3 CPU requirement."
-
-  # Kernel parameters on ALL nodes (from documentation)
-  phase_start 7 "Apply documented sysctl and THP settings on every node, reboot, and verify the settings."
-  for node in "$NODE0_NAME" "$NODE1_NAME" "$NODE2_NAME"; do
-    apply_kernel_parameters "$node" "$GCP_ZONE" "$GCP_PROJECT"
-  done
-  phase_done 7 "Kernel configuration completed on all nodes."
-
-  # UFW on ALL nodes (multi-node rules from documentation)
-  phase_start 8 "Configure Ubuntu UFW on every node while retaining SSH and required Instana cluster ports."
-  for node in "$NODE0_NAME" "$NODE1_NAME" "$NODE2_NAME"; do
-    configure_ufw_multi_node "$node" "$GCP_ZONE" "$GCP_PROJECT" \
-      "$node0_ip" "$node1_ip" "$node2_ip"
-  done
-  phase_done 8 "UFW configuration completed on all nodes."
-
-  # Format and mount disks
-  phase_start 9 "Format blank disks, persist their mounts, and configure the documented node0-to-node SSH relationship."
-  format_and_mount_disk "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" "disk-objects"   "/mnt/instana/stanctl/objects"
-  format_and_mount_disk "$NODE1_NAME" "$GCP_ZONE" "$GCP_PROJECT" "disk-data"      "/mnt/instana/stanctl/data"
-  format_and_mount_disk "$NODE1_NAME" "$GCP_ZONE" "$GCP_PROJECT" "disk-metrics"   "/mnt/instana/stanctl/metrics"
-  format_and_mount_disk "$NODE1_NAME" "$GCP_ZONE" "$GCP_PROJECT" "disk-analytics" "/mnt/instana/stanctl/analytics"
-
-  # SSH setup (from documentation)
-  setup_ssh_keys_multi_node "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" \
-    "$node1_ip" "$node2_ip"
-  phase_done 9 "Storage mounts and inter-node SSH are ready."
-
-  # Install stanctl on node0 only (from docs: multi-node, run commands on node0)
-  phase_start 10 "Install stanctl on node0 from the authenticated online repository or selected air-gapped package."
-  if [[ "$INSTALL_MODE" == "online" ]]; then
-    add_instana_repository "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
-    install_stanctl "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
-  else
-    install_stanctl_airgapped "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
-  fi
-  phase_done 10 "stanctl is available on node0."
-
-  # Run stanctl up from node0
-  phase_start 11 "Run the multi-node stanctl installation from node0 and wait for backend deployment."
-  run_stanctl_up_multi_node "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" \
-    "${node0_ip},${node1_ip},${node2_ip}"
-  phase_done 11 "Instana multi-node installation command completed."
-
-  # Health check on node0
-  phase_start 12 "Check Kubernetes and Instana workload readiness, then print local access instructions for each operating system."
-  post_install_health_check "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
-  configure_kubectl_user_access "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
-
-  # Get external IP of node0 (base domain points to node0 in multi-node)
-  local ext_ip=""
-  if [[ "$DRY_RUN" != true ]]; then
-    ext_ip=$(gcloud compute instances describe "$NODE0_NAME" \
-      --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
-      --format="value(networkInterfaces[0].accessConfigs[0].natIP)" 2>/dev/null || echo "unknown")
-  fi
-
-  print_final_report "${ext_ip:-DRY-RUN}"
-  phase_done 12 "Health checks and local access instructions completed."
-  progress_summary
-}
-
 # =============================================================================
 # ENTRY POINT
 # =============================================================================
@@ -2668,7 +2626,7 @@ main() {
   save_parameters
   validate_vm_names
   phase_done 1 "Local prerequisites and non-secret parameters are ready."
-  if [[ "$TOPOLOGY" == three-node && "$INSTALL_MODE" == online ]]; then
+  if [[ "$TOPOLOGY" == three-node ]]; then
     # Phase 1 has just written its own progress checkpoint into the state file;
     # that is not an existing deployment. Only a state with resources/identity is.
     if [[ -f "$STATE_FILE" && "$RESUME" != true ]] && ! state_is_only_progress; then

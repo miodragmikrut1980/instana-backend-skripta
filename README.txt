@@ -36,7 +36,7 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
      ./install.sh --report           izvestaj poslednje instalacije (UI URL,
                                      IP, /etc/hosts linije); isto u meniju
      ./install.sh --dry-run          samo plan, nista se ne kreira
-     ./install.sh --resume           nastavak prekinutog deploymenta (online)
+     ./install.sh --resume           nastavak prekinutog deploymenta (online i air-gapped)
      ./install.sh --destroy          brisanje resursa iz ovog foldera
      ./install.sh --destroy --dry-run  pregled brisanja
      ./install.sh --help
@@ -92,7 +92,7 @@ Na novim multi VM OS Login je iskljucen radi root key SSH. Ako je to
 zabranjeno organizacionom politikom, STOP; ne zaobilaziti politiku.
 
 Pamti parametre mode600 bez tajni. Svaki deployment u zasebnom folderu.
-State belezi resurse/checkpoints, ali MULTINODE RESUME NIJE implementiran.
+State belezi resurse/checkpoints; --resume ponovo proverava svaki resurs (three-node online i air-gapped).
 Posle greske ne pokretati naslepo ponovo; sacuvati log/state za pregled.
 destroy.sh cita state iz istog foldera; brise trajno uz eksplicitnu potvrdu.
 
@@ -105,13 +105,24 @@ sudo, ~40 GB), 3) predji na online instalaciju, 4) otkazi. Verzije se citaju
 iz arhive i prikazuju u planu. Air-gapped tok je POTVRDJEN stvarnim
 deploymentom 18.09.2026 (single-node demo, paket napravljen opcijom 2 na
 upravljackoj VM, stanctl 1.15.0 / backend 3.323.470-0, svih 12 faza).
-Resume za air-gapped i dalje nije podrzan.
+Resume za air-gapped (single-node i three-node): paket se kopira u
+/var/tmp/instana-airgapped.tar.gz na VM (preko .part imena, pa rename), pa
+--resume posle prekida ne kopira ponovo desetine GB: postojeca kopija (ili
+.part pune velicine) se uporedi SHA-256 sa lokalnom arhivom i koristi.
+Import se ne ponavlja automatski; posle uspeha VM dobija marker
+/var/lib/instana-airgap/imported, pa se zavrsen import (marker + tacna
+stanctl verzija) ne radi ponovo. Pre kopiranja se trazi ~2x velicina paketa
++ 5 GB slobodno u /var/tmp. Ako je lokalna arhiva u medjuvremenu zamenjena
+drugom verzijom, resume staje sa HOW TO RESOLVE.
+Three-node air-gapped sada ide istim lab tokom kao online (3x n2-standard-16,
+deployment identitet, resume; faza 6 i dalje koristi apt na nodovima);
+end-to-end na GCP jos nije potvrdjen.
 
 Single-node kernel skip jos ostaje iz working kopije i nije genericki
 installer za novu single VM.
 Stari v0.2.2 tekst opisuje prethodni release, ovaj README ima prednost.
 
-Testovi: bash syntax, 4 mock dry-run toka, config persistence tests,
+Testovi: bash syntax, 4 mock dry-run toka, test-airgap-resume.sh, config persistence tests,
 test-input-reask.sh (ponovno pitanje umesto prekida).
 Stvarni GCP deploy NIJE testiran. IBM docs PDF145–154 i169–172;
 stanctl flags pregledani iz dostavljenog source. Confidential IBM source

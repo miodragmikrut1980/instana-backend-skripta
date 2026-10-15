@@ -19,11 +19,13 @@ save_parameters() {
   for key in "${PARAMETER_KEYS[@]}"; do
     json=$(jq --arg k "$key" --arg v "${!key:-}" '.[$k]=$v' <<< "$json")
   done
-  if [[ "${TOPOLOGY:-}" == three-node && "${INSTALL_MODE:-}" == online && -f "$STATE_FILE" ]]; then
+  if [[ "${TOPOLOGY:-}" == three-node && -f "$STATE_FILE" ]]; then
     local original
     original=$(get_state deployment_manifest)
     if [[ -n "$original" && "$original" != "$(jq -cS . <<< "$json")" ]]; then
-      die "Saved deployment parameters are immutable during resume; original configuration preserved."
+      die_with_steps "The parameters differ from the ones this three-node deployment was started with; they cannot change during resume (original configuration preserved)." \
+        "Continue the recorded deployment with its saved parameters (choose 'reuse saved parameters'):|./install.sh --resume" \
+        "*Or remove that deployment first and then start a new one: ./install.sh --destroy"
     fi
   fi
   temp=$(mktemp "${CONFIG_FILE}.XXXXXX")
@@ -93,7 +95,25 @@ offer_saved_parameters() {
   fi
   if [[ "$INSTALL_MODE" == air-gapped ]]; then
     # Re-inspect the saved archive so versions come from the file, not from config.
-    inspect_airgapped_archive "$AIRGAP_ARCHIVE" || die "Saved air-gapped archive is missing or invalid: ${AIRGAP_ARCHIVE}"
+    inspect_airgapped_archive "$AIRGAP_ARCHIVE" ||
+      die_with_steps "The saved air-gapped package is missing or invalid: ${AIRGAP_ARCHIVE}" \
+        "Put the package this deployment was started with back at that path:|ls -l ${AIRGAP_ARCHIVE}" \
+        "Then rerun (add --resume to continue a started deployment):|./install.sh"
+    verify_airgap_archive_matches_state
   fi
   return 0
+}
+
+# Resume must continue with the package the deployment was started with: once
+# an import is recorded, a replaced archive (other stanctl/backend) stops here.
+verify_airgap_archive_matches_state() {
+  [[ "${RESUME:-false}" == true ]] || return 0
+  local recorded_backend recorded_cli
+  recorded_backend=$(get_state backend_version); recorded_cli=$(get_state stanctl_cli_version)
+  [[ -n "$recorded_backend" ]] || return 0
+  if [[ "$recorded_backend" != "$BACKEND_VERSION" || ( -n "$recorded_cli" && "$recorded_cli" != "$STANCTL_CLI_VERSION" ) ]]; then
+    die_with_steps "${AIRGAP_ARCHIVE} now holds stanctl ${STANCTL_CLI_VERSION} / backend ${BACKEND_VERSION}, but this deployment imported stanctl ${recorded_cli:-?} / backend ${recorded_backend}." \
+      "Put the original package back at ${AIRGAP_ARCHIVE}, then continue:|./install.sh --resume" \
+      "*Or remove this deployment and start a new one with the new package: ./install.sh --destroy"
+  fi
 }

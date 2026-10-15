@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Three-node ONLINE lab only. Overrides the legacy online orchestration.
+# Three-node lab (online and air-gapped): verified, resumable orchestration.
 
 prepare_multinode_lab() {
   if [[ "$RESUME" == true ]]; then
@@ -86,7 +86,6 @@ lab_root_ssh() {
 }
 
 main_three_node() {
-  [[ "$INSTALL_MODE" == online ]] || { legacy_main_three_node; return; }
   initialize_multinode_state
   local node ip
   phase_start 3 "Check quota for three nodes and create or verify all VMs. Resume mode validates existing resources instead of recreating them."
@@ -144,7 +143,11 @@ main_three_node() {
   lab_checkpoint disks_mounted
   phase_done 9 "All multi-node storage paths are mounted."
 
-  phase_start 10 "Authenticate to the Instana APT repository, import its signing key, and install stanctl on node0. Secrets are not stored in state or logs."
+  if [[ "$INSTALL_MODE" == online ]]; then
+    phase_start 10 "Authenticate to the Instana APT repository, import its signing key, and install stanctl on node0. Secrets are not stored in state or logs."
+  else
+    phase_start 10 "Copy the air-gapped package to node0 (an intact copy from an earlier run is reused after a checksum check), extract stanctl and import it."
+  fi
   resume_install_stanctl
   lab_checkpoint stanctl_installed
   phase_done 10 "stanctl is installed on node0."

@@ -39,3 +39,49 @@ about 20 minutes into the run, after the VM and disks were already created.
 - A stop (error or unexpected failure) says how long the run lasted.
 - The /etc/hosts lines in the final report (screen and .install-report.txt)
   start at column 1, so a block copy pastes cleanly into the hosts file.
+
+2026-10-15 — air-gapped resume (single-node and three-node)
+- Why: an interrupted air-gapped run had to copy the tens-of-GB package
+  again, and a three-node air-gapped deployment could not be resumed at all
+  (it used an older flow without deployment identity; --resume stopped on
+  "VM already exists").
+- Phase 10 copies the package to /var/tmp/instana-airgapped.tar.gz on the
+  VM (kept across a reboot, unlike /tmp) under a .part name and renames it
+  when the transfer finished. Before copying it removes leftovers (also the
+  /tmp copy older releases left after a failed import) and requires free
+  space of about twice the package plus 5 GB in /var/tmp (package plus 5 GB
+  when an existing copy is reused); too little stops with HOW TO RESOLVE,
+  an unreadable df only warns.
+- An existing copy, or a .part of full size (transfer finished, rename
+  lost), is compared by SHA-256 with the local archive and reused; anything
+  else is replaced.
+- The import is never retried automatically (it is not idempotent) and runs
+  under a lock on the VM (stanctl's children do not inherit the lock). When it succeeds the VM gets a marker
+  /var/lib/instana-airgap/imported (backend, stanctl, package size), then
+  the state is saved, and only then the copy is deleted as a separate step.
+  A lost connection or failed import stops with HOW TO RESOLVE; the copy
+  stays and --resume imports again from it without a new transfer.
+- A finished import (marker plus the exact stanctl version on the VM, not a
+  substring match) is not repeated, even if the connection dropped before
+  the local state was written; an empty or different stanctl version
+  imports again from the kept copy. A VM marker for a different package
+  stops instead of importing over it.
+- Every probe of the VM (marker, copy size, checksum) distinguishes "not
+  there" from "could not ask": a failed SSH probe stops with HOW TO RESOLVE
+  instead of copying tens of GB again or importing twice.
+- If the local archive was replaced with another stanctl/backend version
+  after the import, the run stops with HOW TO RESOLVE: checked when the
+  parameters are loaded, when a three-node resume is validated (also when
+  resume was chosen at the "existing state" question), and in phase 10.
+- Known errors now end in HOW TO RESOLVE: invalid saved package, changed
+  three-node parameters during resume (both checks), a 'stanctl up' with
+  uncertain outcome on three-node resume, wrong stanctl after import.
+- Three-node air-gapped now uses the same verified three-node lab flow as
+  online (3x n2-standard-16, deployment identity and labels, per-deployment
+  firewall rules, root SSH, resume of every phase); phase 10 imports the
+  package on node0. The old three-node flow was removed. The plan shows
+  n2-standard-16 for three-node, the size question says only small is
+  supported, and three-node air-gapped notes that phase 6 still uses apt.
+  End-to-end on GCP still to be confirmed.
+- New test: test-airgap-resume.sh (16 cases, incl. space thresholds, probe
+  failures, empty stanctl output, marker contents).

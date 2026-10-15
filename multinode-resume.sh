@@ -9,10 +9,20 @@ validate_multinode_resume() {
     "*Or remove that old deployment first: ./install.sh --destroy"
   local manifest
   manifest=$(jq -cS .parameters "$CONFIG_FILE")
-  [[ "$(get_state deployment_manifest)" == "$manifest" ]] || die "Parameters differ from original deployment. Restore its saved config; no resources changed."
+  [[ "$(get_state deployment_manifest)" == "$manifest" ]] ||
+    die_with_steps "The saved parameters in .install-config.json differ from the ones this deployment was started with; no resources were changed." \
+      "Compare the recorded and the current parameters:|jq -r .deployment_manifest .install-state.json; jq -cS .parameters .install-config.json" \
+      "Restore the original .install-config.json (from a copy of this folder), then continue:|./install.sh --resume" \
+      "*Or remove that deployment first: ./install.sh --destroy"
   if [[ "$(get_state stanctl_up_status)" == running ]]; then
-    die "Previous stanctl up outcome is uncertain. Inspect node0; do not launch a second installer automatically."
+    die_with_steps "A previous 'stanctl up' on ${NODE0_NAME} may still be running or ended without a recorded result; a second installer is not started automatically." \
+      "Check on node0 whether stanctl is still running and what the cluster looks like:|gcloud compute ssh ${NODE0_NAME} --zone=${GCP_ZONE} --project=${GCP_PROJECT} --command='pgrep -a stanctl; sudo kubectl get nodes; sudo kubectl get pods -A | head -40'" \
+      "If the original installer is still running in screen, reattach to it (./install.sh offers it); it records the result itself, then continue:|./install.sh --resume" \
+      "If no installer is running any more, the outcome cannot be confirmed automatically: inspect the cluster above, then remove the deployment with the destroy / clean-up menu option:|./install.sh --destroy"
   fi
+  # RESUME may have been switched on only now (answer "resume" to the existing
+  # state prompt), after the parameters were loaded: check the package here too.
+  [[ "$INSTALL_MODE" != air-gapped ]] || verify_airgap_archive_matches_state
 }
 
 initialize_multinode_state() {
@@ -210,7 +220,10 @@ resume_mount() {
 }
 
 resume_install_stanctl() {
-  if [[ "$RESUME" == true && "$(get_state step_stanctl_installed)" == completed ]]; then
+  if [[ "$INSTALL_MODE" == air-gapped ]]; then
+    # Resume-aware on its own: verifies a recorded import, reuses a matching copy.
+    install_stanctl_airgapped "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
+  elif [[ "$RESUME" == true && "$(get_state step_stanctl_installed)" == completed ]]; then
     remote_exec "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" 'set -e; command -v stanctl >/dev/null; st=$(dpkg-query -W -f="\${Status}" stanctl); echo "stanctl $(stanctl --version 2>/dev/null | head -1): package status \"$st\""; echo "$st" | grep -q "ok installed"'
   else
     add_instana_repository "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT"
