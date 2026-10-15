@@ -334,46 +334,6 @@ check_local_tools() {
 }
 
 
-check_gcp_quota() {
-  local project="$1" zone="$2" cpus="$3" region
-  region="${zone%-*}"
-  log "Checking GCP CPU quota in region ${region}..."
-  local quota
-  quota=$(gcloud compute regions describe "$region" \
-    --project="$project" \
-    --format="json" 2>/dev/null \
-    | jq -r '.quotas[] | select(.metric=="CPUS") | .limit' 2>/dev/null || echo "0")
-  if [[ "$quota" == "0" ]]; then
-    warn "Could not read CPU quota. Proceeding — check manually if creation fails."
-    return
-  fi
-  local used
-  used=$(gcloud compute regions describe "$region" \
-    --project="$project" \
-    --format="json" 2>/dev/null \
-    | jq -r '.quotas[] | select(.metric=="CPUS") | .usage' 2>/dev/null || echo "0")
-  local available
-  available=$(jq -n --argjson limit "$quota" --argjson usage "$used" '$limit-$usage' 2>/dev/null || echo "unknown")
-  log "CPU quota in ${region}: limit=${quota}, used=${used}, available=${available}"
-  if [[ "$available" != "unknown" ]] && [[ "$(jq -n --argjson a "$available" --argjson c "$cpus" '$a<$c')" == true ]]; then
-    die "Insufficient CPU quota. Need ${cpus} vCPUs, but only ${available} available in ${region}."
-  fi
-  ok "CPU quota sufficient."
-}
-
-check_duplicate_vms() {
-  local project="$1" zone="$2"; shift 2
-  local names=("$@")
-  log "Checking for existing VMs..."
-  for name in "${names[@]}"; do
-    if gcloud compute instances describe "$name" \
-      --project="$project" --zone="$zone" &>/dev/null 2>&1; then
-      die "VM '${name}' already exists in zone ${zone}. Delete it first or use destroy.sh."
-    fi
-  done
-  ok "No duplicate VMs found."
-}
-
 # =============================================================================
 # SECTION 2 — HARDWARE MINIMUMS (from docs, verbatim)
 # =============================================================================
@@ -1235,201 +1195,6 @@ get_state() {
   [[ -f "$STATE_FILE" ]] && jq -r --arg k "$key" '.[$k] // empty' "$STATE_FILE" || echo ""
 }
 
-create_vm_once() {
-  local name="$1" machine_type="$2" zone="$3" project="$4" network="$5" subnet="$6" ubuntu="$7"
-  log "Creating VM: ${name} (${machine_type}, zone: ${zone})..."
-  local metadata_args=()
-  local label_args=()
-  [[ "$TOPOLOGY" == three-node ]] && metadata_args=(--metadata=enable-oslogin=false)
-  [[ -z "${DEPLOYMENT_ID:-}" ]] || label_args=("--labels=instana-lab-id=$DEPLOYMENT_ID")
-  run gcloud compute instances create "$name" \
-    --project="$project" \
-    --zone="$zone" \
-    --machine-type="$machine_type" \
-    --image-family="$ubuntu" \
-    --image-project="ubuntu-os-cloud" \
-    --boot-disk-size="${BOOT_SIZE_GB:-100}GB" \
-    --boot-disk-type="pd-ssd" \
-    --network="$network" \
-    --subnet="$subnet" \
-    --tags="${DEPLOYMENT_TAG:-instana-backend}" "${metadata_args[@]}" "${label_args[@]}"
-  save_state "vm_${name}" "created"
-  ok "VM ${name} created."
-}
-
-create_and_attach_disk() {
-  local vm_name="$1" disk_name="$2" size_gb="$3" zone="$4" project="$5" device_name="$6"
-  local info vm attached users recorded inspect_error disk_exists=false adoption_required=false
-  if [[ "$DRY_RUN" == true ]]; then
-    log "Creating disk ${disk_name} (${size_gb} GB SSD; resume would verify/reuse it if present)..."
-    run gcloud compute disks create "$disk_name" --project="$project" --zone="$zone" --size="${size_gb}GB" --type="pd-ssd"
-    run gcloud compute instances attach-disk "$vm_name" --project="$project" --zone="$zone" --disk="$disk_name" --device-name="$device_name"
-    return 0
-  fi
-
-  inspect_error=$(mktemp)
-  if info=$(gcloud compute disks describe "$disk_name" --project="$project" --zone="$zone" --format=json 2>"$inspect_error"); then
-    disk_exists=true
-  elif grep -Eqi 'was not found|not found|could not fetch resource' "$inspect_error"; then
-    disk_exists=false
-  else
-    rm -f "$inspect_error"
-    die "Cannot inspect disk ${disk_name}; access or API failure. No resource was created or changed."
-  fi
-  rm -f "$inspect_error"
-
-  if [[ "$disk_exists" != true ]]; then
-    log "Creating disk ${disk_name} (${size_gb} GB SSD)..."
-    run gcloud compute disks create "$disk_name" --project="$project" --zone="$zone" --size="${size_gb}GB" --type="pd-ssd"
-    info=$(gcloud compute disks describe "$disk_name" --project="$project" --zone="$zone" --format=json) ||
-      die "Disk ${disk_name} was created but cannot be verified; no attachment was attempted."
-  else
-    recorded=$(get_state "disk_${disk_name}")
-    if [[ "$recorded" != created && "$recorded" != attached ]]; then
-      warn "Disk '${disk_name}' exists but is not recorded in this installation state."
-      adoption_required=true
-    fi
-    phase_detail warn "Existing disk ${disk_name} found; validating it instead of creating a duplicate."
-  fi
-
-  jq -e --argjson size "$size_gb" \
-    '(.sizeGb|tonumber)==$size and (.type|endswith("/pd-ssd")) and .status=="READY"' \
-    <<< "$info" >/dev/null ||
-    die_with_steps "Disk ${disk_name} exists with an unexpected size, type, or state (expected ${size_gb} GB pd-ssd, READY). It was not adopted, attached, formatted, or deleted." \
-      "Rerun with a DIFFERENT VM name (disk names derive from it):|./install.sh" \
-      "*Or, after checking it holds nothing you need, delete the old disk and rerun:" \
-      "*    gcloud compute disks delete ${disk_name} --zone=${GCP_ZONE} --project=${GCP_PROJECT}"
-  users=$(jq -r '.users[]? // empty' <<< "$info")
-  [[ -z "$users" || "$users" == */instances/"$vm_name" ]] || die_with_steps "Disk ${disk_name} is attached to a different VM (${users##*/}); no changes were made." \
-      "Rerun with a DIFFERENT VM name so disk names do not collide:|./install.sh" \
-      "*Or, if that disk belongs to an old lab, detach/delete it manually first:" \
-      "*    gcloud compute disks delete ${disk_name} --zone=${GCP_ZONE} --project=${GCP_PROJECT}"
-
-  if [[ "$adoption_required" == true ]]; then
-    prompt_yes_no "Validated ${size_gb} GB READY pd-ssd disk with no foreign attachment. Adopt it only if it belongs to this interrupted deployment? It will never be automatically deleted or reformatted when non-blank." N ||
-      die_with_steps "Existing disk ${disk_name} was not adopted; no changes were made." \
-      "Rerun with a DIFFERENT VM name:|./install.sh" \
-      "*Or delete the leftover disk if it belongs to an old lab, then rerun:" \
-      "*    gcloud compute disks delete ${disk_name} --zone=${GCP_ZONE} --project=${GCP_PROJECT}"
-  fi
-
-  vm=$(gcloud compute instances describe "$vm_name" --project="$project" --zone="$zone" --format=json) || die "Cannot inspect VM ${vm_name}."
-  attached=$(jq --arg disk "$disk_name" '[.disks[]|select(.source|endswith("/"+$disk))]' <<< "$vm")
-  if [[ "$(jq length <<< "$attached")" == 0 ]]; then
-    log "Attaching ${disk_name} to ${vm_name} as ${device_name}..."
-    run gcloud compute instances attach-disk "$vm_name" --project="$project" --zone="$zone" --disk="$disk_name" --device-name="$device_name"
-  fi
-  vm=$(gcloud compute instances describe "$vm_name" --project="$project" --zone="$zone" --format=json) ||
-    die "Cannot verify VM ${vm_name} after disk attachment attempt."
-  attached=$(jq --arg disk "$disk_name" '[.disks[]|select(.source|endswith("/"+$disk))]' <<< "$vm")
-  jq -e --arg device "$device_name" 'length==1 and .[0].deviceName==$device and .[0].boot==false' <<< "$attached" >/dev/null ||
-    die "Disk ${disk_name} attachment is missing, duplicated, uses an unexpected device name, or is marked as a boot disk."
-  phase_detail done "Attachment ${disk_name} → ${vm_name} (${device_name}) verified."
-  save_state "disk_${disk_name}" "attached"
-  ok "Disk ${disk_name} attached to ${vm_name}."
-}
-
-ensure_single_vm() {
-  local name="$1" machine_type="$2" zone="$3" project="$4" network="$5" subnet="$6" ubuntu="$7" info recorded inspect_error vm_exists=false
-  [[ "$DRY_RUN" != true ]] || { create_vm "$@"; return; }
-  inspect_error=$(mktemp)
-  if info=$(gcloud compute instances describe "$name" --project="$project" --zone="$zone" --format=json 2>"$inspect_error"); then
-    vm_exists=true
-  elif grep -Eqi 'was not found|not found|could not fetch resource' "$inspect_error"; then
-    vm_exists=false
-  else
-    rm -f "$inspect_error"
-    die "Cannot inspect VM ${name}; access or API failure. No replacement VM was created."
-  fi
-  rm -f "$inspect_error"
-  if [[ "$vm_exists" != true ]]; then
-    [[ -z "$(get_state "vm_${name}")" ]] || die_with_steps "VM ${name} is recorded in .install-state.json but no longer exists in GCP (it was deleted outside this installer). Automatic replacement is refused." \
-      "See what is left of the old deployment (disks, firewall rules):|./install.sh --destroy --dry-run" \
-      "Remove the leftovers and the stale state file:|./install.sh --destroy" \
-      "Start a fresh deployment:|./install.sh" \
-      "*Alternative, if you must keep the old disks: move the state file away and use a NEW VM name:" \
-      "*    mv .install-state.json .install-state.json.old"
-    create_vm "$@"
-    return
-  fi
-  recorded=$(get_state "vm_${name}")
-  [[ "$recorded" == created ]] || die_with_steps "VM '${name}' already exists in ${GCP_ZONE} but was not created by this installation (no record in .install-state.json). This installer never deletes or reuses a VM it did not create." \
-      "Rerun and choose a DIFFERENT VM name for this deployment:|./install.sh" \
-      "*Or, if that VM is an old lab you no longer need, delete it first and rerun:" \
-      "*    gcloud compute instances delete ${name} --zone=${GCP_ZONE} --project=${GCP_PROJECT}"
-  jq -e --arg machine "$machine_type" --arg network "$network" --arg subnet "$subnet" \
-    '.status=="RUNNING" and (.machineType|endswith("/"+$machine)) and
-     (.networkInterfaces[0].network|endswith("/"+$network)) and
-     (.networkInterfaces[0].subnetwork|endswith("/"+$subnet))' <<< "$info" >/dev/null ||
-    die_with_steps "Existing VM ${name} does not match the saved machine type, network, subnet, or RUNNING state." \
-      "If the VM is only stopped, start it and resume:|gcloud compute instances start ${name} --zone=${GCP_ZONE} --project=${GCP_PROJECT} && ./install.sh --resume" \
-      "If it was resized or moved, remove the whole deployment and start again:|./install.sh --destroy && ./install.sh"
-  ok "Reuse verified VM: ${name}"
-}
-
-create_firewall_rules() {
-  local project="$1" network="$2"
-  log "Creating firewall rules (from documentation)..."
-
-  # Keep SSH separate so it can be restricted to the operator's CIDR.
-  if ! gcloud compute firewall-rules describe "instana-allow-ssh" \
-      --project="$project" &>/dev/null 2>&1; then
-    run gcloud compute firewall-rules create "instana-allow-ssh" \
-      --project="$project" \
-      --network="$network" \
-      --allow="tcp:22" \
-      --source-ranges="$SSH_SOURCE_CIDR" \
-      --target-tags="instana-backend" \
-      --description="Restricted SSH access for Instana administration"
-    save_state "fw_ssh" "created"
-  fi
-
-  # Public Instana endpoints. Port 22 is deliberately excluded here.
-  # From docs: Table 6 (single-node) / Table 10 (multi-node)
-  if ! gcloud compute firewall-rules describe "instana-allow-external" \
-      --project="$project" &>/dev/null 2>&1; then
-    run gcloud compute firewall-rules create "instana-allow-external" \
-      --project="$project" \
-      --network="$network" \
-      --allow="tcp:80,tcp:443,tcp:8443" \
-      --target-tags="instana-backend" \
-      --description="Instana external ports (doc: Table 6/10)"
-    save_state "fw_external" "created"
-  fi
-
-  # K3s internal subnets — must have access to all ports (from docs)
-  if ! gcloud compute firewall-rules describe "instana-allow-k3s-subnets" \
-      --project="$project" &>/dev/null 2>&1; then
-    run gcloud compute firewall-rules create "instana-allow-k3s-subnets" \
-      --project="$project" \
-      --network="$network" \
-      --allow="tcp:0-65535,udp:0-65535,icmp" \
-      --source-ranges="10.42.0.0/16,10.43.0.0/16" \
-      --target-tags="instana-backend" \
-      --description="Instana K3s pod/service subnets (doc: 10.42.0.0/16 and 10.43.0.0/16)"
-    save_state "fw_k3s" "created"
-  fi
-
-  if [[ "$TOPOLOGY" == "three-node" ]]; then
-    # Inter-node ports (from docs, Table 10):
-    # TCP: 22,53,6443,10250,2379,2380,5001,9443
-    # UDP: 53,8472
-    if ! gcloud compute firewall-rules describe "instana-allow-internal" \
-        --project="$project" &>/dev/null 2>&1; then
-      run gcloud compute firewall-rules create "instana-allow-internal" \
-        --project="$project" \
-        --network="$network" \
-        --allow="tcp:22,tcp:53,tcp:6443,tcp:10250,tcp:2379,tcp:2380,tcp:5001,tcp:9443,udp:53,udp:8472" \
-        --target-tags="instana-backend" \
-        --source-tags="instana-backend" \
-        --description="Instana inter-node ports (doc: Table 10)"
-      save_state "fw_internal" "created"
-    fi
-  fi
-
-  ok "Firewall rules configured."
-}
-
 # =============================================================================
 # SECTION 7 — REMOTE SETUP (kernel, disks, install)
 # =============================================================================
@@ -2249,33 +2014,16 @@ print_final_report() {
 # =============================================================================
 main_single_node() {
   phase_start 3 "Check regional CPU quota, detect name collisions, and create the Ubuntu VM. If GCP reports a stockout, the capacity fallback may select another compatible location before any dependent resource exists."
-  check_gcp_quota "$GCP_PROJECT" "$GCP_ZONE" "$VM_CPUS"
-
-  # Create a missing VM, or verify the VM recorded by this installation.
-  ensure_single_vm "$VM_NAME" "$MACHINE_TYPE" "$GCP_ZONE" "$GCP_PROJECT" \
-    "$GCP_NETWORK" "$GCP_SUBNET" "$UBUNTU_VERSION"
+  provider_ensure_vms
   phase_done 3 "VM is available in ${GCP_ZONE}."
 
   # Create and attach disks (dedicated per directory — required by documentation)
   phase_start 4 "Create separate SSD persistent disks and attach each with a stable device name. Formatting happens later, only after SSH validation."
-  case "$INSTALL_TYPE" in
-    demo)
-      create_and_attach_disk "$VM_NAME" "${VM_NAME}-analytics" 500  "$GCP_ZONE" "$GCP_PROJECT" "disk-analytics"
-      create_and_attach_disk "$VM_NAME" "${VM_NAME}-metrics"   300  "$GCP_ZONE" "$GCP_PROJECT" "disk-metrics"
-      create_and_attach_disk "$VM_NAME" "${VM_NAME}-objects"   250  "$GCP_ZONE" "$GCP_PROJECT" "disk-objects"
-      create_and_attach_disk "$VM_NAME" "${VM_NAME}-data"      150  "$GCP_ZONE" "$GCP_PROJECT" "disk-data"
-      ;;
-    production)
-      create_and_attach_disk "$VM_NAME" "${VM_NAME}-analytics" 1200 "$GCP_ZONE" "$GCP_PROJECT" "disk-analytics"
-      create_and_attach_disk "$VM_NAME" "${VM_NAME}-metrics"   1000 "$GCP_ZONE" "$GCP_PROJECT" "disk-metrics"
-      create_and_attach_disk "$VM_NAME" "${VM_NAME}-objects"   1000 "$GCP_ZONE" "$GCP_PROJECT" "disk-objects"
-      create_and_attach_disk "$VM_NAME" "${VM_NAME}-data"      500  "$GCP_ZONE" "$GCP_PROJECT" "disk-data"
-      ;;
-  esac
+  provider_ensure_disks
   phase_done 4 "All required data disks are attached."
 
   phase_start 5 "Create VPC ingress rules for SSH, public Instana endpoints, and required internal traffic. Host-level UFW is configured separately."
-  create_firewall_rules "$GCP_PROJECT" "$GCP_NETWORK"
+  provider_ensure_firewall
   phase_done 5 "GCP firewall rules are present."
 
   phase_start 6 "Wait until the VM accepts non-interactive SSH, verify remote administration, and verify the CPU provides x86-64-v3 (IBM minimum)."
@@ -2350,10 +2098,7 @@ validate_resume() {
   [[ -f "$STATE_FILE" ]] || die "Copy the original .install-state.json alongside this script first."
   [[ "$(get_state gcp_project)" == "$GCP_PROJECT" && "$(get_state gcp_zone)" == "$GCP_ZONE" && "$(get_state "vm_${VM_NAME}")" == created ]] ||
     die "Project, zone or VM differs from the saved state. No changes made."
-  local vm
-  vm=$(gcloud compute instances describe "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --format=json)
-  [[ "$(jq -r .status <<< "$vm")" == RUNNING ]] || die "Existing VM must be RUNNING."
-  [[ "$(jq -r '.machineType | split("/")[-1]' <<< "$vm")" == "$MACHINE_TYPE" ]] || die "Machine type differs from your selection."
+  provider_resume_check_vm "$VM_NAME"
   wait_for_ssh "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
   remote_exec "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT" '
     set -e

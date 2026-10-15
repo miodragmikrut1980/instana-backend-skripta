@@ -12,36 +12,12 @@ prepare_multinode_lab() {
   BOOT_SIZE_GB=270
   warn "INTERNAL LAB: 3 x n2-standard-16 (16 CPU/64 GB), 270 GB boot per node, 4 dedicated pd-ssd data disks. Physical isolation and sustained I/O are not certified."
   warn "Use a NEW base domain; existing single-node DNS must not be redirected. Public HTTP/TLS endpoints will be reachable."
-  local suffix
   [[ "$DRY_RUN" == true ]] && return 0
   [[ "$RESUME" == true ]] && return 0
-  for suffix in ssh external internal pods; do
-    if gcloud compute firewall-rules describe "${DEPLOYMENT_TAG}-${suffix}" --project="$GCP_PROJECT" >/dev/null 2>&1; then
-      die "Firewall name already exists: ${DEPLOYMENT_TAG}-${suffix}"
-    fi
-  done
+  provider_preflight_multi
 }
 
 lab_checkpoint() { save_state "step_$1" completed; }
-
-lab_firewalls() {
-  local name rule suffix sources target
-  for suffix in ssh external internal pods; do
-    name="${DEPLOYMENT_TAG}-${suffix}"
-    target="--target-tags=$DEPLOYMENT_TAG"
-    case "$suffix" in
-      ssh) rule=tcp:22; sources="--source-ranges=$SSH_SOURCE_CIDR";;
-      external) rule=tcp:80,tcp:443,tcp:8443; sources=--source-ranges=0.0.0.0/0;;
-      internal) rule=tcp,udp,icmp; sources="--source-tags=$DEPLOYMENT_TAG";;
-      pods) rule=tcp,udp,icmp; sources=--source-ranges=10.42.0.0/16,10.43.0.0/16;;
-    esac
-    # The description carries the deployment identity that resume_firewalls
-    # verifies; without it every later --resume would refuse these rules.
-    run gcloud compute firewall-rules create "$name" --project="$GCP_PROJECT" \
-      --network="$GCP_NETWORK" --allow="$rule" "$sources" "$target" --description="instana-lab-id=${DEPLOYMENT_ID:-}"
-    save_state "firewall_${name}" created
-  done
-}
 
 lab_kernel() {
   local node="$1" before after i
@@ -88,23 +64,15 @@ main_three_node() {
   initialize_multinode_state
   local node ip
   phase_start 3 "Check quota for three nodes and create or verify all VMs. Resume mode validates existing resources instead of recreating them."
-  check_gcp_quota "$GCP_PROJECT" "$GCP_ZONE" 48
-  [[ "$RESUME" == true ]] || check_duplicate_vms "$GCP_PROJECT" "$GCP_ZONE" "$NODE0_NAME" "$NODE1_NAME" "$NODE2_NAME"
-  for node in "$NODE0_NAME" "$NODE1_NAME" "$NODE2_NAME"; do
-    phase_detail active "Ensuring VM ${node} exists with the expected image and machine type."
-    resume_create_vm "$node" n2-standard-16 "$GCP_ZONE" "$GCP_PROJECT" "$GCP_NETWORK" "$GCP_SUBNET" "$UBUNTU_VERSION"
-  done
+  provider_ensure_vms
   phase_done 3 "All three VMs are present and verified."
 
   phase_start 4 "Create and attach four dedicated SSD data disks using stable device names; existing attachments are verified during resume."
-  resume_disk "$NODE0_NAME" "${NODE0_NAME}-objects" 1000 disk-objects
-  resume_disk "$NODE1_NAME" "${NODE1_NAME}-data" 500 disk-data
-  resume_disk "$NODE1_NAME" "${NODE1_NAME}-metrics" 1000 disk-metrics
-  resume_disk "$NODE1_NAME" "${NODE1_NAME}-analytics" 1200 disk-analytics
+  provider_ensure_disks
   phase_done 4 "All multi-node data disks are attached."
 
   phase_start 5 "Create deployment-scoped GCP rules: restricted SSH, public 80/443/8443, node-to-node traffic, and pod/service CIDRs."
-  resume_firewalls
+  provider_ensure_firewall
   phase_done 5 "GCP firewall rules are present and recorded."
 
   phase_start 6 "Wait for SSH, install required Ubuntu packages, verify CPU instruction flags, record private IPs, and establish verified root SSH between nodes."

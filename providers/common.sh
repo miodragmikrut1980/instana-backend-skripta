@@ -26,6 +26,11 @@ ssh_probe
 scp
 get_ip
 hint
+ensure_vms
+ensure_disks
+ensure_firewall
+preflight_multi
+resume_check_vm
 "
 
 provider_name() { printf '%s\n' "${PROVIDER:-gcp}"; }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Automatic placement fallback only for a fresh first-VM stockout.
+# GCP provider: automatic placement fallback only for a fresh first-VM stockout.
 deployment_has_resources() {
   [[ -f "$STATE_FILE" ]] || return 1
   jq -e 'to_entries|any(.[]; (.key|startswith("vm_")) or (.key|startswith("disk_")) or (.key|startswith("firewall_")) or (.key|startswith("fw_")))' "$STATE_FILE" >/dev/null
