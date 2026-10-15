@@ -403,7 +403,9 @@ input_resolve_aliases() {
     warn "$(input_source_label) gives two different values for the same setting: ${gcp}='${gv}' and ${neutral}='${nv}' (${neutral} is another name for ${gcp})."
     choice=$(prompt_choice "Which value should be used for ${gcp}?" \
       "${gv} (from ${gcp})" "${nv} (from ${neutral})" "neither: let me type the value") ||
-      die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+      die_with_steps "Input ended while choosing between ${gcp}='${gv}' and ${neutral}='${nv}' from $(input_source_label); the installation was not started and nothing was created." \
+        "Keep only one of the two names in the file (they are the same setting): delete the ${neutral} line or the ${gcp} line." \
+        "Then run again; without the conflict nothing is asked for it:|./install.sh --config ${INPUT_CONFIG:-<file>}"
     case "$choice" in
       "neither"*) IMPORTED[$gcp]="" ;;
       *) IMPORTED[$gcp]="${choice% (from *}" ;;
@@ -669,7 +671,9 @@ choose_parameter_source() {
   hint "Type the answers now, or import a file prepared with config-generator.html: values from the file are" \
        "checked like typed answers, and only the missing or invalid ones are asked."
   choice=$(prompt_choice "How do you want to provide the deployment parameters?" "${options[@]}") ||
-    die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    die_with_steps "Input ended before the way to provide the parameters was chosen; the installation was not started and nothing was created." \
+      "Run the installer in a terminal and answer the menu (1 = type the answers, 2 = import a file):|./install.sh" \
+      "Or, without a terminal, give a complete input file:|./install.sh --config instana-config.json"
   case "$choice" in
     "enter"*) PARAMS_SOURCE=manual; collect_parameters ;;
     "import"*) ask_input_file; import_parameters ;;
@@ -755,7 +759,11 @@ export_saved_parameters() {
     die_with_steps "Nothing to export: this folder has no .install-config.json (it is written after the parameters of a run are confirmed)." \
       "Run the installer once (a dry-run is enough), then export:|./install.sh --dry-run" \
       "*Or create a file from scratch with config-generator.html."
-  [[ ! -L "$CONFIG_FILE" && -O "$CONFIG_FILE" ]] || die "Unsafe config ownership or symlink: ${CONFIG_FILE}."
+  [[ ! -L "$CONFIG_FILE" && -O "$CONFIG_FILE" ]] ||
+    die_with_steps "${CONFIG_FILE} is a symbolic link or belongs to another user; it is not read, because whoever controls it could change what gets exported." \
+      "Look at the file and its owner:|ls -l ${CONFIG_FILE}" \
+      "Run the export as the user who owns this installer folder, or replace the link by the real file of this deployment." \
+      "Then export again:|./install.sh --export-config"
   jq -e 'type=="object" and .schema_version==1 and (.parameters|type)=="object" and (.parameters|all(.[]; type=="string"))' "$CONFIG_FILE" >/dev/null ||
     die_with_steps "${CONFIG_FILE} is not a valid saved configuration." "*Create a new input file with config-generator.html instead."
   local key
@@ -782,7 +790,9 @@ edit_parameters_before_start() {
   done
   for key in $INPUT_SECRET_KEYS; do items+=("${key} = ••••"); done
   choice=$(prompt_choice "Which value do you want to change?" "${items[@]}" "nothing, show the plan again") ||
-    die "Input ended; installation not started. Nothing was created."
+    die_with_steps "Input ended while choosing the value to change; the installation was not started and nothing was created." \
+      "Run the installer again in a terminal; at the plan answer E and pick the value by its number:|./install.sh${INPUT_CONFIG:+ --config ${INPUT_CONFIG}}" \
+      "*Or change the value in the input file (config-generator.html: 'Open a file…') and run again."
   [[ "$choice" != "nothing"* ]] || return 0
   EDIT_KEY="${choice%% = *}"
   EDIT_DEFAULT=$(input_current_value "$EDIT_KEY")

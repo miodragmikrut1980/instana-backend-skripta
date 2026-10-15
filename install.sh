@@ -1189,10 +1189,11 @@ show_plan() {
   fi
   echo "  Enter N, or press Enter without typing anything, to cancel without starting."
   echo ""
+  PLAN_DECISION=start
   if [[ "${PLAN_EDITABLE:-false}" == true ]]; then
     case "$(prompt_plan_decision)" in
       yes) ;;
-      edit) return 3 ;;
+      edit) PLAN_DECISION=edit; return 0 ;;
       save) save_plan_to_file; log "Installation was not started; the parameters were saved for later."; exit 0 ;;
       *) log "Installation was not started; no action was approved from this plan."; exit 0 ;;
     esac
@@ -2282,6 +2283,29 @@ ensure_detachable_session() {
   fi
 }
 
+# Phase 2 checks and the plan, repeated after each "E" (change one value).
+# show_plan is called as a plain command so that set -e stays active inside
+# it: a failing save_state must stop the run before any resource is created
+# (destroy.sh needs the recorded project, zone and provider).
+PLAN_DECISION=""
+run_plan_confirmation() {
+  while true; do
+    provider_validate_config
+    if [[ "$RESUME" == true && "$TOPOLOGY" != three-node ]]; then
+      validate_resume
+    else
+      provider_validate_image
+    fi
+    PLAN_DECISION=""
+    show_plan
+    [[ "$PLAN_DECISION" == edit ]] || return 0
+    edit_parameters_before_start
+    save_parameters
+    validate_vm_names
+    prepare_topology
+  done
+}
+
 # Three-node only: an older deployment recorded in this folder is resumed or
 # set aside first (an imported file can only start a NEW deployment), then the
 # lab is prepared.
@@ -2336,20 +2360,7 @@ main() {
   phase_done 1 "Local prerequisites and non-secret parameters are ready."
   prepare_topology
   phase_start 2 "Validate project, region, zone, VPC, subnet and Ubuntu image, then display the complete plan before resources are changed."
-  while true; do
-    provider_validate_config
-    if [[ "$RESUME" == true && "$TOPOLOGY" != three-node ]]; then
-      validate_resume
-    else
-      provider_validate_image
-    fi
-    show_plan && break
-    # "E" in the plan: change one value, then check and show the plan again.
-    edit_parameters_before_start
-    save_parameters
-    validate_vm_names
-    prepare_topology
-  done
+  run_plan_confirmation
   offer_blank_input_secrets
   phase_done 2 "GCP configuration and installation plan were validated."
 

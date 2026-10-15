@@ -238,6 +238,12 @@ run_installer "" --config examples/single-gcp-online-full.json --resume
 [[ "$RC" != 0 ]] || fail "--config with --resume must stop"
 has "--config cannot be combined with --resume"
 has "./install.sh --resume"
+new_case symlink
+ln -s "$CASE/examples/single-gcp-online-full.json" "$CASE/link.json"
+run_installer "" --config link.json --dry-run
+[[ "$RC" != 0 ]] || fail "a symbolic link must be refused"
+has "is a symbolic link; refused for safety. Use the real file path."
+has "HOW TO RESOLVE"
 echo "PASS: unusable files and option combinations stop with HOW TO RESOLVE"
 
 # 15. Menu import: a wrong path is explained and asked again.
@@ -270,6 +276,10 @@ for k in TOPOLOGY INSTALL_MODE INSTALL_TYPE GCP_PROJECT GCP_ZONE VM_NAME SIZE BA
 done
 has "Parameters saved to $saved (permissions 600, keys and admin password NOT included)."
 hasnt "100% complete"
+test -f "$saved" || fail "saved file missing"
+for v in test-download-key-0000 test-agent-key-0000 test-sales-key-0000 Test-Admin-Pass-0000; do
+  if grep -qF "$v" "$saved"; then fail "secret $v written into the saved file"; fi
+done
 cp "$saved" "$CASE/again.json"
 INSTANA_DOWNLOAD_KEY=d INSTANA_AGENT_KEY=a INSTANA_SALES_KEY=s INSTANA_ADMIN_PASSWORD=p run_installer "y" --config again.json --dry-run
 completed; no_questions
@@ -287,6 +297,10 @@ chmod 600 "$CASE/.install-config.json"
 run_installer "" --export-config exported.json
 [[ "$RC" == 0 ]] || fail "--export-config exit code $RC"
 jq -e '.parameters.SIZE=="custom" and .parameters.VM_CPUS=="32" and .parameters.VM_NAME=="saved-lab" and (has("secrets")) and (.parameters|has("MACHINE_TYPE")|not)' "$CASE/exported.json" >/dev/null || fail "exported content"
+test -f "$CASE/exported.json" || fail "exported file missing"
+for v in test-download-key-0000 test-agent-key-0000 test-sales-key-0000 Test-Admin-Pass-0000; do
+  if grep -qF "$v" "$CASE/exported.json"; then fail "secret $v written into the exported file"; fi
+done
 run_installer "" --export-config exported.json
 [[ "$RC" != 0 ]] || fail "existing export file must not be replaced without confirmation"
 has "exported.json already exists and was not replaced."
@@ -294,6 +308,14 @@ new_case export_none
 run_installer "" --export-config
 [[ "$RC" != 0 ]] || fail "export without saved parameters must stop"
 has "Nothing to export: this folder has no .install-config.json"
+new_case export_unsafe
+printf '{"schema_version":1,"parameters":{}}\n' > "$CASE/real.json"
+ln -s "$CASE/real.json" "$CASE/.install-config.json"
+run_installer "" --export-config
+[[ "$RC" != 0 ]] || fail "export from a symbolic link must stop"
+has "is a symbolic link or belongs to another user; it is not read"
+has "Run the export as the user who owns this installer folder"
+has "./install.sh --export-config"
 echo "PASS: --export-config"
 
 # 18. After Start: offer to blank the keys in the file (only on yes).
@@ -327,5 +349,44 @@ has "./install.sh --resume"
   ls .install-state.json.*.old >/dev/null
 ) > "$CASE/out.raw" 2>&1 || { cat "$CASE/out.raw" >&2; fail "setting the old state aside must continue"; }
 echo "PASS: existing deployment: resume refused for a file, set-aside continues"
+
+# 20. Closed input in the new questions stops with what happened and how to go on.
+new_case conflict_eof
+run_installer $'2\n'"$CASE/examples/single-gcp-alias-conflict.json" --dry-run
+[[ "$RC" != 0 ]] || fail "closed input at the conflict question must stop"
+has "Input ended while choosing between GCP_ZONE='europe-west6-b' and PROVIDER_LOCATION='europe-west6-a'"
+has "Keep only one of the two names in the file"
+new_case edit_eof
+run_installer "e" --config examples/single-gcp-online-full.json --dry-run
+[[ "$RC" != 0 ]] || fail "closed input at the edit question must stop"
+has "Input ended while choosing the value to change; the installation was not started and nothing was created."
+has "at the plan answer E and pick the value by its number"
+new_case menu_eof
+run_installer "" --dry-run
+[[ "$RC" != 0 ]] || fail "closed input at the source menu must stop"
+has "Input ended before the way to provide the parameters was chosen"
+has "./install.sh --config instana-config.json"
+echo "PASS: closed input in the new questions is explained"
+
+# 21. A failing state write while the plan is confirmed stops the run (set -e
+#     must stay active inside show_plan), so nothing is created unrecorded.
+new_case plan_state
+# A separate bash process: inside "( ... ) && x" a subshell would run with set -e off.
+cat > "$CASE/plan.sh" <<'PLAN'
+set --; source ./install.sh
+DRY_RUN=false PLAN_EDITABLE=true RESUME=false
+TOPOLOGY=single-node INSTALL_TYPE=demo INSTALL_MODE=online UBUNTU_VERSION=ubuntu-2404-lts-amd64
+GCP_PROJECT=test-project GCP_ZONE=europe-west6-b MACHINE_TYPE=n2-standard-16 VM_NAME=instana-backend
+BASE_DOMAIN=instana.example.com TENANT_NAME=tenant0 UNIT_NAME=unit0 TLS_MODE=auto SSH_SOURCE_CIDR=203.0.113.10/32
+provider_validate_config() { :; }; provider_validate_image() { :; }
+prompt_plan_decision() { echo yes; }
+save_state() { return 1; }
+run_plan_confirmation
+echo "AFTER-PLAN"
+PLAN
+RC=0; ( cd "$CASE" && bash plan.sh ) > "$CASE/out.raw" 2>&1 || RC=$?
+[[ "$RC" != 0 ]] || fail "a failing save_state in the plan must stop the run"
+if grep -q "AFTER-PLAN" "$CASE/out.raw"; then fail "the run continued after save_state failed"; fi
+echo "PASS: a failing state write at the plan stops the run"
 
 echo "All input-file tests passed."
