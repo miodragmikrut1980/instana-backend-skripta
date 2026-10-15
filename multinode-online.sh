@@ -117,7 +117,8 @@ main_three_node() {
     fi
     save_state "${node}_private_ip" "$ip"
     phase_detail active "Preparing OS prerequisites and CPU checks on ${node}."
-    remote_exec_dry "$node" "$GCP_ZONE" "$GCP_PROJECT" 'set -e; apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y curl gnupg ca-certificates ufw; test "$(uname -m)" = x86_64; for flag in avx avx2 bmi1 bmi2 fma f16c ssse3 sse4_1 sse4_2 popcnt cx16 lahf_lm; do grep -qw "$flag" /proc/cpuinfo || { echo "Missing CPU flag $flag"; exit 1; }; done'
+    remote_exec_dry "$node" "$GCP_ZONE" "$GCP_PROJECT" 'set -e; apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y curl gnupg ca-certificates ufw; test "$(uname -m)" = x86_64'
+    verify_cpu_x86_64_v3 "$node" "$GCP_ZONE" "$GCP_PROJECT"
   done
   lab_root_ssh
   phase_done 6 "All nodes accept SSH, pass prerequisite checks, and node0 can securely reach every node."

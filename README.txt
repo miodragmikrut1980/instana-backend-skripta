@@ -78,6 +78,7 @@ external IP node0. DNS nije automatizovan. Instana production install type
 je obavezan za multi, ali ovo je interno LAB okruzenje.
 
 IBM small minimum: 12 CPU/48 GB po nodu. GCP mapping: n2-standard-16
+CPU: IBM zahteva x86-64-v3 (AVX2/BMI2/FMA...); skripta to proverava na svakom nodu u fazi 6. n2-standard (Cascade Lake+) ispunjava; n1/e2 na starijim platformama ne.
 (16 CPU/64 GB po nodu), ukupno 48 CPU/192 GB. Boot SSD270 GB po nodu;
 objects1000 na node0, data500/metrics1000/analytics1200 na node1.
 Ukupno provisioned4510 GB. Fizicka izolacija i sustained I/O nisu

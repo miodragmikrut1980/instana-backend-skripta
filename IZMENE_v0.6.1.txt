@@ -17,3 +17,13 @@ about 20 minutes into the run, after the VM and disks were already created.
   them from the archive, unchanged.
 - The screen hint no longer claims "1-2 hours": a single-node online run is
   30-40 min; three-node and air-gapped take longer.
+
+2026-10-15 — x86-64-v3 CPU requirement
+- IBM raised the minimum supported CPU architecture from x86-64-v2 to
+  x86-64-v3. Phase 6 now verifies on every node (single-node and both
+  three-node paths) that the CPU provides the v3 instruction set (avx, avx2,
+  bmi1, bmi2, f16c, fma, abm/lzcnt, movbe, xsave on top of v2) before
+  anything is installed. A node that lacks them stops with a HOW TO RESOLVE
+  box naming the missing flags, the CPU model, and the gcloud commands to
+  move the VM to an n2/Cascade Lake platform, then --resume. n2-standard
+  machine types, which the installer uses, provide x86-64-v3.

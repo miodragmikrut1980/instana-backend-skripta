@@ -1674,6 +1674,31 @@ upload_stanctl_env() {
   trap - RETURN
 }
 
+# IBM (backend release notes): the minimum supported CPU architecture is
+# x86-64-v3 (was x86-64-v2). x86-64-v3 = AVX, AVX2, BMI1, BMI2, F16C, FMA,
+# LZCNT (abm), MOVBE, OSXSAVE on top of v2. n2-standard VMs (Cascade Lake or
+# newer) provide it; n1 or e2 on older platforms may not. Checked on every
+# node before anything is installed, so a wrong machine type fails in
+# seconds with a fix instead of deep inside stanctl up.
+X86_64_V3_FLAGS="avx avx2 bmi1 bmi2 f16c fma abm movbe xsave ssse3 sse4_1 sse4_2 popcnt cx16 lahf_lm"
+verify_cpu_x86_64_v3() {
+  local vm_name="$1" zone="$2" project="$3" out
+  [[ "$DRY_RUN" != true ]] || { phase_detail active "Would verify x86-64-v3 CPU flags on ${vm_name}."; return 0; }
+  out=$(remote_exec "$vm_name" "$zone" "$project" "test \"\$(uname -m)\" = x86_64 || { echo 'ARCH:'\$(uname -m); exit 0; }; missing=''; for f in ${X86_64_V3_FLAGS}; do grep -qw \"\$f\" /proc/cpuinfo || missing=\"\$missing \$f\"; done; echo \"MISSING:\$missing\"; grep -m1 'model name' /proc/cpuinfo") || die "Could not read the CPU flags on ${vm_name}."
+  if [[ "$out" == ARCH:* ]]; then
+    die_with_steps "${vm_name} is not x86_64 (${out#ARCH:}); Instana Standard Edition requires x86-64-v3." \
+      "Recreate the VM with an x86_64 machine type (n2-standard family is verified).|./install.sh"
+  fi
+  local missing; missing=$(sed -n 's/^MISSING://p' <<< "$out" | xargs)
+  if [[ -n "$missing" ]]; then
+    die_with_steps "CPU of ${vm_name} lacks x86-64-v3 instructions (missing:${missing}). IBM requires x86-64-v3 for this backend version." \
+      "*$(grep 'model name' <<< "$out" | sed 's/.*: //')" \
+      "Use an n2-standard machine type (Cascade Lake or newer), or stop the VM and set a minimum CPU platform:|gcloud compute instances stop ${vm_name} --zone=${zone} --project=${project} && gcloud compute instances set-min-cpu-platform ${vm_name} --min-cpu-platform='Intel Cascade Lake' --zone=${zone} --project=${project} && gcloud compute instances start ${vm_name} --zone=${zone} --project=${project}" \
+      "Then rerun:|./install.sh --resume"
+  fi
+  phase_detail done "CPU of ${vm_name} provides x86-64-v3 ($(grep 'model name' <<< "$out" | sed 's/.*: //'))."
+}
+
 wait_for_ssh() {
   local vm_name="$1" zone="$2" project="$3"
   log "Waiting for SSH on ${vm_name}..."
@@ -2280,9 +2305,10 @@ main_single_node() {
   create_firewall_rules "$GCP_PROJECT" "$GCP_NETWORK"
   phase_done 5 "GCP firewall rules are present."
 
-  phase_start 6 "Wait until the VM accepts non-interactive SSH and verify that remote administration is possible."
+  phase_start 6 "Wait until the VM accepts non-interactive SSH, verify remote administration, and verify the CPU provides x86-64-v3 (IBM minimum)."
   [[ "$DRY_RUN" != true ]] && wait_for_ssh "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
-  phase_done 6 "SSH is ready."
+  verify_cpu_x86_64_v3 "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
+  phase_done 6 "SSH is ready and the CPU meets the x86-64-v3 requirement."
 
   # Kernel parameters (verbatim from documentation)
   phase_start 7 "Apply Instana sysctl and Transparent Huge Pages settings, reboot, and verify both a new boot ID and THP=never."
@@ -2391,7 +2417,11 @@ legacy_main_three_node() {
     wait_for_ssh "$NODE1_NAME" "$GCP_ZONE" "$GCP_PROJECT"
     wait_for_ssh "$NODE2_NAME" "$GCP_ZONE" "$GCP_PROJECT"
   fi
-  phase_done 6 "All nodes are reachable over SSH."
+  local n
+  for n in "$NODE0_NAME" "$NODE1_NAME" "$NODE2_NAME"; do
+    verify_cpu_x86_64_v3 "$n" "$GCP_ZONE" "$GCP_PROJECT"
+  done
+  phase_done 6 "All nodes are reachable over SSH and meet the x86-64-v3 CPU requirement."
 
   # Kernel parameters on ALL nodes (from documentation)
   phase_start 7 "Apply documented sysctl and THP settings on every node, reboot, and verify the settings."
