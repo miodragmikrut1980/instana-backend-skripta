@@ -16,6 +16,8 @@ prov_gcp_phase_text() { :; }
 prov_gcp_ssh_port() { echo 22; }
 prov_gcp_saved_param_keys() { :; }
 prov_gcp_check_saved_params() { :; }
+# New pd-ssd disks are zero-filled by GCP; no extra check before formatting.
+prov_gcp_check_blank_disk() { :; }
 prov_gcp_collect_host_params() { :; }
 prov_gcp_confirm_host_changes() { :; }
 prov_gcp_state_resource_pattern() { echo '^(vm_|disk_|firewall_|fw_)'; }

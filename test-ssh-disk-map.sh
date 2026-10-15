@@ -97,3 +97,30 @@ stop_ok "chosen disk mounted elsewhere" "Host h1: the disk for metrics (/dev/dis
 edit_facts 's#|/srv/old|ext4|#|/mnt/instana/stanctl/metrics|ext4|#'
 ( init; base_disks; RESUME=true; prov_ssh_ensure_disks ) > "$OUT" 2>&1
 echo 'PASS: on resume a disk already mounted at its own Instana path is accepted'
+
+# Phase 9 on existing hosts: a disk without a filesystem signature is formatted
+# only when its first and last megabyte are zeros.
+host_facts h1
+( init; base_disks; prov_ssh_check_blank_disk lab disk-data ) > "$OUT" 2>&1
+grep -q 'blockdev --getsize64' "$SSH_LOG"
+echo SIGNED > "$SCEN/h1.zero"
+( init; base_disks; prov_ssh_check_blank_disk lab disk-data ) > "$OUT" 2>&1
+echo ZEROCHECK:512:0 > "$SCEN/h1.zero"
+if ( init; base_disks; prov_ssh_check_blank_disk lab disk-data ) > "$OUT" 2>&1; then echo "FAIL: non-zero disk accepted" >&2; exit 1; fi
+stop_ok "non-zero data without a signature" "Host h1: the disk /dev/disk/by-id/scsi-0Disk_h1_sde has no filesystem signature, but its first or last megabyte is not empty (512:0 non-zero bytes)." \
+  "sudo wipefs -a /dev/disk/by-id/scsi-0Disk_h1_sde && sudo dd if=/dev/zero of=/dev/disk/by-id/scsi-0Disk_h1_sde bs=1M count=10"
+plain | grep -q 'may hold data without a filesystem signature'
+rm -f "$SCEN/h1.zero"
+
+# The check runs before mkfs in the single-node flow; a stop there formats nothing.
+(
+  init; base_disks
+  : > "$FAKE_ROOT/calls"
+  remote_exec() { echo "$4" >> "$FAKE_ROOT/calls"; [[ "$4" == *"blkid"*"EXISTING_EMPTY"* ]] && echo BLANK; return 0; }
+  provider_check_blank_disk() { echo CHECKED >> "$FAKE_ROOT/calls"; exit 3; }
+  format_and_mount_disk lab "" "" disk-data /mnt/instana/stanctl/data
+) > "$OUT" 2>&1 && { echo "FAIL: format went on after a failed check" >&2; exit 1; }
+grep -q CHECKED "$FAKE_ROOT/calls"
+if grep -q mkfs "$FAKE_ROOT/calls"; then echo "FAIL: mkfs ran after a failed zero check" >&2; exit 1; fi
+echo 'PASS: the zero check runs before mkfs and a failure formats nothing'
+

@@ -3,6 +3,7 @@
 #   <host>.facts  answer to the read-only facts script (FACTS_END=1 is appended)
 #   <host>.rc     exit code of every ssh call to that host (default 0)
 #   <host>.err    stderr of a failing call
+#   <host>.zero   answer to the pre-format zero check (default ZEROCHECK:0:0)
 # Every call is appended to $SSH_LOG (one line, arguments joined by spaces).
 ssh_fakes_setup() {
   FAKE_ROOT="$(mktemp -d)"
@@ -19,6 +20,7 @@ if (( rc != 0 )); then cat "$SCEN/$host.err" >&2 2>/dev/null; exit "$rc"; fi
 case "$cmd" in
   *FACTS_END*) cat "$SCEN/$host.facts"; echo FACTS_END=1 ;;
   *"route get"*) echo 10.0.0.$(( ${#host} % 200 + 10 )) ;;
+  *ZEROCHECK*) if [[ -f "$SCEN/$host.zero" ]]; then cat "$SCEN/$host.zero"; else echo ZEROCHECK:0:0; fi ;;
 esac
 exit 0
 FAKE

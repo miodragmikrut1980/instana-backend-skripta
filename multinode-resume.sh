@@ -45,6 +45,7 @@ resume_kernel() {
 resume_mount() {
   local node="$1" device="$2" mountpoint="$3"
   if [[ "$DRY_RUN" == true ]]; then format_and_mount_disk "$node" "$GCP_ZONE" "$GCP_PROJECT" "$device" "$mountpoint"; return; fi
+  provider_check_blank_disk "$node" "$device"
   remote_exec "$node" "$GCP_ZONE" "$GCP_PROJECT" "set -euo pipefail
     dev=$(provider_disk_device_path "$node" "$device")
     target='$mountpoint'

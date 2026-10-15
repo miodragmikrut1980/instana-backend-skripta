@@ -815,6 +815,38 @@ prov_ssh_ensure_disks() {
   done
 }
 
+# ── Phase 9: before a disk without a filesystem signature is formatted ──────
+# "Blank" for the installer means: no signature blkid knows. Disks on hosts the
+# installer does not own may hold data without one (raw database files, an
+# encrypted volume, another OS); such a disk is formatted only when its first
+# and last megabyte are all zeros. Read-only; a disk with a signature is left
+# to the existing checks (empty ext4 adoption, refusal of anything else).
+prov_ssh_check_blank_disk() {
+  local node="$1" device="$2" path host out
+  path=$(prov_ssh_disk_device_path "$node" "$device"); host=$(prov_ssh_host_for "$node")
+  out=$(remote_exec "$node" "" "" "set -euo pipefail
+dev='${path}'
+test -b \"\$dev\"
+if blkid \"\$dev\" >/dev/null 2>&1; then echo SIGNED; exit 0; fi
+mb=\$(( \$(blockdev --getsize64 \"\$dev\") / 1048576 ))
+first=\$(head -c 1048576 \"\$dev\" | tr -d '\\000' | wc -c)
+last=\$(dd if=\"\$dev\" bs=1M skip=\$(( mb - 1 )) count=1 2>/dev/null | tr -d '\\000' | wc -c)
+echo \"ZEROCHECK:\$first:\$last\"") ||
+    host_stop "$host" "the data disk ${path} could not be read before formatting." \
+      "the installer formats a disk without a filesystem only after checking that it holds no data." \
+      "./install.sh --resume" \
+      "Check that the disk is attached and readable:|$(prov_ssh_hint ssh "$node" "" "" "sudo blockdev --getsize64 ${path}")"
+  out=$(tail -n 1 <<< "$out")
+  case "$out" in
+    SIGNED|ZEROCHECK:0:0) return 0 ;;
+  esac
+  host_stop "$host" "the disk ${path} has no filesystem signature, but its first or last megabyte is not empty (${out#ZEROCHECK:} non-zero bytes)." \
+    "it may hold data without a filesystem signature (raw database files, an encrypted volume, another operating system); formatting would destroy it, so the installer never formats it on its own." \
+    "./install.sh --resume" \
+    "Look at the start of the disk to see what it holds:|$(prov_ssh_hint ssh "$node" "" "" "sudo hexdump -C -n 512 ${path}")" \
+    "Only if it holds nothing you need, wipe it yourself (start and end of the disk):|sudo wipefs -a ${path} && sudo dd if=/dev/zero of=${path} bs=1M count=10 && sudo dd if=/dev/zero of=${path} bs=1M count=1 seek=\$(( \$(sudo blockdev --getsize64 ${path}) / 1048576 - 1 ))"
+}
+
 # ── Phase 5: network ports ───────────────────────────────────────────────────
 prov_ssh_ensure_firewall() {
   local host

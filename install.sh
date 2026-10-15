@@ -1469,6 +1469,7 @@ fi") || die "Could not safely inspect ${device}; it was not formatted or mounted
       phase_detail done "Existing verified mount ${device} → ${mount_point} retained."
       ;;
     BLANK)
+      provider_check_blank_disk "$vm_name" "$device"
       remote_exec "$vm_name" "$zone" "$project" \
         "set -euo pipefail; dev=$(provider_disk_device_path "$vm_name" "$device"); mkfs.ext4 -m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard \"\$dev\"; uuid=\$(blkid -s UUID -o value \"\$dev\"); grep -qF \"UUID=\$uuid  ${mount_point} \" /etc/fstab || printf 'UUID=%s  %s  ext4  discard,defaults,nofail  0 2\\n' \"\$uuid\" '${mount_point}' >> /etc/fstab; mount '${mount_point}'; findmnt -rn -M '${mount_point}'"
       ;;
