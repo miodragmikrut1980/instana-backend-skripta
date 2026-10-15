@@ -150,7 +150,7 @@ creates, deletes, or reboots a host without confirmation.
   "--"), so no value can become an ssh option. Disk links reported by a
   host are used only when they are plain /dev/disk/by-id or by-path names.
 - Before a disk without a filesystem signature is formatted on an existing
-  host, its first and last megabyte are read; anything but zeros stops with
+  host, its first and last MiB are read; anything but zeros stops with
   the exact commands to inspect and, if wanted, wipe it (GCP unchanged).
 - The first connection to a host shows the host key that is trusted from
   then on. The host identity for --resume falls back to the DMI product
@@ -159,3 +159,9 @@ creates, deletes, or reboots a host without confirmation.
   mounted, partitioned or LVM members are never offered, GCP UFW keeps 22
   with SSH_PORT exported, GCP destroy ignores hostdisk_* keys, the zero
   check runs before mkfs.
+- Follow-up: the last MiB is read by byte offset, so the very end of a disk
+  whose size is not a multiple of 1 MiB (where a GPT backup header sits) is
+  checked too; a failed read stops. The copy-paste commands in HOW TO
+  RESOLVE boxes shell-quote the key and file paths. Tests: the three-node
+  mount step, a failing read, and a 5.5 MiB image with data in its last
+  half MiB.
