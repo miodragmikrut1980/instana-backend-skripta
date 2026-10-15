@@ -63,6 +63,7 @@ table.disks th{text-align:left;font-weight:600;padding:4px 6px;color:var(--muted
 table.disks td{padding:3px 4px;vertical-align:top}
 table.disks td:first-child{white-space:nowrap;font-weight:600;padding-right:8px}
 table.disks input{min-width:150px}
+table.disks td.na{color:var(--muted);text-align:center;vertical-align:middle}
 .disks-scroll{overflow-x:auto}
 .secret-row{display:flex;gap:6px}
 .secret-row button{flex:none}
@@ -134,7 +135,7 @@ pre#preview .x{color:#F08A80;text-decoration:underline wavy #F08A80}
       <div class="field" id="f-type"><span class="lbl">Installation type</span>
         <div class="seg"><label><input type="radio" name="INSTALL_TYPE" value="demo" checked><span>Demo</span></label>
         <label><input type="radio" name="INSTALL_TYPE" value="production"><span>Production</span></label></div></div>
-      <div class="field"><label class="lbl" for="UBUNTU_VERSION">Ubuntu image</label>
+      <div class="field" id="f-ubuntu"><label class="lbl" for="UBUNTU_VERSION">Ubuntu image</label>
         <select id="UBUNTU_VERSION"><option value="ubuntu-2404-lts-amd64">Ubuntu 24.04 LTS</option><option value="ubuntu-2204-lts">Ubuntu 22.04 LTS</option></select></div>
     </div>
   </div>
@@ -161,7 +162,7 @@ pre#preview .x{color:#F08A80;text-decoration:underline wavy #F08A80}
   <div class="body">
     <h2>Existing hosts</h2>
     <p class="lead">The script connects with SSH from the control VM, checks the hardware and installs. It does not create or delete machines.</p>
-    <p class="note warn">Not available in the installer yet: this version stops with an explanation when the file says existing hosts. Fill it in now and keep the file for the next version, or choose Google Cloud.</p>
+    <p class="note">The hosts need Ubuntu 22.04 or 24.04 (x86_64), passwordless sudo for the SSH user and one empty disk per data directory. The script checks all of it first, shows the plan, and asks in the terminal before it reboots the hosts or changes their firewall and disks. A passphrase-protected key must be loaded in ssh-agent (<code>ssh-add</code>).</p>
     <div class="grid">
       <div class="field"><label class="lbl" for="SSH_USER">SSH user</label><input type="text" class="code" id="SSH_USER" placeholder="ubuntu"><span class="msg"></span></div>
       <div class="field"><label class="lbl" for="SSH_PORT">Port</label><input type="text" class="code" id="SSH_PORT" value="22"><span class="msg"></span></div>
@@ -173,7 +174,7 @@ pre#preview .x{color:#F08A80;text-decoration:underline wavy #F08A80}
     <div class="grid" id="hosts" style="margin-top:12px"></div>
     <div style="margin-top:16px">
       <span class="lbl">Data disks per host</span>
-      <p class="help" style="margin:2px 0 6px">Use the stable <code>/dev/disk/by-id/…</code> path of each disk. List them on a host with <code>ls -l /dev/disk/by-id/</code>. Empty cells are asked by the script.</p>
+      <p class="help" style="margin:2px 0 6px">Use the stable <code>/dev/disk/by-id/…</code> path of each disk. List them on a host with <code>ls -l /dev/disk/by-id/</code>. Empty cells are asked by the script, which then offers only unused disks that are large enough. Three nodes: node 0 needs the objects disk, node 1 the data, metrics and analytics disks, node 2 none.</p>
       <div class="disks-scroll"><table class="disks" id="disks"></table></div>
     </div>
   </div>
@@ -304,6 +305,9 @@ pre#preview .x{color:#F08A80;text-decoration:underline wavy #F08A80}
 const $ = id => document.getElementById(id);
 const radio = n => (document.querySelector(`input[name="${n}"]:checked`)||{}).value || "";
 const ROLES = ["ANALYTICS","METRICS","OBJECTS","DATA"];
+// Three nodes: node 0 holds objects, node 1 the three data-store disks, node 2 none.
+const NODE_ROLES = [["OBJECTS"], ["ANALYTICS","METRICS","DATA"], []];
+const rolesFor = (three, n) => three ? NODE_ROLES[n] : ROLES;
 const val = id => ($(id) ? $(id).value.trim() : "");
 
 // Validators mirror install.sh; "" means "the script will ask".
@@ -324,7 +328,7 @@ const V = {
   port: v => (/^\d+$/.test(v) && +v >= 1 && +v <= 65535) || "1–65535",
   user: v => /^[a-z_][a-z0-9_-]*$/.test(v) || "Linux user name, e.g. ubuntu",
   path: v => (/^(~|\/)/.test(v) && !/\s/.test(v)) || "Absolute path or ~/…, no spaces",
-  disk: v => /^\/dev\/disk\/by-id\/\S+$/.test(v) || "Must start with /dev/disk/by-id/",
+  disk: v => /^\/dev\/disk\/by-(id|path)\/[A-Za-z0-9._:+@-]+$/.test(v) || "Use the stable /dev/disk/by-id/… (or by-path) name, not /dev/sdX",
   version: v => /^[0-9][0-9A-Za-z.+~-]*$/.test(v) || "Version such as 3.323.470-0",
   secret: v => !/[\r\n]/.test(v) || "No line breaks",
 };
@@ -344,9 +348,10 @@ function renderHosts(){
   const hosts = three ? ["NODE0_HOST","NODE1_HOST","NODE2_HOST"] : ["VM_HOST"];
   $("hosts").innerHTML = hosts.map((k,i) => `<div class="field"><label class="lbl" for="${k}">${three?`Node ${i} host`:"Host"}</label>
     <input type="text" class="code" id="${k}" placeholder="10.0.0.${11+i}" value="${prev[k]??""}"><span class="msg"></span></div>`).join("");
-  const rows = three ? [0,1,2].map(n => ({label:`Node ${n}`, pre:`DISK_DEV_NODE${n}_`})) : [{label:"Host", pre:"DISK_DEV_"}];
+  const rows = three ? [0,1,2].map(n => ({label:`Node ${n}`, pre:`DISK_DEV_NODE${n}_`, roles: NODE_ROLES[n]})) : [{label:"Host", pre:"DISK_DEV_", roles: ROLES}];
   $("disks").innerHTML = `<thead><tr><th></th>${ROLES.map(r=>`<th>${r[0]+r.slice(1).toLowerCase()}</th>`).join("")}</tr></thead><tbody>` +
     rows.map(r => `<tr><td>${r.label}</td>${ROLES.map(role => { const id = r.pre+role;
+      if (!r.roles.includes(role)) return `<td class="na">—</td>`;
       return `<td><div class="field"><input type="text" class="path" id="${id}" aria-label="${r.label} ${role} disk" placeholder="/dev/disk/by-id/…" value="${prev[id]??""}"><span class="msg"></span></div></td>`; }).join("")}</tr>`).join("") + "</tbody>";
 }
 
@@ -355,6 +360,7 @@ function layout(){
   document.querySelectorAll("[data-when]").forEach(s => s.hidden = s.dataset.when !== prov);
   document.querySelectorAll("[data-when-mode]").forEach(s => s.hidden = !air);
   $("f-type").hidden = three;
+  $("f-ubuntu").hidden = prov !== "gcp";
   $("sizeSingle").hidden = three; $("sizeThree").hidden = !three;
   $("customSize").hidden = radio("SIZE") !== "custom";
   $("minLbl").textContent = radio("INSTALL_TYPE") === "production" ? "28 vCPU / 112 GB" : "16 vCPU / 64 GB";
@@ -377,8 +383,8 @@ function collect(){
   put("TOPOLOGY", radio("TOPOLOGY"));
   put("INSTALL_MODE", radio("INSTALL_MODE"));
   put("INSTALL_TYPE", three ? "production" : radio("INSTALL_TYPE"));
-  put("UBUNTU_VERSION", val("UBUNTU_VERSION"));
   if (prov === "gcp") {
+    put("UBUNTU_VERSION", val("UBUNTU_VERSION"));
     put("GCP_PROJECT", val("GCP_PROJECT"), "project");
     const z = val("GCP_ZONE");
     put("GCP_REGION", /^[a-z]+-[a-z]+[0-9]+-[a-z]$/.test(z) ? z.replace(/-[a-z]$/,"") : "");
@@ -398,8 +404,10 @@ function collect(){
     put("SSH_PORT", val("SSH_PORT"), "port");
     put("SSH_VIA_PRIVATE", radio("SSH_VIA_PRIVATE"));
     (three ? ["NODE0_HOST","NODE1_HOST","NODE2_HOST"] : ["VM_HOST"]).forEach(k => put(k, val(k), "host"));
-    const pres = three ? [0,1,2].map(n => `DISK_DEV_NODE${n}_`) : ["DISK_DEV_"];
-    pres.forEach(p => ROLES.forEach(r => put(p+r, val(p+r), "disk")));
+    (three ? [0,1,2] : [null]).forEach(n => {
+      const p = n === null ? "DISK_DEV_" : `DISK_DEV_NODE${n}_`;
+      rolesFor(three, n).forEach(r => put(p+r, val(p+r), "disk"));
+    });
   }
   put("BASE_DOMAIN", val("BASE_DOMAIN"), "fqdn");
   put("TENANT_NAME", val("TENANT_NAME"), "tu");
@@ -431,7 +439,10 @@ function validate({P, checks, three}){
   const uniq = (keys, msg) => { const seen = {}; keys.forEach(k => { const v = P[k]; if (!v) return; if (seen[v]) bad[k] = msg; seen[v] = 1; }); };
   if (three && P.PROVIDER === "gcp") uniq(["NODE0_NAME","NODE1_NAME","NODE2_NAME"], "Each node needs its own name");
   if (three && P.PROVIDER === "ssh") uniq(["NODE0_HOST","NODE1_HOST","NODE2_HOST"], "Each node needs its own host");
-  if (P.PROVIDER === "ssh") (three ? [0,1,2].map(n => `DISK_DEV_NODE${n}_`) : ["DISK_DEV_"]).forEach(p => uniq(ROLES.map(r => p+r), "Same disk used twice on this host"));
+  if (P.PROVIDER === "ssh") (three ? [0,1,2] : [null]).forEach(n => {
+    const p = n === null ? "DISK_DEV_" : `DISK_DEV_NODE${n}_`;
+    uniq(rolesFor(three, n).map(r => p+r), "Same disk used twice on this host");
+  });
   return {bad, ask};
 }
 

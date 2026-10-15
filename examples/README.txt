@@ -35,10 +35,10 @@ three-gcp-duplicate-names.json
   NODE1_NAME == NODE2_NAME. Expect: warn + re-ask NODE2_NAME.
 
 three-ssh-full.json
-  Existing hosts, full disk table. Expect today: stop with "PROVIDER 'ssh' ... is not available in this version yet" and how to switch to gcp. With the ssh provider (next step): zero prompts until 'Start now?'; no SSH_SOURCE_CIDR/size/network asked.
+  Existing hosts, three nodes: node 0 objects disk, node 1 data/metrics/analytics disks, no names (the hosts' own names are used). Expect: hosts read over SSH, zero prompts until 'Start now?'; no SSH_SOURCE_CIDR/size/network asked. Set SSH_KEY_PATH to a key that logs in to the hosts first. A real run then asks in the terminal before it changes the hosts.
 
 single-ssh-bad-disk-and-gcp-key.json
-  DISK_DEV_DATA=/dev/sdb (not by-id) and a GCP key on the ssh provider. Expect today: the same 'ssh not available yet' stop. With the ssh provider (next step): warn + re-ask DISK_DEV_DATA; GCP_PROJECT ignored for provider ssh.
+  DISK_DEV_DATA=/dev/sdb (not by-id) and a GCP key on the ssh provider. Expect: GCP_PROJECT ignored with the reason; DISK_DEV_DATA refused ("must be a stable disk path") and asked in a terminal (only unused disks large enough are offered), or listed in the stop without a terminal.
 
 single-gcp-airgapped-existing.json
   Air-gapped with existing package. Test replaces __ARCHIVE__ with the fake archive path. Versions come from the package; the versions in the file are listed as 'skip ... ignored'.

@@ -182,13 +182,36 @@ run_installer "" --config examples/three-gcp-duplicate-names.json --dry-run
 has "- NODE2_NAME: 'test-node-1' cannot be used: NODE2_NAME 'test-node-1' is already used for NODE1_NAME; each node needs its own name."
 echo "PASS: three-node size is fixed and node names must differ"
 
-# 11. Existing hosts (ssh) are not available yet: clear stop with the alternative.
+# 11. Existing hosts (ssh): a complete file runs to the plan without a question
+# (names default to the hosts' own names); fake ssh answers for the hosts.
+source "$SCRIPT_DIR/test-ssh-lib.inc"
+ssh_fakes_setup
+trap 'rm -rf "$TEST_ROOT" "$FAKE_ROOT"' EXIT
+EXTRA_FACT_LINES=("LINK=/dev/disk/by-id/scsi-0TEST_NODE0_objects|/dev/sdc"); host_facts 10.0.0.11 HOSTNAME=lab-node-a
+EXTRA_FACT_LINES=("LINK=/dev/disk/by-id/scsi-0TEST_NODE1_data|/dev/sdb" "LINK=/dev/disk/by-id/scsi-0TEST_NODE1_metrics|/dev/sdc" "LINK=/dev/disk/by-id/scsi-0TEST_NODE1_analytics|/dev/sdd")
+host_facts 10.0.0.12 HOSTNAME=lab-node-b
+EXTRA_FACT_LINES=(); host_facts 10.0.0.13 HOSTNAME=lab-node-c
 new_case ssh
-run_installer "" --config examples/three-ssh-full.json --dry-run
-[[ "$RC" != 0 ]] || fail "PROVIDER ssh must stop"
-has "PROVIDER 'ssh' (install on existing hosts over SSH) in three-ssh-full.json is not available in this version yet"
-has 'set "PROVIDER": "gcp" in the file'
-echo "PASS: PROVIDER ssh stops with an explanation"
+sed "s#~/.ssh/id_ed25519#${FAKE_KEY}#" "$CASE/examples/three-ssh-full.json" > "$CASE/ssh.json"; chmod 600 "$CASE/ssh.json"
+run_installer "y" --config ssh.json --dry-run
+completed; no_questions
+has "NODE0_NAME = lab-node-a (not in ssh.json; the host's own name)"
+has "Install on:                    existing host(s), nothing is created or deleted"
+has "objects disk:                /dev/disk/by-id/scsi-0TEST_NODE0_objects → /mnt/instana/stanctl/objects"
+has "[PHASE 3/12] Host checks (OS, CPU, RAM, sudo)"
+has "lab-node-b: analytics → /dev/disk/by-id/scsi-0TEST_NODE1_analytics (1300 GB, now /dev/sdd)"
+hasnt "GCP Project:"
+hasnt "SSH source CIDR"
+grep -q 'ssh .* -p 22 ubuntu@10.0.0.12 -- ' "$SSH_LOG" || fail "no SSH call to node 1"
+echo "PASS: PROVIDER ssh from a file: no questions, hosts checked, disks mapped, dry-run completes"
+
+new_case ssh_bad
+sed "s#~/.ssh/id_ed25519#${FAKE_KEY}#" "$CASE/examples/single-ssh-bad-disk-and-gcp-key.json" > "$CASE/bad.json"; chmod 600 "$CASE/bad.json"
+run_installer "" --config bad.json --dry-run
+[[ "$RC" != 0 ]] || fail "an invalid disk path without a terminal must stop"
+has "GCP_PROJECT ignored: used only with PROVIDER 'gcp' (new VMs in Google Cloud), not with existing hosts."
+has "- DISK_DEV_DATA: '/dev/sdb' cannot be used: DISK_DEV_DATA '/dev/sdb' must be a stable disk path under /dev/disk/by-id/ or /dev/disk/by-path/"
+echo "PASS: PROVIDER ssh: /dev/sdX refused with the reason, GCP keys ignored with the reason"
 
 # 12. Air-gapped: the package from the file is used, versions come from it.
 new_case air

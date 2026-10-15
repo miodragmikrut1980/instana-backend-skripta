@@ -26,8 +26,10 @@ readonly INPUT_SECRET_KEYS="DOWNLOAD_KEY AGENT_KEY SALES_KEY ADMIN_PASSWORD"
 readonly INPUT_EXTRA_KEYS="PROVIDER SIZE AIRGAP_SOURCE AIRGAP_OUTPUT_DIR STANCTL_VERSION BACKEND_VERSION"
 # Derived by the installer; accepted in a file but never taken from it.
 readonly INPUT_DERIVED_KEYS="MACHINE_TYPE NODE_CPUS NODE_RAM_GB"
-# Keys of the existing-hosts provider (ssh), planned for the next version.
-readonly INPUT_SSH_KEYS="SSH_USER SSH_KEY_PATH SSH_PORT SSH_VIA_PRIVATE VM_HOST NODE0_HOST NODE1_HOST NODE2_HOST"
+# Keys of the existing-hosts provider (ssh), besides DISK_DEV_*.
+readonly INPUT_SSH_KEYS="SSH_USER SSH_KEY_PATH SSH_PORT SSH_VIA_PRIVATE VM_HOST NODE0_HOST NODE1_HOST NODE2_HOST NETWORK_RULES_CONFIRMED"
+# Keys only the gcp provider uses (ignored, with the reason, for ssh).
+readonly INPUT_GCP_ONLY_KEYS="UBUNTU_VERSION GCP_PROJECT GCP_REGION GCP_ZONE GCP_NETWORK GCP_SUBNET SSH_SOURCE_CIDR SIZE VM_CPUS VM_RAM_GB"
 
 # ── small helpers ────────────────────────────────────────────────────────────
 input_expand_path() {
@@ -84,6 +86,12 @@ input_example() {
     TLS_MODE) echo '"auto-generate (self-signed)" or "provide custom certificate files"' ;;
     TLS_CRT_PATH) echo '"/home/<user>/certs/instana.crt"' ;;
     TLS_KEY_PATH) echo '"/home/<user>/certs/instana.key"' ;;
+    VM_HOST|NODE0_HOST|NODE1_HOST|NODE2_HOST) echo '"10.0.0.5" or "instana-0.example.com"' ;;
+    SSH_USER) echo '"ubuntu"' ;;
+    SSH_KEY_PATH) echo '"~/.ssh/id_ed25519"' ;;
+    SSH_PORT) echo '"22"' ;;
+    SSH_VIA_PRIVATE|NETWORK_RULES_CONFIRMED) echo '"true" or "false"' ;;
+    DISK_DEV_*) echo '"/dev/disk/by-id/scsi-0Google_PersistentDisk_data" (see: ls -l /dev/disk/by-id on the host)' ;;
     AIRGAP_SOURCE) echo '"existing" or "build"' ;;
     AIRGAP_ARCHIVE) echo '"/home/<user>/instana-airgap/instana-airgapped.tar.gz"' ;;
     AIRGAP_OUTPUT_DIR) echo '"/home/<user>/instana-airgap"' ;;
@@ -106,7 +114,12 @@ input_purpose() {
     GCP_REGION|GCP_ZONE) echo "where the VMs are created" ;;
     GCP_NETWORK|GCP_SUBNET) echo "the network the VMs attach to" ;;
     SSH_SOURCE_CIDR) echo "who may open SSH to the VMs (firewall rule)" ;;
-    VM_NAME|NODE0_NAME|NODE1_NAME|NODE2_NAME) echo "the VM name in Google Cloud" ;;
+    VM_NAME|NODE0_NAME|NODE1_NAME|NODE2_NAME) [[ "$(provider_name)" == ssh ]] && echo "the host's name inside the installer" || echo "the VM name in Google Cloud" ;;
+    VM_HOST|NODE0_HOST|NODE1_HOST|NODE2_HOST) echo "the existing host to install on" ;;
+    SSH_USER|SSH_KEY_PATH|SSH_PORT) echo "logging in to the host(s) over SSH" ;;
+    SSH_VIA_PRIVATE) echo "whether the host addresses are private" ;;
+    NETWORK_RULES_CONFIRMED) echo "confirming the network rules around the hosts" ;;
+    DISK_DEV_*) echo "the dedicated data disk for one Instana data directory" ;;
     SIZE|VM_CPUS|VM_RAM_GB) echo "the machine size" ;;
     BASE_DOMAIN) echo "the address Instana is reached at" ;;
     TENANT_NAME|UNIT_NAME) echo "the UI address <unit>-<tenant>.<domain>" ;;
@@ -184,6 +197,8 @@ input_check() {
     STANCTL_VERSION|BACKEND_VERSION)
       [[ "$v" =~ ^[0-9][0-9A-Za-z.+~:_-]*$ ]] ||
         { err "${key} '${v}' does not look like a version number, e.g. 3.323.470-0."; return 1; } ;;
+    VM_HOST|NODE0_HOST|NODE1_HOST|NODE2_HOST|SSH_USER|SSH_KEY_PATH|SSH_PORT|SSH_VIA_PRIVATE|NETWORK_RULES_CONFIRMED|DISK_DEV_*)
+      provider_validate_param "$key" "$v" ;;
     DOWNLOAD_KEY) validate_secret "$v" "Download key" ;;
     AGENT_KEY) validate_secret "$v" "Agent key" ;;
     SALES_KEY) validate_secret "$v" "Sales key" ;;
@@ -201,7 +216,7 @@ input_normalize() {
         auto) v="auto-generate (self-signed)" ;;
         custom) v="provide custom certificate files" ;;
       esac ;;
-    TLS_CRT_PATH|TLS_KEY_PATH|AIRGAP_ARCHIVE|AIRGAP_OUTPUT_DIR) v=$(input_expand_path "$v") ;;
+    TLS_CRT_PATH|TLS_KEY_PATH|AIRGAP_ARCHIVE|AIRGAP_OUTPUT_DIR|SSH_KEY_PATH) v=$(input_expand_path "$v") ;;
     SSH_SOURCE_CIDR) [[ "$v" == auto ]] && v=$(detect_public_cidr) ;;
   esac
   printf '%s' "$v"
@@ -372,14 +387,9 @@ input_check_provider() {
   fi
 }
 
-input_refuse_unsupported_provider() {
-  local p="$1" src="$2"
-  [[ "$p" == ssh ]] || return 0
-  die_with_steps "PROVIDER 'ssh' (install on existing hosts over SSH) in ${src} is not available in this version yet; it can only create new VMs in Google Cloud (PROVIDER 'gcp')." \
-    "To create new VMs in Google Cloud: set \"PROVIDER\": \"gcp\" in the file (config-generator.html: 'Where to install' → Google Cloud) and fill in the Google Cloud values." \
-    "Then run again:|./install.sh --config ${INPUT_CONFIG:-<file>}" \
-    "*Installing on existing hosts is planned for the next version; the SSH values in the file are kept for it."
-}
+# Every provider named in a file is supported now; an unknown name is refused
+# by resolve_provider with its source.
+input_refuse_unsupported_provider() { :; }
 
 # GCP_* are the names the installer uses; PROVIDER_* in a file are aliases.
 # Same value or one side empty: merged. Different values: the operator picks
@@ -387,6 +397,13 @@ input_refuse_unsupported_provider() {
 input_resolve_aliases() {
   local pair neutral gcp nv gv choice
   INPUT_CONFLICTS=()
+  if [[ "$(provider_name)" != gcp ]]; then
+    for pair in SCOPE REGION LOCATION NETWORK SUBNET; do
+      [[ -z "${IMPORTED[PROVIDER_$pair]:-}" ]] || log "PROVIDER_${pair} ignored: it names a cloud location, which PROVIDER '$(provider_name)' does not use."
+      unset "IMPORTED[PROVIDER_$pair]"
+    done
+    return 0
+  fi
   for pair in SCOPE:PROJECT REGION:REGION LOCATION:ZONE NETWORK:NETWORK SUBNET:SUBNET; do
     neutral="PROVIDER_${pair%%:*}" gcp="GCP_${pair##*:}"
     nv="${IMPORTED[$neutral]:-}" gv="${IMPORTED[$gcp]:-}"
@@ -426,6 +443,10 @@ input_drop_unknown_keys() {
   read -r -a _extra <<< "$INPUT_EXTRA_KEYS $PROVIDER_COMMON_KEYS $(provider_param_keys)"
   known+=("${_extra[@]}")
   for key in "${!IMPORTED[@]}"; do
+    if [[ "$(provider_name)" == ssh && " $INPUT_GCP_ONLY_KEYS " == *" $key "* ]]; then
+      [[ -z "${IMPORTED[$key]}" ]] || log "${key} ignored: used only with PROVIDER 'gcp' (new VMs in Google Cloud), not with existing hosts."
+      unset 'IMPORTED[$key]'; continue
+    fi
     case " ${known[*]} " in *" $key "*) continue ;; esac
     if [[ " $INPUT_SSH_KEYS " == *" $key "* || "$key" == DISK_DEV_* ]]; then
       [[ -z "${IMPORTED[$key]}" ]] || log "${key} ignored: used only with PROVIDER 'ssh' (existing hosts), not with '$(provider_name)'."
@@ -458,13 +479,18 @@ input_applicable_keys() {
   [[ -z "$src" && -n "${IMPORTED[AIRGAP_ARCHIVE]:-}" ]] && src=existing
   local -a keys=(TOPOLOGY INSTALL_MODE)
   if [[ "$topo" == single-node ]] || [[ -z "$topo" && -n "${IMPORTED[INSTALL_TYPE]:-}" ]]; then keys+=(INSTALL_TYPE); fi
-  keys+=(UBUNTU_VERSION GCP_PROJECT GCP_REGION GCP_ZONE GCP_NETWORK GCP_SUBNET SSH_SOURCE_CIDR)
-  if [[ "$topo" == single-node ]]; then keys+=(VM_NAME SIZE)
-  elif [[ "$topo" == three-node ]]; then keys+=(NODE0_NAME NODE1_NAME NODE2_NAME)
+  if [[ "$(provider_name)" == ssh ]]; then
+    local -a ssh_keys; mapfile -t ssh_keys < <(input_ssh_applicable_keys "$topo")
+    keys+=("${ssh_keys[@]}")
   else
-    local k; for k in VM_NAME NODE0_NAME NODE1_NAME NODE2_NAME SIZE; do [[ -z "${IMPORTED[$k]:-}" ]] || keys+=("$k"); done
+    keys+=(UBUNTU_VERSION GCP_PROJECT GCP_REGION GCP_ZONE GCP_NETWORK GCP_SUBNET SSH_SOURCE_CIDR)
+    if [[ "$topo" == single-node ]]; then keys+=(VM_NAME SIZE)
+    elif [[ "$topo" == three-node ]]; then keys+=(NODE0_NAME NODE1_NAME NODE2_NAME)
+    else
+      local k; for k in VM_NAME NODE0_NAME NODE1_NAME NODE2_NAME SIZE; do [[ -z "${IMPORTED[$k]:-}" ]] || keys+=("$k"); done
+    fi
+    if [[ "$topo" != three-node && "$size" == custom ]]; then keys+=(VM_CPUS VM_RAM_GB); fi
   fi
-  if [[ "$topo" != three-node && "$size" == custom ]]; then keys+=(VM_CPUS VM_RAM_GB); fi
   keys+=(BASE_DOMAIN TENANT_NAME UNIT_NAME ADMIN_PASSWORD DOWNLOAD_KEY AGENT_KEY SALES_KEY)
   if [[ "$mode" == air-gapped ]]; then
     keys+=(AIRGAP_SOURCE)
@@ -480,6 +506,22 @@ input_applicable_keys() {
     local k; for k in TLS_CRT_PATH TLS_KEY_PATH; do [[ -z "${IMPORTED[$k]:-}" ]] || keys+=("$k"); done
   fi
   printf '%s\n' "${keys[@]}"
+}
+
+# Existing hosts (ssh): hosts, login, names and one disk per data directory.
+input_ssh_applicable_keys() {
+  local topo="$1" k
+  if [[ "$topo" == three-node ]]; then
+    printf '%s\n' NODE0_HOST NODE1_HOST NODE2_HOST SSH_USER SSH_KEY_PATH SSH_PORT SSH_VIA_PRIVATE NODE0_NAME NODE1_NAME NODE2_NAME \
+      DISK_DEV_NODE0_OBJECTS DISK_DEV_NODE1_DATA DISK_DEV_NODE1_METRICS DISK_DEV_NODE1_ANALYTICS
+  elif [[ "$topo" == single-node ]]; then
+    printf '%s\n' VM_HOST SSH_USER SSH_KEY_PATH SSH_PORT VM_NAME DISK_DEV_ANALYTICS DISK_DEV_METRICS DISK_DEV_OBJECTS DISK_DEV_DATA
+  else
+    for k in VM_HOST NODE0_HOST NODE1_HOST NODE2_HOST SSH_USER SSH_KEY_PATH SSH_PORT SSH_VIA_PRIVATE VM_NAME NODE0_NAME NODE1_NAME NODE2_NAME; do
+      [[ -z "${IMPORTED[$k]:-}" ]] || echo "$k"
+    done
+  fi
+  [[ -z "${IMPORTED[NETWORK_RULES_CONFIRMED]:-}" ]] || echo NETWORK_RULES_CONFIRMED
 }
 
 input_valid_or_empty() {
@@ -514,6 +556,10 @@ input_evaluate() {
       continue
     fi
     value="${IMPORTED[$key]:-}"
+    if [[ -z "$value" && "$(provider_name)" == ssh && "$key" =~ ^(VM_NAME|NODE[012]_NAME)$ ]]; then
+      INPUT_ROWS+=("ok|${key}|not in the file; the host's own name is used")
+      continue
+    fi
     if [[ -z "$value" ]]; then
       if [[ "$key" == STANCTL_VERSION || "$key" == BACKEND_VERSION ]]; then
         text="not in the file; chosen from the live list"
@@ -700,11 +746,14 @@ input_current_value() {
 input_current_keys() {
   local -a keys=(PROVIDER TOPOLOGY INSTALL_MODE)
   [[ "$TOPOLOGY" == single-node ]] && keys+=(INSTALL_TYPE)
-  keys+=(UBUNTU_VERSION GCP_PROJECT GCP_REGION GCP_ZONE GCP_NETWORK GCP_SUBNET SSH_SOURCE_CIDR)
-  if [[ "$TOPOLOGY" == single-node ]]; then
+  if [[ "$(provider_name)" == ssh ]]; then
+    mapfile -t -O "${#keys[@]}" keys < <(input_ssh_applicable_keys "$TOPOLOGY")
+  elif [[ "$TOPOLOGY" == single-node ]]; then
+    keys+=(UBUNTU_VERSION GCP_PROJECT GCP_REGION GCP_ZONE GCP_NETWORK GCP_SUBNET SSH_SOURCE_CIDR)
     keys+=(VM_NAME SIZE)
     [[ "${SIZE:-}" == custom ]] && keys+=(VM_CPUS VM_RAM_GB)
   else
+    keys+=(UBUNTU_VERSION GCP_PROJECT GCP_REGION GCP_ZONE GCP_NETWORK GCP_SUBNET SSH_SOURCE_CIDR)
     keys+=(NODE0_NAME NODE1_NAME NODE2_NAME)
   fi
   keys+=(BASE_DOMAIN TENANT_NAME UNIT_NAME)
