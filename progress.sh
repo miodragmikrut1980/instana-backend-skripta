@@ -116,8 +116,24 @@ progress_init() {
   fi
 }
 
+# A provider may word a phase its own way (provider_phase_text N title|start|done);
+# without its own text the wording below and at the call site is used.
+provider_phase_word() {
+  declare -F provider_phase_text >/dev/null || return 0
+  provider_phase_text "$@"
+}
+progress_apply_provider_titles() {
+  local i t
+  for ((i=1; i<=PROGRESS_TOTAL; i++)); do
+    t=$(provider_phase_word "$i" title)
+    [[ -z "$t" ]] || PROGRESS_TITLES[$i]="$t"
+  done
+}
+
 phase_start() {
-  local number="$1" explanation="$2"
+  local number="$1" explanation="$2" own
+  own=$(provider_phase_word "$number" start)
+  [[ -z "$own" ]] || explanation="$own"
   PROGRESS_CURRENT="$number"
   PROGRESS_STATUS[$number]=active
   PHASE_STARTED[$number]=$SECONDS
@@ -140,7 +156,9 @@ phase_detail() {
 }
 
 phase_done() {
-  local number="${1:-$PROGRESS_CURRENT}" message="${2:-Phase completed.}"
+  local number="${1:-$PROGRESS_CURRENT}" message="${2:-Phase completed.}" own
+  own=$(provider_phase_word "$number" done)
+  [[ -z "$own" ]] || message="$own"
   PROGRESS_STATUS[$number]=done
   local took=$(( SECONDS - ${PHASE_STARTED[$number]:-$SECONDS} ))
   PHASE_SECONDS[$number]=$took

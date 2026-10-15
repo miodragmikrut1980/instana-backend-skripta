@@ -9,6 +9,85 @@ prov_gcp_param_keys() { echo "GCP_PROJECT GCP_REGION GCP_ZONE GCP_NETWORK GCP_SU
 prov_gcp_validate_config() { check_gcp_configuration; }
 prov_gcp_machine_type_for() { gcp_machine_type_for "$@"; }
 
+# ── Generic hooks: GCP keeps the installer's original wording ────────────────
+prov_gcp_uses_param() { return 0; }
+prov_gcp_text() { :; }
+prov_gcp_phase_text() { :; }
+prov_gcp_ssh_port() { echo 22; }
+prov_gcp_saved_param_keys() { :; }
+prov_gcp_collect_host_params() { :; }
+prov_gcp_confirm_host_changes() { :; }
+prov_gcp_state_resource_pattern() { echo '^(vm_|disk_|firewall_|fw_)'; }
+
+# Plan lines after the Ubuntu version: where the VMs are created.
+prov_gcp_plan_target_lines() {
+  printf "  %-30s %s\n" "GCP Project:"       "$GCP_PROJECT"
+  printf "  %-30s %s\n" "Zone:"              "$GCP_ZONE"
+  if [[ "$TOPOLOGY" == three-node ]]; then
+    printf "  %-30s %s\n" "Machine type:"      "n2-standard-16 on each node (three-node lab, fixed)"
+  else
+    printf "  %-30s %s\n" "Machine type:"      "$MACHINE_TYPE"
+  fi
+}
+
+# Plan block: the VM(s) and the data disks that will be created.
+prov_gcp_plan_resource_lines() {
+  if [[ "$TOPOLOGY" == "single-node" ]]; then
+    echo ""
+    printf "  %-30s %s\n" "VM name:" "$VM_NAME"
+    echo ""
+    echo "  Disks to create (dedicated per directory, as required by documentation):"
+    case "$INSTALL_TYPE" in
+      demo)
+        echo "    ${VM_NAME}-analytics  : 500 GB SSD  (pd-ssd)"
+        echo "    ${VM_NAME}-metrics    : 300 GB SSD  (pd-ssd)"
+        echo "    ${VM_NAME}-objects    : 250 GB SSD  (pd-ssd)"
+        echo "    ${VM_NAME}-data       : 150 GB SSD  (pd-ssd)"
+        ;;
+      production)
+        echo "    ${VM_NAME}-analytics  : 1200 GB SSD (pd-ssd)"
+        echo "    ${VM_NAME}-metrics    : 1000 GB SSD (pd-ssd)"
+        echo "    ${VM_NAME}-objects    : 1000 GB SSD (pd-ssd)"
+        echo "    ${VM_NAME}-data       :  500 GB SSD (pd-ssd)"
+        ;;
+    esac
+  else
+    echo ""
+    printf "  %-30s %s\n" "Node 0 (backend):"   "$NODE0_NAME"
+    printf "  %-30s %s\n" "Node 1 (data store):" "$NODE1_NAME"
+    printf "  %-30s %s\n" "Node 2 (other):"      "$NODE2_NAME"
+    echo ""
+    echo "  Disks to create:"
+    echo "    ${NODE0_NAME}-objects   : 1000 GB SSD (pd-ssd)  → /mnt/instana/stanctl/objects"
+    echo "    ${NODE1_NAME}-data      :  500 GB SSD (pd-ssd)  → /mnt/instana/stanctl/data"
+    echo "    ${NODE1_NAME}-metrics   : 1000 GB SSD (pd-ssd)  → /mnt/instana/stanctl/metrics"
+    echo "    ${NODE1_NAME}-analytics : 1200 GB SSD (pd-ssd)  → /mnt/instana/stanctl/analytics"
+    if [[ "$INSTALL_MODE" == air-gapped ]]; then
+      echo ""
+      echo "  Note: the nodes still use the internet for Ubuntu packages (apt-get in phase 6);"
+      echo "  only the Instana artifacts come from the air-gapped package."
+    fi
+  fi
+}
+
+# After "Start now?": where this deployment lives (destroy.sh reads it back).
+prov_gcp_record_target() {
+  save_state "gcp_project" "$GCP_PROJECT"
+  save_state "gcp_zone" "$GCP_ZONE"
+}
+
+# Single-node --resume: same project, zone and recorded VM as the state file.
+prov_gcp_resume_state_matches() {
+  [[ "$(get_state gcp_project)" == "$GCP_PROJECT" && "$(get_state gcp_zone)" == "$GCP_ZONE" && "$(get_state "vm_${VM_NAME}")" == created ]]
+}
+
+# Three-node lab: firewall tag, boot size and the lab notice.
+prov_gcp_prepare_multi() {
+  DEPLOYMENT_TAG="lab-${NODE0_NAME:0:45}"
+  BOOT_SIZE_GB=270
+  warn "INTERNAL LAB: 3 x n2-standard-16 (16 CPU/64 GB), 270 GB boot per node, 4 dedicated pd-ssd data disks. Physical isolation and sustained I/O are not certified."
+}
+
 # prov_gcp_validate_param KEY VALUE — format only, never calls gcloud (whether
 # the project, zone, network and subnet exist is checked by validate_config).
 # Same contract as the prompt_required validators: 0, or 1 with the reason.

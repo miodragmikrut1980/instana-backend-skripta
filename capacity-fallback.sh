@@ -2,7 +2,7 @@
 # GCP provider: automatic placement fallback only for a fresh first-VM stockout.
 deployment_has_resources() {
   [[ -f "$STATE_FILE" ]] || return 1
-  jq -e 'to_entries|any(.[]; (.key|startswith("vm_")) or (.key|startswith("disk_")) or (.key|startswith("firewall_")) or (.key|startswith("fw_")))' "$STATE_FILE" >/dev/null
+  jq -e --arg re "$(provider_state_resource_pattern)" 'to_entries|any(.[]; .key|test($re))' "$STATE_FILE" >/dev/null
 }
 
 placement_command() {

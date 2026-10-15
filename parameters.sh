@@ -16,7 +16,7 @@ save_parameters() {
   fi
   [[ ! -L "$CONFIG_FILE" ]] || die "Refusing symlink configuration."
   local key temp json='{}'
-  for key in "${PARAMETER_KEYS[@]}"; do
+  for key in "${PARAMETER_KEYS[@]}" $(provider_saved_param_keys); do
     json=$(jq --arg k "$key" --arg v "${!key:-}" '.[$k]=$v' <<< "$json")
   done
   if [[ "${TOPOLOGY:-}" == three-node && -f "$STATE_FILE" ]]; then
@@ -79,7 +79,7 @@ offer_saved_parameters() {
   fi
   CONFIG_LOADED=true
   [[ "$choice" == "reuse saved parameters" ]] || return 1
-  for key in "${PARAMETER_KEYS[@]}"; do
+  for key in "${PARAMETER_KEYS[@]}" $(provider_saved_param_keys); do
     printf -v "$key" '%s' "$(jq -r --arg k "$key" '.parameters[$k] // empty' "$CONFIG_FILE")"
   done
   [[ "$TOPOLOGY" == single-node || "$TOPOLOGY" == three-node ]] || die "Invalid saved topology."
@@ -88,7 +88,7 @@ offer_saved_parameters() {
   validate_fqdn "$BASE_DOMAIN" || die "Saved base domain is invalid."
   validate_tenant_unit_name "$TENANT_NAME" Tenant || die "Saved tenant name is invalid."
   validate_tenant_unit_name "$UNIT_NAME" Unit || die "Saved unit name is invalid."
-  validate_cidr "$SSH_SOURCE_CIDR" || die "Saved SSH CIDR is invalid."
+  ! provider_uses_param SSH_SOURCE_CIDR || validate_cidr "$SSH_SOURCE_CIDR" || die "Saved SSH CIDR is invalid."
   reask_secret ADMIN_PASSWORD "Instana admin password" "Admin password"
   reask_secret DOWNLOAD_KEY "Instana download key" "Download key"
   reask_secret AGENT_KEY "Instana agent key" "Agent key"

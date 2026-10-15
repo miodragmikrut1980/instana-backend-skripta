@@ -8,9 +8,7 @@ prepare_multinode_lab() {
   [[ "$NODE_CPUS" == 12 && "$NODE_RAM_GB" == 48 ]] || die "First lab release supports the small profile only (12 CPU/48 GB minimum per node)."
   [[ "$NODE0_NAME" != "$NODE1_NAME" && "$NODE0_NAME" != "$NODE2_NAME" && "$NODE1_NAME" != "$NODE2_NAME" ]] || die "Node names must be distinct."
   [[ "$RESUME" == true || ! -f "$STATE_FILE" ]] || state_is_only_progress || die "Existing state: use --resume or a NEW deployment folder."
-  DEPLOYMENT_TAG="lab-${NODE0_NAME:0:45}"
-  BOOT_SIZE_GB=270
-  warn "INTERNAL LAB: 3 x n2-standard-16 (16 CPU/64 GB), 270 GB boot per node, 4 dedicated pd-ssd data disks. Physical isolation and sustained I/O are not certified."
+  provider_prepare_multi
   warn "Use a NEW base domain; existing single-node DNS must not be redirected. Public HTTP/TLS endpoints will be reachable."
   [[ "$DRY_RUN" == true ]] && return 0
   [[ "$RESUME" == true ]] && return 0

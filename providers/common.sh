@@ -36,6 +36,19 @@ destroy_target_text
 destroy_validate_target
 destroy_from_state
 destroy_by_name
+uses_param
+text
+phase_text
+ssh_port
+plan_target_lines
+plan_resource_lines
+record_target
+confirm_host_changes
+resume_state_matches
+prepare_multi
+collect_host_params
+state_resource_pattern
+saved_param_keys
 "
 
 # The active provider lives in ACTIVE_PROVIDER, set only by resolve_provider;
@@ -98,6 +111,15 @@ resolve_provider() {
   ACTIVE_PROVIDER="$chosen"
   PROVIDER="$chosen"
   PROVIDER_LABEL=$(provider_label)
+  ! declare -F progress_apply_provider_titles >/dev/null || progress_apply_provider_titles
+}
+
+# provider_text_or KEY DEFAULT_LINE... — the provider's own wording for KEY
+# (one line per output line), or the default lines.
+provider_text_or() {
+  local key="$1" own; shift
+  own=$(provider_text "$key")
+  if [[ -n "$own" ]]; then printf '%s\n' "$own"; else printf '%s\n' "$@"; fi
 }
 
 # Inside the installer a failed resolution stops with HOW TO RESOLVE; sourced

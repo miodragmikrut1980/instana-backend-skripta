@@ -14,7 +14,7 @@ print_local_access() {
   local nodes=("${VM_NAME:-}")
   [[ "$TOPOLOGY" != three-node ]] || nodes=("$NODE0_NAME" "$NODE1_NAME" "$NODE2_NAME")
   echo
-  echo 'Confirm public IPv4 addresses. Enter accepts the GCP value.'
+  echo "$(provider_text_or ip_confirm_line 'Confirm public IPv4 addresses. Enter accepts the GCP value.')"
   for node in "${nodes[@]}"; do
     default="$detected"
     if [[ "$node" != "${nodes[0]}" ]]; then

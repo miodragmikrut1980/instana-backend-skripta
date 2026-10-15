@@ -553,7 +553,7 @@ validate_fqdn() {
 collect_parameters() {
   echo ""
   echo -e "${BOLD}════════════════════════════════════════════════════════════════${RESET}"
-  echo -e "${BOLD}  Instana Standard Edition — GCP Deployment Setup${RESET}"
+  echo -e "${BOLD}  Instana Standard Edition — $(provider_text_or setup_title "GCP Deployment Setup")${RESET}"
   echo -e "${BOLD}════════════════════════════════════════════════════════════════${RESET}"
   echo ""
   # Every question first takes a usable value from an input file (use_imported,
@@ -561,8 +561,11 @@ collect_parameters() {
 
   # Topology
   use_imported TOPOLOGY || {
-    hint "single-node: everything on one VM (labs, demos, small setups)." \
-         "three-node: Instana spread over three VMs, IBM 'production' type, needs 3x n2-standard-16."
+    local -a topo_hint
+    mapfile -t topo_hint < <(provider_text_or topology_hint \
+      "single-node: everything on one VM (labs, demos, small setups)." \
+      "three-node: Instana spread over three VMs, IBM 'production' type, needs 3x n2-standard-16.")
+    hint "${topo_hint[@]}"
     TOPOLOGY=$(prompt_choice "Select deployment topology:" \
       "single-node" \
       "three-node")
@@ -590,7 +593,7 @@ collect_parameters() {
   fi
 
   # Ubuntu version — from docs: Ubuntu 24.04 and 22.04 only
-  use_imported UBUNTU_VERSION || {
+  ! provider_uses_param UBUNTU_VERSION || use_imported UBUNTU_VERSION || {
     hint "Operating system image for the new VM(s). 24.04 is the current IBM-supported default."
     UBUNTU_VERSION=$(prompt_choice "Select Ubuntu version (supported: 24.04, 22.04):" \
       "ubuntu-2404-lts-amd64" \
@@ -598,20 +601,23 @@ collect_parameters() {
   }
 
   provider_collect_location_params
-  use_imported SSH_SOURCE_CIDR || {
+  ! provider_uses_param SSH_SOURCE_CIDR || use_imported SSH_SOURCE_CIDR || {
     hint "Which public IP address may open SSH to the VM(s). Default = this machine's own public IP with /32 (only this machine)." \
          "0.0.0.0/0 would allow the whole internet; avoid it."
     prompt_required "SSH_SOURCE_CIDR" "CIDR allowed to SSH to the VM(s)" "$(detect_public_cidr)" validate_cidr
   }
   if [[ "$TOPOLOGY" == "single-node" ]]; then
     use_imported VM_NAME || {
-      hint "Name of the new VM in GCP; the four data disks will be named <vm>-analytics/-metrics/-objects/-data." \
-           "Lowercase letters, digits and hyphens. Must not already exist in the zone."
+      local -a name_hint
+      mapfile -t name_hint < <(provider_text_or vm_name_hint \
+        "Name of the new VM in GCP; the four data disks will be named <vm>-analytics/-metrics/-objects/-data." \
+        "Lowercase letters, digits and hyphens. Must not already exist in the zone.")
+      hint "${name_hint[@]}"
       prompt_required "VM_NAME" "VM name" "instana-backend" validate_vm_name VM_NAME
     }
   else
     imported_usable NODE0_NAME NODE1_NAME NODE2_NAME ||
-      hint "Names of the three new VMs. Node 0 runs the backend and stanctl, node 1 the data stores, node 2 the rest."
+      hint "$(provider_text_or node_names_hint "Names of the three new VMs. Node 0 runs the backend and stanctl, node 1 the data stores, node 2 the rest.")"
     use_imported NODE0_NAME || prompt_required "NODE0_NAME" "Node 0 name (instana-0, backend)" "instana-0" validate_node_name NODE0_NAME
     use_imported NODE1_NAME || prompt_required "NODE1_NAME" "Node 1 name (instana-1, data store)" "instana-1" validate_node_name NODE1_NAME
     use_imported NODE2_NAME || prompt_required "NODE2_NAME" "Node 2 name (instana-2, other)" "instana-2" validate_node_name NODE2_NAME
@@ -619,6 +625,8 @@ collect_parameters() {
 
   # Machine type selection
   show_hw_requirements_and_pick_machine_type
+  # Provider values that need the names and the size (existing hosts: data disks).
+  provider_collect_host_params
 
   # FQDN
   use_imported BASE_DOMAIN || {
@@ -1061,7 +1069,9 @@ show_hw_requirements_and_pick_machine_type() {
       demo)       min_cpu=16;  min_ram=64 ;;
       production) min_cpu=28;  min_ram=112 ;;
     esac
-    if use_imported SIZE; then
+    if ! provider_uses_param SIZE; then
+      SIZE_CHOICE=minimum
+    elif use_imported SIZE; then
       SIZE_CHOICE="$SIZE"
     else
       show_single_node_requirements "$INSTALL_TYPE"
@@ -1092,7 +1102,7 @@ show_hw_requirements_and_pick_machine_type() {
     # Three-node lab: one fixed size, nothing to choose (the lab creates
     # 3x n2-standard-16 and supports only the documented small profile).
     show_three_node_requirements
-    log "Three-node lab size is fixed: small profile (12 vCPUs / 48 GB per node, documented minimum) on 3x n2-standard-16."
+    log "$(provider_text_or three_node_size_note "Three-node lab size is fixed: small profile (12 vCPUs / 48 GB per node, documented minimum) on 3x n2-standard-16.")"
     if [[ "$PARAMS_SOURCE" == import && -n "${IMPORTED[SIZE]:-}" && "${IMPORTED[SIZE]}" != small ]]; then
       warn "SIZE '${IMPORTED[SIZE]}' from $(input_source_label) is ignored: three-node uses the fixed small size."
     fi
@@ -1115,18 +1125,12 @@ show_plan() {
   printf "  %-30s %s\n" "Installation type:" "$INSTALL_TYPE"
   printf "  %-30s %s\n" "Connectivity mode:" "$INSTALL_MODE"
   printf "  %-30s %s\n" "Ubuntu version:"    "$UBUNTU_VERSION"
-  printf "  %-30s %s\n" "GCP Project:"       "$GCP_PROJECT"
-  printf "  %-30s %s\n" "Zone:"              "$GCP_ZONE"
-  if [[ "$TOPOLOGY" == three-node ]]; then
-    printf "  %-30s %s\n" "Machine type:"      "n2-standard-16 on each node (three-node lab, fixed)"
-  else
-    printf "  %-30s %s\n" "Machine type:"      "$MACHINE_TYPE"
-  fi
+  provider_plan_target_lines
   printf "  %-30s %s\n" "Base domain:"       "$BASE_DOMAIN"
   printf "  %-30s %s\n" "Tenant/Unit:"       "${TENANT_NAME}/${UNIT_NAME}"
   printf "  %-30s %s\n" "UI URL (after DNS):" "https://${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}"
   printf "  %-30s %s\n" "TLS:"               "$TLS_MODE"
-  printf "  %-30s %s\n" "SSH source CIDR:"   "$SSH_SOURCE_CIDR"
+  ! provider_uses_param SSH_SOURCE_CIDR || printf "  %-30s %s\n" "SSH source CIDR:"   "$SSH_SOURCE_CIDR"
   if [[ -n "${BACKEND_VERSION:-}" ]]; then
     printf "  %-30s %s\n" "stanctl package:"   "${STANCTL_APT_VERSION:-?}"
     printf "  %-30s %s\n" "Backend version:"   "$BACKEND_VERSION"
@@ -1134,42 +1138,7 @@ show_plan() {
     printf "  %-30s %s\n" "Backend version:"   "chosen on the Instana VM in phase 10"
   fi
 
-  if [[ "$TOPOLOGY" == "single-node" ]]; then
-    echo ""
-    printf "  %-30s %s\n" "VM name:" "$VM_NAME"
-    echo ""
-    echo "  Disks to create (dedicated per directory, as required by documentation):"
-    case "$INSTALL_TYPE" in
-      demo)
-        echo "    ${VM_NAME}-analytics  : 500 GB SSD  (pd-ssd)"
-        echo "    ${VM_NAME}-metrics    : 300 GB SSD  (pd-ssd)"
-        echo "    ${VM_NAME}-objects    : 250 GB SSD  (pd-ssd)"
-        echo "    ${VM_NAME}-data       : 150 GB SSD  (pd-ssd)"
-        ;;
-      production)
-        echo "    ${VM_NAME}-analytics  : 1200 GB SSD (pd-ssd)"
-        echo "    ${VM_NAME}-metrics    : 1000 GB SSD (pd-ssd)"
-        echo "    ${VM_NAME}-objects    : 1000 GB SSD (pd-ssd)"
-        echo "    ${VM_NAME}-data       :  500 GB SSD (pd-ssd)"
-        ;;
-    esac
-  else
-    echo ""
-    printf "  %-30s %s\n" "Node 0 (backend):"   "$NODE0_NAME"
-    printf "  %-30s %s\n" "Node 1 (data store):" "$NODE1_NAME"
-    printf "  %-30s %s\n" "Node 2 (other):"      "$NODE2_NAME"
-    echo ""
-    echo "  Disks to create:"
-    echo "    ${NODE0_NAME}-objects   : 1000 GB SSD (pd-ssd)  → /mnt/instana/stanctl/objects"
-    echo "    ${NODE1_NAME}-data      :  500 GB SSD (pd-ssd)  → /mnt/instana/stanctl/data"
-    echo "    ${NODE1_NAME}-metrics   : 1000 GB SSD (pd-ssd)  → /mnt/instana/stanctl/metrics"
-    echo "    ${NODE1_NAME}-analytics : 1200 GB SSD (pd-ssd)  → /mnt/instana/stanctl/analytics"
-    if [[ "$INSTALL_MODE" == air-gapped ]]; then
-      echo ""
-      echo "  Note: the nodes still use the internet for Ubuntu packages (apt-get in phase 6);"
-      echo "  only the Instana artifacts come from the air-gapped package."
-    fi
-  fi
+  provider_plan_resource_lines
 
   if [[ "$DRY_RUN" == true ]]; then
     echo ""
@@ -1181,7 +1150,7 @@ show_plan() {
   if [[ "$DRY_RUN" == true ]]; then
     echo "  Enter Y and press Enter to run the dry-run simulation."
   else
-    echo "  Enter Y and press Enter to START creating GCP resources and installing Instana."
+    echo "  $(provider_text_or start_line "Enter Y and press Enter to START creating GCP resources and installing Instana.")"
   fi
   if [[ "${PLAN_EDITABLE:-false}" == true ]]; then
     echo "  Enter E to change one of the values above first."
@@ -1200,9 +1169,9 @@ show_plan() {
   else
     prompt_yes_no "Start now? Type Y to continue or N to cancel" N || { log "Installation was not started; no action was approved from this plan."; exit 0; }
   fi
+  provider_confirm_host_changes
   save_state "provider" "$(provider_name)"
-  save_state "gcp_project" "$GCP_PROJECT"
-  save_state "gcp_zone" "$GCP_ZONE"
+  provider_record_target
   save_state "topology" "$TOPOLOGY"
   save_state "install_mode" "$INSTALL_MODE"
 }
@@ -1828,7 +1797,7 @@ configure_ufw_single_node() {
   local vm_name="$1" zone="$2" project="$3"
   log "Configuring UFW firewall on ${vm_name} (from documentation)..."
 
-  remote_exec_dry "$vm_name" "$zone" "$project" "ufw allow 22/tcp"
+  remote_exec_dry "$vm_name" "$zone" "$project" "ufw allow $(provider_ssh_port)/tcp"
   remote_exec_dry "$vm_name" "$zone" "$project" "ufw allow 80/tcp"
   remote_exec_dry "$vm_name" "$zone" "$project" "ufw allow 443/tcp"
   remote_exec_dry "$vm_name" "$zone" "$project" "ufw allow 8443/tcp"
@@ -1846,7 +1815,7 @@ configure_ufw_multi_node() {
   local vm_name="$1" zone="$2" project="$3" node0_ip="$4" node1_ip="$5" node2_ip="$6"
   log "Configuring UFW firewall on ${vm_name} (multi-node rules from documentation)..."
 
-  remote_exec_dry "$vm_name" "$zone" "$project" "ufw allow 22/tcp"
+  remote_exec_dry "$vm_name" "$zone" "$project" "ufw allow $(provider_ssh_port)/tcp"
   remote_exec_dry "$vm_name" "$zone" "$project" "ufw allow 80/tcp"
   remote_exec_dry "$vm_name" "$zone" "$project" "ufw allow 443/tcp"
   remote_exec_dry "$vm_name" "$zone" "$project" "ufw allow 8443/tcp"
@@ -2147,8 +2116,8 @@ validate_resume() {
   [[ "$DRY_RUN" != true ]] || die "--resume cannot be combined with --dry-run."
   [[ "$TOPOLOGY" == single-node ]] || die "This resume validator is for single-node deployments."
   [[ -f "$STATE_FILE" ]] || die "Copy the original .install-state.json alongside this script first."
-  [[ "$(get_state gcp_project)" == "$GCP_PROJECT" && "$(get_state gcp_zone)" == "$GCP_ZONE" && "$(get_state "vm_${VM_NAME}")" == created ]] ||
-    die "Project, zone or VM differs from the saved state. No changes made."
+  provider_resume_state_matches ||
+    die "$(provider_text_or resume_mismatch "Project, zone or VM differs from the saved state. No changes made.")"
   provider_resume_check_vm "$VM_NAME"
   wait_for_ssh "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
   remote_exec "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT" '

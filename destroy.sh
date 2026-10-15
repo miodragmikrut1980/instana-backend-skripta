@@ -68,7 +68,7 @@ provider_destroy_target
 # checkpoints (an interrupted phase 1) or nothing usable is refused with a
 # pointer to the name-based clean-up in install.sh, instead of pretending that
 # "all resources were deleted".
-recorded=$(jq -r 'to_entries[] | select(.key | test("^(vm_|disk_|firewall_|fw_)")) | .key' "$STATE_FILE" 2>/dev/null | wc -l)
+recorded=$(jq -r --arg re "$(provider_state_resource_pattern)" 'to_entries[] | select(.key | test($re)) | .key' "$STATE_FILE" 2>/dev/null | wc -l)
 if [[ -z "$DESTROY_SCOPE" || -z "$DESTROY_LOCATION" || "$recorded" -eq 0 ]]; then
   err "The state file records no ${PROVIDER_LABEL} resources ($(provider_destroy_target_text), recorded resources: ${recorded})."
   echo "  Nothing can be deleted from it. If VMs or disks still exist in ${PROVIDER_LABEL}, remove them by VM name:" >&2
