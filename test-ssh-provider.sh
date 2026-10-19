@@ -29,8 +29,18 @@ base() {
   : > "$SSH_LOG"
   provider_ssh_probe lab "" "" 20 5 'cat /proc/sys/kernel/random/boot_id' reboot
   grep -q -- '-o ConnectTimeout=5 -p 2222 -l ubuntu -- 10.0.0.5 cat /proc/sys/kernel/random/boot_id' "$SSH_LOG"
-  test "$(provider_get_ip lab "" "" public)" = 10.0.0.5
+  # Public address: used as is. Private address: the external IP from Google
+  # Cloud when gcloud finds the instance, otherwise "unknown" (asked at the end).
+  printf '#!/usr/bin/env bash\ncase "$*" in *"get-value project"*) echo test-project ;; *"networkIP=10.0.0.5"*) echo 34.1.2.3 ;; esac\n' > "$FAKE_ROOT/bin/gcloud"
+  chmod +x "$FAKE_ROOT/bin/gcloud"
+  test "$(provider_get_ip lab "" "" public)" = 34.1.2.3
+  VM_HOST=10.0.0.99; test "$(provider_get_ip lab "" "" public)" = unknown
+  VM_HOST=203.0.113.5; test "$(provider_get_ip lab "" "" public)" = 203.0.113.5
   SSH_VIA_PRIVATE=true; test "$(provider_get_ip lab "" "" public)" = unknown
+  SSH_VIA_PRIVATE=false; VM_HOST=10.0.0.5
+  prov_ssh_is_private 172.20.1.1 && prov_ssh_is_private 100.64.0.1 && prov_ssh_is_private 192.168.0.1
+  if prov_ssh_is_private 172.32.0.1 || prov_ssh_is_private 8.8.8.8; then echo "FAIL: public address taken as private" >&2; exit 1; fi
+  rm -f "$FAKE_ROOT/bin/gcloud"
   test "$(provider_hint ssh lab "" "" 'df -h /')" = "ssh -i $FAKE_KEY -p 2222 ubuntu@10.0.0.5 'df -h /'"
   test "$(provider_ssh_port)" = 2222
   # Paths in copy-paste commands are shell-quoted (spaces, $(...) never run on paste).

@@ -73,12 +73,12 @@ stop_ok() {
 
 NO_DATA_DISKS=1 host_facts h1
 if ( init; INSTALL_TYPE=production; prov_ssh_collect_host_params ) < /dev/null > "$OUT" 2>&1; then echo "FAIL: no disk accepted" >&2; exit 1; fi
-stop_ok "no usable disk" "Host h1: no unused disk of at least 1200 GB is available for the analytics data (/dev/sda 300 GB, mounted at /boot/efi/, partitioned)." \
-  "Attach an empty disk of at least 1200 GB to h1"
+stop_ok "no usable disk" "Host h1: its unused whole disks (/dev/sda 300 GB, mounted at /boot/efi/, partitioned) cannot hold one dedicated disk each for analytics 1200 GB, metrics 1000 GB, objects 1000 GB, data 500 GB." \
+  "Attach empty disks of those sizes to h1"
 
 host_facts h1
 if ( init; INPUT_NONINTERACTIVE=1; prov_ssh_collect_host_params ) < /dev/null > "$OUT" 2>&1; then echo "FAIL: chose a disk without a terminal" >&2; exit 1; fi
-stop_ok "no disk and no terminal" "Host h1: no disk is chosen for the analytics data (DISK_DEV_ANALYTICS is missing or not usable) and there is no terminal to ask." \
+stop_ok "no disk and no terminal" "Host h1: no disk is chosen for the Instana analytics directory (DISK_DEV_ANALYTICS is missing or not usable) and there is no terminal to ask." \
   '"DISK_DEV_ANALYTICS": /dev/disk/by-id/scsi-0Disk_h1_sdb'
 
 base_disks() { DISK_DEV_ANALYTICS=/dev/disk/by-id/scsi-0Disk_h1_sdb DISK_DEV_METRICS=/dev/disk/by-id/scsi-0Disk_h1_sdc DISK_DEV_OBJECTS=/dev/disk/by-id/scsi-0Disk_h1_sdd DISK_DEV_DATA=/dev/disk/by-id/scsi-0Disk_h1_sde; }
@@ -169,4 +169,52 @@ head -c 5767168 /dev/zero > "$img"
 printf '\x01' | dd of="$img" bs=1 seek=4000 conv=notrunc 2>/dev/null
 test "$(zero_run "$img")" = ZEROCHECK:1:0
 echo 'PASS: the zero check reads the first MiB and the last MiB by byte offset (5.5 MiB image)'
+
+# Three-node node 1: largest role first, and only disks that keep a complete
+# assignment are offered (s4: a 1300 GB disk listed first and smaller ones).
+three_disks() {
+  EXTRA_FACT_LINES=("$@")
+  NO_DATA_DISKS=1 host_facts h1
+  EXTRA_FACT_LINES=()
+}
+three_init() {
+  INSTANA_PROVIDER=ssh resolve_provider
+  DRY_RUN=false RESUME=false TOPOLOGY=three-node INSTALL_TYPE=production
+  SSH_USER=ubuntu SSH_KEY_PATH="$FAKE_KEY" SSH_PORT=22
+  NODE0_NAME=n0 NODE1_NAME=n1 NODE2_NAME=n2 NODE0_HOST=h0 NODE1_HOST=h1 NODE2_HOST=h2
+  DISK_DEV_NODE0_OBJECTS=/dev/disk/by-id/scsi-0Disk_h0_sdc
+  host_facts h0; prov_ssh_gather_facts h0; prov_ssh_gather_facts h1
+}
+three_disks "DISK=/dev/sdb|1300000000000|1|||Big" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdb|/dev/sdb" \
+            "DISK=/dev/sdc|1050000000000|1|||Mid" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdc|/dev/sdc" \
+            "DISK=/dev/sdd|600000000000|1|||Small" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdd|/dev/sdd"
+( three_init
+  # Answer 1 everywhere: in the old order "data" took the 1300 GB disk and analytics was impossible.
+  # Node 0 (objects) is asked first, then node 1.
+  prov_ssh_collect_host_params < <(printf '1\n1\n1\n1\n') > "$OUT" 2>&1
+  test "$DISK_DEV_NODE1_ANALYTICS" = /dev/disk/by-id/scsi-0Disk_h1_sdb
+  test "$DISK_DEV_NODE1_METRICS" = /dev/disk/by-id/scsi-0Disk_h1_sdc
+  test "$DISK_DEV_NODE1_DATA" = /dev/disk/by-id/scsi-0Disk_h1_sdd )
+plain | grep -q 'Disk for analytics on n1'
+echo 'PASS: three-node node 1: largest role first, every pick keeps a complete assignment (s4 completes)'
+
+# Two disks fit analytics; only the choice that leaves metrics possible is offered.
+three_disks "DISK=/dev/sdb|1250000000000|1|||A" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdb|/dev/sdb" \
+            "DISK=/dev/sdc|2000000000000|1|||B" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdc|/dev/sdc" \
+            "DISK=/dev/sdd|1100000000000|1|||C" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdd|/dev/sdd" \
+            "DISK=/dev/sde|600000000000|1|||D" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sde|/dev/sde"
+( three_init
+  mapfile -t c < <(prov_ssh_disk_candidates h1 ANALYTICS DISK_DEV_NODE1_ANALYTICS)
+  test "${#c[@]}" = 2 )
+echo 'PASS: a disk is offered only if the remaining roles still fit'
+
+three_disks "DISK=/dev/sdb|1300000000000|1|||Big" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdb|/dev/sdb" \
+            "DISK=/dev/sdc|900000000000|1|||Mid" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdc|/dev/sdc" \
+            "DISK=/dev/sdd|600000000000|1|||Small" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdd|/dev/sdd"
+: > "$SSH_LOG"
+if ( three_init; prov_ssh_collect_host_params ) < /dev/null > "$OUT" 2>&1; then echo "FAIL: impossible assignment accepted" >&2; exit 1; fi
+stop_ok "no complete assignment" "Host h1: its unused whole disks (/dev/sda 300 GB, mounted at /boot/efi/, partitioned; /dev/sdb 1300 GB; /dev/sdc 900 GB; /dev/sdd 600 GB) cannot hold one dedicated disk each for analytics 1200 GB, metrics 1000 GB, data 500 GB." "Attach empty disks of those sizes to h1"
+if plain | grep -q '^? Disk for'; then echo "FAIL: a pick was asked before the stop" >&2; exit 1; fi
+echo 'PASS: without any complete assignment the run stops before the first pick'
+plain | grep -vq 'data data' && ! plain | grep -q 'data data'
 

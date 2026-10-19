@@ -234,9 +234,43 @@ prov_ssh_get_ip() {
     prov_ssh_ssh "$1" "" "" "ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<NF;i++) if(\$i==\"src\"){print \$(i+1); exit}}' | grep . || hostname -I | awk '{print \$1}'"
     return
   fi
-  # Hosts reached over a private network: the public address is confirmed by hand at the end.
-  [[ "${SSH_VIA_PRIVATE:-false}" != true ]] || { echo unknown; return 0; }
-  if [[ "$host" =~ ^[0-9.]+$ ]]; then echo "$host"; else getent ahostsv4 "$host" 2>/dev/null | awk 'NR==1{print $1}'; fi
+  local ip nat
+  ip=$(prov_ssh_resolve_ipv4 "$host")
+  # A private address (or hosts declared private) is not what browsers outside
+  # that network can reach: on Google Cloud the instance's external IP is
+  # looked up (read-only, optional); otherwise "unknown" and the operator
+  # confirms the public address at the end.
+  if prov_ssh_is_private "$ip" || [[ "${SSH_VIA_PRIVATE:-false}" == true ]]; then
+    nat=$(prov_ssh_gce_nat_ip "$ip")
+    echo "${nat:-unknown}"
+    return 0
+  fi
+  echo "${ip:-unknown}"
+}
+
+prov_ssh_resolve_ipv4() {
+  if [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then echo "$1"; else getent ahostsv4 "$1" 2>/dev/null | awk 'NR==1{print $1}'; fi
+}
+
+# RFC 1918 and carrier-grade NAT (100.64.0.0/10) addresses.
+prov_ssh_is_private() {
+  local a b
+  [[ "$1" =~ ^([0-9]+)\.([0-9]+)\. ]] || return 1
+  a=${BASH_REMATCH[1]} b=${BASH_REMATCH[2]}
+  (( a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168) || (a == 100 && b >= 64 && b <= 127) ))
+}
+
+# External IP of the Google Cloud instance whose internal IP is IP, in the
+# current gcloud project; empty when there is no gcloud, project or match.
+prov_ssh_gce_nat_ip() {
+  local ip="$1" project nat
+  [[ -n "$ip" ]] || return 0
+  project=$(prov_ssh_gce_project)
+  [[ -n "$project" ]] || return 0
+  nat=$(timeout 20 gcloud compute instances list --project="$project" --filter="networkInterfaces[0].networkIP=${ip}" \
+    --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null | head -1 || true)
+  [[ "$nat" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] && ! prov_ssh_is_private "$nat" && echo "$nat"
+  return 0
 }
 
 # Shell-quoted value for commands printed to be copied (paths may hold spaces).
@@ -467,7 +501,11 @@ prov_ssh_collect_location_params() {
       SSH_VIA_PRIVATE=$(prompt_choice "Node addresses are:" "false" "true")
     }
   else
-    SSH_VIA_PRIVATE="${SSH_VIA_PRIVATE:-false}"
+    # Single host: private or public follows from its address.
+    if [[ -z "${SSH_VIA_PRIVATE:-}" ]]; then
+      SSH_VIA_PRIVATE=false
+      ! prov_ssh_is_private "$(prov_ssh_resolve_ipv4 "$VM_HOST")" || SSH_VIA_PRIVATE=true
+    fi
   fi
   prov_ssh_agent_preflight
   local host known
@@ -569,7 +607,15 @@ prov_ssh_text() {
     three_node_size_note) echo "Three-node: each host needs at least the small profile (12 vCPUs / 48 GB, documented minimum); checked on the hosts." ;;
     start_line) echo "Enter Y and press Enter to START installing Instana on the host(s) listed above." ;;
     resume_mismatch) echo "Host, user or port differs from the saved state of this deployment. No changes made." ;;
-    ip_confirm_line) echo "Confirm public IPv4 addresses. Enter accepts the address used for SSH." ;;
+    ip_confirm_line)
+      echo "Confirm public IPv4 addresses. Enter accepts the address offered."
+      local h
+      while IFS= read -r h; do
+        prov_ssh_is_private "$(prov_ssh_resolve_ipv4 "$h")" || continue
+        echo "Note: ${h} is a private address. The offered value is the host's external IP from Google Cloud when one was"
+        echo "found; otherwise enter the public IP, or skip: /etc/hosts lines with a private address work only inside that network."
+        break
+      done < <(prov_ssh_hosts) ;;
     default_vm_name) prov_ssh_name_from_host "${VM_HOST:-}" instana-backend ;;
     dry_run_banner) echo "Dry-run mode — nothing will be changed on the hosts (they are only read over SSH)." ;;
     destroy_banner) echo "This forgets the deployment recorded in this folder; nothing on the hosts is deleted or changed" ;;
@@ -601,14 +647,61 @@ prov_ssh_phase_text() {
 }
 
 # Names default to the hosts' own short names; then each role gets a disk.
+# Roles are asked largest first, and only disks that still leave a complete
+# assignment for the remaining roles are offered; when a host has no complete
+# assignment at all, the run stops before the first pick on any host.
 prov_ssh_collect_host_params() {
-  local node role key
+  local node role key host need="" r roles
+  for node in $(prov_ssh_nodes); do
+    roles=$(prov_ssh_roles_for "$node")
+    [[ -n "$roles" ]] || continue
+    host=$(prov_ssh_host_for "$node")
+    for r in $roles; do need+="${need:+ }$(prov_ssh_role_min_gb "$r")"; done
+    if ! prov_ssh_disks_fit "$need" "$(prov_ssh_free_disk_bytes "$host" "" "")"; then
+      host_stop "$host" "its unused whole disks ($(prov_ssh_disk_summary "$host")) cannot hold one dedicated disk each for $(for r in $roles; do printf '%s %s GB, ' "${r,,}" "$(prov_ssh_role_min_gb "$r")"; done | sed 's/, $//')." \
+        "IBM requires a dedicated disk per Instana data directory, each at least the size listed; the installer never uses the system disk, a mounted or partitioned disk, or one disk for two roles." \
+        "$(prov_ssh_continue_cmd)" \
+        "Attach empty disks of those sizes to ${host} (no partitions, not mounted), then check they are visible:|$(prov_ssh_cmd_line "$host") lsblk -dp -o NAME,SIZE,TYPE,MOUNTPOINT"
+    fi
+    need=""
+  done
+  # Every host can be served: now the picks.
   for node in $(prov_ssh_nodes); do
     for role in $(prov_ssh_roles_for "$node"); do
       key=$(prov_ssh_disk_key_for "$node" "$role")
       prov_ssh_choose_disk "$node" "$role" "$key"
     done
   done
+}
+
+# prov_ssh_disks_fit "MIN_GB..." "BYTES..." — true when every role (minimum
+# size) can get its own disk: sorted descending, the i-th largest disk must
+# hold the i-th largest role.
+prov_ssh_disks_fit() {
+  local -a mins sizes
+  mapfile -t mins < <(tr ' ' '\n' <<< "$1" | grep . | sort -rn)
+  mapfile -t sizes < <(tr ' ' '\n' <<< "$2" | grep . | sort -rn)
+  (( ${#sizes[@]} >= ${#mins[@]} )) || return 1
+  local i
+  for ((i=0; i<${#mins[@]}; i++)); do size_at_least_gb "${sizes[$i]}" "${mins[$i]}" || return 1; done
+}
+
+# Sizes (bytes) of the usable disks of HOST that no other role holds, without
+# EXCLUDE_DEV; SELF_KEY's own value does not count as taken.
+prov_ssh_free_disk_bytes() {
+  local host="$1" self_key="$2" exclude="$3" line h dev bytes parts mounts fstype model stable k taken out=""
+  for line in "${SSH_FACT_DISKS[@]}"; do
+    IFS='|' read -r h dev bytes parts mounts fstype model stable <<< "$line"
+    [[ "$h" == "$host" && -n "$stable" && "$parts" == 1 && -z "$mounts" && "$dev" != "$exclude" ]] || continue
+    case "$fstype" in LVM2_member|linux_raid_member|crypto_LUKS|zfs_member) continue ;; esac
+    taken=false
+    for k in $(prov_ssh_disk_keys); do
+      [[ "$k" != "$self_key" && -n "${!k:-}" ]] || continue
+      [[ "$(prov_ssh_disk_dev "$host" "${!k}")" == "$dev" ]] && taken=true
+    done
+    [[ "$taken" == true ]] || out+="${out:+ }${bytes}"
+  done
+  printf '%s' "$out"
 }
 
 prov_ssh_nodes() {
@@ -619,7 +712,7 @@ prov_ssh_roles_for() {
   if [[ "${TOPOLOGY:-}" != three-node ]]; then echo "$SSH_DISK_ROLES"; return; fi
   case "$(prov_ssh_node_index "$1")" in
     0) echo OBJECTS ;;
-    1) echo "DATA METRICS ANALYTICS" ;;
+    1) echo "ANALYTICS METRICS DATA" ;;
     *) echo "" ;;
   esac
 }
@@ -629,7 +722,19 @@ prov_ssh_roles_for() {
 # already chosen for another role. Prints "path|GB|model|dev".
 prov_ssh_disk_candidates() {
   local host="$1" role="$2" self_key="$3" line h dev bytes parts mounts fstype model stable min k taken
+  local rest_need="" r node seen=false
   min=$(prov_ssh_role_min_gb "$role")
+  # Roles of the same node still to be chosen after this one.
+  for node in $(prov_ssh_nodes); do
+    [[ "$(prov_ssh_host_for "$node")" == "$host" ]] || continue
+    for r in $(prov_ssh_roles_for "$node"); do
+      if [[ "$seen" == true ]]; then
+        k=$(prov_ssh_disk_key_for "$node" "$r")
+        [[ -n "${!k:-}" ]] || rest_need+="${rest_need:+ }$(prov_ssh_role_min_gb "$r")"
+      fi
+      [[ "$r" == "$role" ]] && seen=true
+    done
+  done
   for line in "${SSH_FACT_DISKS[@]}"; do
     IFS='|' read -r h dev bytes parts mounts fstype model stable <<< "$line"
     [[ "$h" == "$host" && -n "$stable" && "$parts" == 1 && -z "$mounts" ]] || continue
@@ -641,6 +746,8 @@ prov_ssh_disk_candidates() {
       [[ "$(prov_ssh_disk_dev "$host" "${!k}")" == "$dev" ]] && taken=true
     done
     [[ "$taken" == false ]] || continue
+    # Only a disk that still leaves a complete assignment for the other roles.
+    [[ -z "$rest_need" ]] || prov_ssh_disks_fit "$rest_need" "$(prov_ssh_free_disk_bytes "$host" "$self_key" "$dev")" || continue
     printf '%s|%s|%s|%s\n' "$stable" "$(gb_of_bytes "$bytes")" "${model:-?}" "$dev"
   done
 }
@@ -666,13 +773,13 @@ prov_ssh_choose_disk() {
     printf -v "$key" '%s' ""
   fi
   if (( ${#cands[@]} == 0 )); then
-    host_stop "$host" "no unused disk of at least ${min} GB is available for the ${role,,} data ($(prov_ssh_disk_summary "$host"))." \
+    host_stop "$host" "no unused disk of at least ${min} GB is available for the Instana ${role,,} directory ($(prov_ssh_disk_summary "$host"))." \
       "IBM requires a dedicated disk per Instana data directory; the installer never uses the system disk, a mounted or partitioned disk, or one disk for two roles." \
       "$(prov_ssh_continue_cmd)" \
       "Attach an empty disk of at least ${min} GB to ${host} (no partitions, not mounted), then check it is visible:|$(prov_ssh_cmd_line "$host") lsblk -dp -o NAME,SIZE,TYPE,MOUNTPOINT"
   fi
   if [[ ! -t 0 && -n "${INPUT_NONINTERACTIVE:-}" ]]; then
-    host_stop "$host" "no disk is chosen for the ${role,,} data (${key} is missing or not usable) and there is no terminal to ask." \
+    host_stop "$host" "no disk is chosen for the Instana ${role,,} directory (${key} is missing or not usable) and there is no terminal to ask." \
       "each Instana data directory needs its own disk, and the installer never picks one silently." \
       "$(prov_ssh_continue_cmd)" \
       "Put one of these paths into the input file as \"${key}\": $(printf '%s ' "${cands[@]%%|*}")"
@@ -682,8 +789,9 @@ prov_ssh_choose_disk() {
     IFS='|' read -r p gb model dev <<< "$c"
     options+=("${p}  (${gb} GB, ${model}, now ${dev})")
   done
-  hint "Disk on ${host} for the ${role,,} data (at least ${min} GB). Only unused whole disks are offered;" \
-       "it is formatted ext4 in phase 9 only if it is blank. Stable /dev/disk/by-id names survive reboots."
+  hint "Disk on ${host} for the Instana ${role,,} directory (at least ${min} GB). Only unused whole disks are offered" \
+       "that still leave a disk for every other directory; it is formatted ext4 in phase 9 only if it is blank." \
+       "Stable /dev/disk/by-id names survive reboots."
   chosen=$(prompt_choice "Disk for ${role,,} on ${node}:" "${options[@]}") ||
     host_stop "$host" "input ended while choosing the disk for ${role,,}." \
       "each Instana data directory needs its own disk, and the installer never picks one silently." \
@@ -897,7 +1005,7 @@ prov_ssh_ensure_disks() {
       IFS='|' read -r h dev bytes parts mounts fstype model stable <<< "$found"
       size_at_least_gb "$bytes" "$min" ||
         host_stop "$host" "the disk for ${role,,} (${path}) has $(gb_of_bytes "$bytes") GB." \
-          "IBM requires at least ${min} GB for the ${role,,} data of this installation type." \
+          "IBM requires at least ${min} GB for the Instana ${role,,} directory of this installation type." \
           "./install.sh" "Use a disk of at least ${min} GB (resize it or choose another one in a new run)."
       if [[ "$parts" != 1 || ( -n "$mounts" && "$mounts" != "$target" ) ]]; then
         host_stop "$host" "the disk for ${role,,} (${path}, now ${dev}) is $( [[ "$parts" != 1 ]] && echo partitioned || echo "mounted at ${mounts}" )." \
