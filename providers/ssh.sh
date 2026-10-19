@@ -530,7 +530,8 @@ prov_ssh_gce_project() {
   command -v gcloud >/dev/null 2>&1 || return 0
   local project
   project=$(timeout 10 gcloud config get-value project 2>/dev/null || true)
-  [[ -n "$project" && "$project" != "(unset)" ]] || project="instana-support-test-account"
+  # No project set in gcloud: no list (no guessing a project).
+  [[ -n "$project" && "$project" != "(unset)" ]] || return 0
   [[ ! "$project" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || printf '%s\n' "$project"
 }
 prov_ssh_gce_instances() {

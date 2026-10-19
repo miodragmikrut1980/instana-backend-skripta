@@ -2208,25 +2208,43 @@ offer_provider_switch() {
       echo "    Its Google Cloud resources may still exist and cost money; if it is a lab you no longer need, delete them first: ./install.sh --destroy" >&2
     fi
   fi
-  choice=$(prompt_choice "What do you want to do?" \
-    "continue the recorded deployment with its own provider '${saved}' (resume)" \
-    "set the recorded files aside (renamed, nothing deleted) and start a NEW '${requested}' deployment here" \
-    "cancel") || die "Installation cancelled; nothing was changed."
+  local -a options=()
+  # Continuing means --resume, which a dry-run cannot do.
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "    (Continuing the recorded deployment is not offered in a dry-run: it needs ./install.sh --resume.)" >&2
+  else
+    options+=("continue the recorded deployment with its own provider '${saved}' (resume)")
+  fi
+  options+=("set the recorded files aside (renamed, nothing deleted) and start a NEW '${requested}' deployment here" "cancel")
+  choice=$(prompt_choice "What do you want to do?" "${options[@]}") || die "Installation cancelled; nothing was changed."
   case "$choice" in
     continue*)
+      [[ -z "${INPUT_CONFIG:-}" ]] || die_with_steps "The recorded '${saved}' deployment can only be continued with the parameters it was started with; the values from ${INPUT_LABEL:-the input file} cannot change it." \
+        "Continue that deployment without --config (its saved parameters are used):|unset INSTANA_PROVIDER; ./install.sh --resume" \
+        "*To install the deployment from the file instead, run it again and choose 'set the recorded files aside', or use a new folder."
       [[ -f "$STATE_FILE" ]] || die_with_steps "There is no started deployment to continue in this folder (only saved parameters for provider '${saved}')." \
         "Start it with its saved parameters:|unset INSTANA_PROVIDER; ./install.sh"
       RESUME=true; PROVIDER_SWITCH=keep
       log "Continuing the recorded '${saved}' deployment (--resume)." ;;
     set*)
+      local -a moved=() target n
       ts=$(date +%Y%m%d-%H%M%S)
       for f in "$STATE_FILE" "$CONFIG_FILE"; do
         [[ -f "$f" ]] || continue
         # Only the files of the recorded deployment are moved (saved parameters
         # without PROVIDER but with a GCP project are GCP parameters).
         if [[ "$f" == "$CONFIG_FILE" && "$(jq -r '.parameters.PROVIDER // (if (.parameters.GCP_PROJECT // "") != "" then "gcp" else empty end)' "$f" 2>/dev/null)" != "$saved" ]]; then continue; fi
-        mv "$f" "${f}.${ts}.old" || die "Could not set $(basename "$f") aside; nothing was changed."
-        ok "$(basename "$f") set aside as $(basename "$f").${ts}.old (nothing deleted)."
+        # Never overwrite an earlier set-aside copy (two in the same second).
+        target="${f}.${ts}.old"; n=2
+        while [[ -e "$target" ]]; do target="${f}.${ts}-${n}.old"; n=$((n+1)); done
+        if ! mv -n "$f" "$target" || [[ -e "$f" || ! -f "$target" ]]; then
+          die_with_steps "Could not set $(basename "$f") aside as $(basename "$target")." \
+            "*Already moved in this step: ${moved[*]:-nothing}. $(basename "$f") is still in place; nothing was deleted." \
+            "Check the folder permissions and free space:|ls -la ${SCRIPT_DIR}" \
+            "*Move the remaining file by hand (any new name), then rerun:|./install.sh"
+        fi
+        moved+=("$(basename "$f") → $(basename "$target")")
+        ok "$(basename "$f") set aside as $(basename "$target") (nothing deleted)."
       done
       [[ "$saved" != gcp ]] || warn "The Google Cloud resources of that deployment were not touched; remove them later with the clean-up menu option (by VM name) if you no longer need them."
       PROVIDER_SWITCH=new ;;
@@ -2375,6 +2393,8 @@ main() {
     run_destroy
   fi
   if [[ "$EXPORT_CONFIG" == true ]]; then
+    # The file carries the provider recorded in this folder, never a request.
+    INSTANA_PROVIDER="" resolve_provider || exit 1
     export_saved_parameters "$EXPORT_CONFIG_PATH"
     exit 0
   fi

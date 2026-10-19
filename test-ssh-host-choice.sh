@@ -67,3 +67,10 @@ echo 'PASS: a saved address is the default and the list is not shown'
 host_facts 10.172.0.9
 ( init; prov_ssh_collect_location_params < <(printf '2\n\n%s\n22\n' "$FAKE_KEY") > "$OUT" 2>&1; test "$VM_HOST" = 10.172.0.9; test "$SSH_USER" = ubuntu )
 echo 'PASS: the SSH user defaults to ubuntu'
+
+# gcloud without a project: no list, no guessed project.
+printf '#!/usr/bin/env bash\ncase "$*" in *"get-value project"*) echo "(unset)" ;; *) echo "SHOULD-NOT-LIST" ;; esac\n' > "$FAKE_ROOT/bin/gcloud"
+( init; prov_ssh_ask_host VM_HOST "Host address" < <(printf '10.0.0.8\n') > "$OUT" 2>&1; test "$VM_HOST" = 10.0.0.8 )
+if plain | grep -q 'Running VMs\|instana-support-test-account'; then echo "FAIL: list without a gcloud project" >&2; exit 1; fi
+echo 'PASS: gcloud without a project shows no list'
+

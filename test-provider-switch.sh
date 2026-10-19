@@ -4,6 +4,7 @@ set -euo pipefail
 # with another provider is requested: in a terminal the operator may continue
 # the recorded one or set its files aside (renamed, nothing deleted); --resume
 # and runs without a terminal keep the hard stop.
+command -v python3 >/dev/null || { echo "SKIP: python3 not installed (needed for a real terminal)"; exit 0; }
 SRC="$(cd "$(dirname "$0")" && pwd)"
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
@@ -13,12 +14,12 @@ GCP_CONFIG='{"schema_version":1,"parameters":{"TOPOLOGY":"single-node","GCP_PROJ
 # in_terminal DIR INPUT [RESUME] — resolve_provider for INSTANA_PROVIDER=ssh with
 # a real terminal (python pty); prints the transcript, then ACTIVE=/RESUME=.
 in_terminal() {
-  local dir="$1" input="$2" resume="${3:-false}"
-  python3 - "$dir" "$input" "$resume" <<'PY'
-import os, pty, sys, time
-d, data, resume = sys.argv[1], sys.argv[2], sys.argv[3]
-script = ('cd "%s"; set --; source ./install.sh; RESUME=%s; INSTANA_PROVIDER=ssh; '
-          'if resolve_provider; then echo "ACTIVE=$ACTIVE_PROVIDER RESUME=$RESUME"; else echo REFUSED; fi') % (d, resume)
+  local dir="$1" input="$2" resume="${3:-false}" pre="${4:-:}"
+  python3 - "$dir" "$input" "$resume" "$pre" <<'PY'
+import os, pty, signal, sys, time
+d, data, resume, pre = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+script = ('cd "%s"; set --; source ./install.sh; %s; RESUME=%s; INSTANA_PROVIDER=ssh; '
+          'if resolve_provider; then echo "ACTIVE=$ACTIVE_PROVIDER RESUME=$RESUME"; else echo REFUSED; fi') % (d, pre, resume)
 pid, fd = pty.fork()
 if pid == 0:
     os.execvp("bash", ["bash", "-c", script])
@@ -33,6 +34,9 @@ while time.time() < deadline:
     out += chunk
     if not sent and b"What do you want to do?" in out:
         time.sleep(0.2); os.write(fd, data.encode()); sent = True
+else:
+    # Never hang the suite: a run still waiting for input after the deadline is a failure.
+    os.kill(pid, signal.SIGKILL); out += b"\nTIMEOUT\n"
 os.waitpid(pid, 0)
 sys.stdout.write(out.decode(errors="replace"))
 PY
@@ -79,3 +83,44 @@ out=$(cd "$d" && bash -c 'set --; source ./install.sh; INSTANA_PROVIDER=ssh reso
 [[ "$out" == *"the provider of a recorded deployment never changes"* && "$out" == *"offers to set the recorded files aside"* && "$out" != *ACCEPTED* ]] || { echo "FAIL: no terminal: $out" >&2; exit 1; }
 test -f "$d/.install-state.json"
 echo 'PASS: without a terminal: hard stop, explanation names the way out, nothing moved'
+
+# Two set-asides in the same second never overwrite an earlier copy.
+d=$(case_dir same_second)
+echo old-state > "$d/.install-state.json.20260101-000000.old"; echo old-config > "$d/.install-config.json.20260101-000000.old"
+out=$(in_terminal "$d" $'2\n' false 'date() { echo 20260101-000000; }' | plain)
+[[ "$out" == *"ACTIVE=ssh"* ]] || { echo "FAIL: same-second set-aside: $out" >&2; exit 1; }
+test "$(cat "$d/.install-state.json.20260101-000000.old")" = old-state
+test "$(cat "$d/.install-config.json.20260101-000000.old")" = old-config
+cmp <(printf '%s\n' "$GCP_STATE") "$d/.install-state.json.20260101-000000-2.old"
+test -f "$d/.install-config.json.20260101-000000-2.old"
+echo 'PASS: a set-aside copy from the same second is never overwritten'
+
+# A failing second move reports exactly what was already moved.
+d=$(case_dir half_moved)
+out=$(in_terminal "$d" $'2\n' false 'mv() { [[ "$*" == *install-config* ]] && return 1; command mv "$@"; }' | plain)
+[[ "$out" == *"Could not set .install-config.json aside"* && "$out" == *"Already moved in this step: .install-state.json → .install-state.json."* && "$out" == *".install-config.json is still in place; nothing was deleted."* ]] ||
+  { echo "FAIL: partial set-aside report: $out" >&2; exit 1; }
+[[ "$out" != *ACTIVE=* ]]
+test -f "$d/.install-config.json"
+echo 'PASS: a failed set-aside says exactly what was moved and what is still in place'
+
+# Dry-run: "continue" (needs --resume) is not offered, and the reason is shown.
+d=$(case_dir dry)
+out=$(in_terminal "$d" $'2\n' false 'DRY_RUN=true' | plain)
+[[ "$out" == *"not offered in a dry-run"* && "$out" != *"continue the recorded deployment"* ]] || { echo "FAIL: dry-run offer: $out" >&2; exit 1; }
+echo 'PASS: dry-run does not offer to continue the recorded deployment'
+
+# --config FILE + "continue": refused (the file cannot change a recorded deployment).
+d=$(case_dir config_continue)
+out=$(in_terminal "$d" $'1\n' false 'INPUT_CONFIG=/tmp/x.json INPUT_LABEL=x.json' | plain)
+[[ "$out" == *"can only be continued with the parameters it was started with; the values from x.json cannot change it"* && "$out" != *ACTIVE=* ]] ||
+  { echo "FAIL: --config + continue: $out" >&2; exit 1; }
+test -f "$d/.install-state.json"
+echo 'PASS: --config together with "continue" is refused with an explanation'
+
+# --export-config writes the recorded provider, never INSTANA_PROVIDER.
+d=$(case_dir export)
+(cd "$d" && INSTANA_PROVIDER=ssh bash ./install.sh --export-config "$d/out.json" < /dev/null > "$d/export.log" 2>&1) || { cat "$d/export.log" >&2; exit 1; }
+test "$(jq -r .parameters.PROVIDER "$d/out.json")" = gcp
+echo 'PASS: --export-config keeps the recorded provider (gcp) despite INSTANA_PROVIDER=ssh'
+

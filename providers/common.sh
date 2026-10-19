@@ -132,12 +132,14 @@ resolve_provider() {
 }
 
 # provider_word_early — before resolve_provider, phase 1 texts and the dry-run
-# notice use the provider that is requested (INSTANA_PROVIDER) or recorded in
-# this folder; for GCP nothing changes. resolve_provider sets the real one.
+# notice use the provider recorded in this folder, otherwise the requested one
+# (INSTANA_PROVIDER); for GCP nothing changes. resolve_provider sets the real one.
 provider_word_early() {
-  local p="${INSTANA_PROVIDER:-}"
-  [[ -n "$p" ]] || { [[ -f "${STATE_FILE:-}" ]] && p=$(jq -r '.provider // empty' "$STATE_FILE" 2>/dev/null || true); }
+  # A recorded deployment wins over a request, as in resolve_provider.
+  local p=""
+  [[ -f "${STATE_FILE:-}" ]] && p=$(jq -r '.provider // (if .gcp_project then "gcp" else empty end)' "$STATE_FILE" 2>/dev/null || true)
   [[ -n "$p" ]] || { [[ -f "${CONFIG_FILE:-}" ]] && p=$(jq -r '.parameters.PROVIDER // empty' "$CONFIG_FILE" 2>/dev/null || true); }
+  [[ -n "$p" ]] || p="${INSTANA_PROVIDER:-}"
   [[ -n "$p" && "$p" != gcp && " $PROVIDERS_SUPPORTED " == *" $p "* ]] || return 0
   ACTIVE_PROVIDER="$p"
   ! declare -F progress_apply_provider_titles >/dev/null || progress_apply_provider_titles

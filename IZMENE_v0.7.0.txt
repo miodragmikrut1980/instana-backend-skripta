@@ -190,3 +190,9 @@ creates, deletes, or reboots a host without confirmation.
   plus "enter another address". A saved address is the default instead;
   without gcloud, or if listing fails, the address is typed (never a stop).
   The SSH user defaults to "ubuntu" (Ubuntu cloud images).
+- Set-aside never overwrites an earlier copy from the same second, and if
+  the second file cannot be moved the stop says exactly what was already
+  moved. A dry-run does not offer "continue" (it needs --resume); "continue"
+  together with --config is refused. Before phase 1 the recorded provider
+  wins over INSTANA_PROVIDER, and --export-config always writes the
+  recorded provider. The host list is not shown when gcloud has no project.
