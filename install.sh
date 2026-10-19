@@ -617,6 +617,8 @@ ask_choice() {
   def="${!var:-}"
   [[ -n "$def" || "$CONFIG_LOADED" != true || ! -f "${CONFIG_FILE:-}" ]] ||
     def=$(jq -r --arg k "$var" '.parameters[$k] // empty' "$CONFIG_FILE" 2>/dev/null || true)
+  # The usual answer for a first-time operator (ASK_DEFAULT=... ask_choice ...).
+  [[ -n "$def" ]] || def="${ASK_DEFAULT:-}"
   NAV_ASKED=1
   v=$(PROMPT_CHOICE_DEFAULT="$def" NAV_CHOICE_BACK="${NAV_ON:-0}" prompt_choice "$text" "$@") || rc=$?
   case "$rc" in
@@ -712,14 +714,14 @@ wiz_topology() {
     "single-node: everything on one VM (labs, demos, small setups)." \
     "three-node: Instana spread over three VMs, IBM 'production' type, needs 3x n2-standard-16.")
   hint "${topo_hint[@]}"
-  ask_choice TOPOLOGY "Select deployment topology:" "single-node" "three-node"
+  ASK_DEFAULT=single-node ask_choice TOPOLOGY "Select deployment topology:" "single-node" "three-node"
 }
 
 wiz_mode() {
   use_imported INSTALL_MODE && return 0
   hint "online: the Instana VM downloads stanctl and images from the Instana repository itself (simplest)." \
        "air-gapped: everything comes from one instana-airgapped.tar.gz package; you will be guided to obtain or build it."
-  ask_choice INSTALL_MODE "Select installation connectivity mode:" "online" "air-gapped"
+  ASK_DEFAULT=online ask_choice INSTALL_MODE "Select installation connectivity mode:" "online" "air-gapped"
 }
 
 wiz_type() {
@@ -730,20 +732,28 @@ wiz_type() {
   fi
   use_imported INSTALL_TYPE && return 0
   hint "demo: smaller disks/resources for evaluation. production: IBM-sized disks (larger, more expensive)."
-  ask_choice INSTALL_TYPE "Select installation type:" "demo" "production"
+  ASK_DEFAULT=demo ask_choice INSTALL_TYPE "Select installation type:" "demo" "production"
 }
 
 # Ubuntu version — from docs: Ubuntu 24.04 and 22.04 only
+# Not asked: the IBM-supported default (or the saved value) is used and shown
+# in the plan; E at the plan changes it.
 wiz_ubuntu() {
   provider_uses_param UBUNTU_VERSION || return 0
   use_imported UBUNTU_VERSION && return 0
-  hint "Operating system image for the new VM(s). 24.04 is the current IBM-supported default."
-  ask_choice UBUNTU_VERSION "Select Ubuntu version (supported: 24.04, 22.04):" "ubuntu-2404-lts-amd64" "ubuntu-2204-lts"
+  if [[ "${EDIT_KEY:-}" == UBUNTU_VERSION ]]; then
+    hint "Operating system image for the new VM(s). 24.04 is the current IBM-supported default."
+    ask_choice UBUNTU_VERSION "Select Ubuntu version (supported: 24.04, 22.04):" "ubuntu-2404-lts-amd64" "ubuntu-2204-lts"
+    return 0
+  fi
+  [[ -n "${UBUNTU_VERSION:-}" ]] || UBUNTU_VERSION=$(gcp_saved UBUNTU_VERSION 2>/dev/null || true)
+  [[ -n "${UBUNTU_VERSION:-}" ]] || UBUNTU_VERSION=ubuntu-2404-lts-amd64
 }
 
 # Provider location questions (GCP project/zone/network, or the existing hosts
 # and the SSH login). Asked as one block; "<" is not offered inside it yet.
 wiz_location() {
+  if [[ "$(provider_name)" == gcp ]]; then provider_collect_location_params; return 0; fi
   [[ -z "${WIZ_DONE[location]:-}" || "${WIZ_REVISIT:-}" == wiz_location ]] || return 0
   local NAV_ON=0
   provider_collect_location_params
@@ -752,6 +762,8 @@ wiz_location() {
 
 wiz_cidr() {
   provider_uses_param SSH_SOURCE_CIDR || return 0
+  # Typed answers: part of the location block ("Use detected").
+  [[ "$PARAMS_SOURCE" == import ]] || return 0
   use_imported SSH_SOURCE_CIDR && return 0
   hint "Which public IP address may open SSH to the VM(s). Default = this machine's own public IP with /32 (only this machine)." \
        "0.0.0.0/0 would allow the whole internet; avoid it."
@@ -766,7 +778,7 @@ wiz_vm_name() {
     "Name of the new VM in GCP; the four data disks will be named <vm>-analytics/-metrics/-objects/-data." \
     "Lowercase letters, digits and hyphens. Must not already exist in the zone.")
   hint "${name_hint[@]}"
-  prompt_required "VM_NAME" "VM name" "$(provider_text_or default_vm_name instana-backend)" validate_vm_name VM_NAME
+  prompt_required "VM_NAME" "VM name" "$(provider_text_or default_vm_name instana-backend)" validate_new_vm_name VM_NAME
 }
 
 # wiz_node_name N LABEL — one of the three node names.
@@ -873,7 +885,7 @@ wiz_tls() {
   use_imported TLS_MODE && return 0
   hint "HTTPS certificate for the UI. Self-signed is generated automatically (browser will warn; fine for a lab)." \
        "Custom = you provide a certificate and key file for the domain (needed for production)."
-  ask_choice TLS_MODE "TLS certificate:" "auto-generate (self-signed)" "provide custom certificate files"
+  ASK_DEFAULT="auto-generate (self-signed)" ask_choice TLS_MODE "TLS certificate:" "auto-generate (self-signed)" "provide custom certificate files"
 }
 wiz_tls_crt() {
   [[ "$TLS_MODE" == "provide custom certificate files" ]] || return 0
@@ -1301,6 +1313,15 @@ show_hw_requirements_and_pick_machine_type() {
       SIZE_CHOICE=minimum
     elif use_imported SIZE; then
       SIZE_CHOICE="$SIZE"
+    elif [[ "${EDIT_KEY:-}" != SIZE && "${EDIT_KEY:-}" != VM_CPUS && "${EDIT_KEY:-}" != VM_RAM_GB ]]; then
+      # Not asked: the documented minimum for the type (or the saved size);
+      # shown in the plan, E at the plan changes it.
+      SIZE_CHOICE="${SIZE:-minimum}"
+      if [[ "${CONFIG_LOADED:-false}" == true && -z "${SIZE:-}" ]]; then
+        local sc sr; sc=$(gcp_saved VM_CPUS 2>/dev/null || true); sr=$(gcp_saved VM_RAM_GB 2>/dev/null || true)
+        if [[ -n "$sc" && -n "$sr" && ( "$sc" != "$min_cpu" || "$sr" != "$min_ram" ) ]]; then SIZE_CHOICE=custom; VM_CPUS="$sc"; VM_RAM_GB="$sr"; fi
+      fi
+      [[ "$SIZE_CHOICE" != custom || -z "${VM_CPUS:-}" ]] || { SIZE=custom; MACHINE_TYPE=$(provider_machine_type_for "$VM_CPUS" "$VM_RAM_GB"); return 0; }
     else
       show_single_node_requirements "$INSTALL_TYPE"
       echo -e "  Official minimum: ${BOLD}${min_cpu} vCPUs, ${min_ram} GB RAM${RESET}"
@@ -1383,7 +1404,7 @@ show_plan() {
     echo "  $(provider_text_or start_line "Enter Y and press Enter to START creating GCP resources and installing Instana.")"
   fi
   if [[ "${PLAN_EDITABLE:-false}" == true ]]; then
-    echo "  Enter E to change one of the values above first."
+    echo "  Enter E to change one of the values above first$(provider_uses_param SIZE && echo ' (also the Ubuntu version and the machine size)')."
     echo "  Enter S to save these parameters to a JSON file (without keys) for a later run, and stop."
   fi
   echo "  Enter N, or press Enter without typing anything, to cancel without starting."
@@ -2334,6 +2355,18 @@ main_single_node() {
 validate_vm_name() {
   [[ "$1" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
     { err "${2:-VM name} '${1}' is invalid: use lowercase letters, digits and hyphens, start with a letter, max 63 characters, no dots."; return 1; }
+}
+
+# validate_new_vm_name VALUE [KEY] — as validate_vm_name; on Google Cloud the
+# name must also be free in the chosen zone (read-only lookup; a failing
+# lookup does not block, phase 3 checks again).
+validate_new_vm_name() {
+  validate_vm_name "$1" "${2:-VM name}" || return 1
+  [[ "$(provider_name)" == gcp && -n "${GCP_ZONE:-}" && -n "${GCP_PROJECT:-}" ]] || return 0
+  if timeout 20 gcloud compute instances describe "$1" --zone="$GCP_ZONE" --project="$GCP_PROJECT" --format='value(name)' >/dev/null 2>&1; then
+    err "A VM named '${1}' already exists in ${GCP_ZONE} (project ${GCP_PROJECT}); choose another name (e.g. ${1}-2), or remove the old lab first with ./install.sh → clean up."
+    return 1
+  fi
 }
 
 # validate_node_name VALUE KEY — as validate_vm_name, and different from the

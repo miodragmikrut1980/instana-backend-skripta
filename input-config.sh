@@ -560,6 +560,10 @@ input_evaluate() {
       INPUT_ROWS+=("ok|${key}|not in the file; the host's own name is used")
       continue
     fi
+    if [[ -z "$value" && ( "$key" == UBUNTU_VERSION || "$key" == SIZE ) ]]; then
+      INPUT_ROWS+=("ok|${key}|not in the file; default $([[ "$key" == SIZE ]] && echo minimum || echo ubuntu-2404-lts-amd64) (E at the plan changes it)")
+      continue
+    fi
     if [[ -z "$value" ]]; then
       if [[ "$key" == STANCTL_VERSION || "$key" == BACKEND_VERSION ]]; then
         text="not in the file; chosen from the live list"

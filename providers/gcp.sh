@@ -193,9 +193,119 @@ prov_gcp_validate_image() {
     --project=ubuntu-os-cloud >/dev/null || die "Ubuntu image family unavailable."
 }
 
-# Project, region, zone, VPC network and subnet questions of collect_parameters.
-# A usable value from an input file (use_imported, input-config.sh) skips its question.
+# Project, zone (region follows), network, subnet and the SSH source CIDR.
+# Typed answers: one "Use detected" block, confirmed with Enter or changed one
+# by one. Values from a file (or the plan's E): only what is missing or being
+# changed is asked, one question each.
 prov_gcp_collect_location_params() {
+  if [[ "$PARAMS_SOURCE" == import ]]; then local NAV_ON=0; gcp_location_per_key; else gcp_location_block; fi
+}
+
+# This VM's own GCP facts from the metadata server (empty outside Google Cloud).
+gcp_local_meta() {
+  curl -fsS --max-time 2 -H 'Metadata-Flavor: Google' "http://metadata.google.internal/computeMetadata/v1/$1" 2>/dev/null || true
+}
+
+# Network and subnet of this control machine, when the deployment goes into
+# the same project and region (otherwise "default"): "network subnet".
+gcp_detect_network() {
+  local project="$1" region="$2" my_project my_zone net subnet
+  my_project=$(gcp_local_meta project/project-id)
+  my_zone=$(detect_local_gce_zone)
+  [[ -n "$my_zone" && "$my_project" == "$project" && "${my_zone%-*}" == "$region" ]] || return 0
+  net=$(gcp_local_meta instance/network-interfaces/0/network); net="${net##*/}"
+  subnet=$(timeout 20 gcloud compute instances describe "$(hostname -s 2>/dev/null)" --zone="$my_zone" --project="$project" \
+    --format='value(networkInterfaces[0].subnetwork.basename())' 2>/dev/null || true)
+  [[ "$net" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ && "$subnet" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ ]] && echo "$net $subnet"
+  return 0
+}
+
+# Saved value (editing saved parameters) for KEY, or empty.
+gcp_saved() {
+  [[ "${CONFIG_LOADED:-false}" == true && -f "${CONFIG_FILE:-}" ]] || return 0
+  jq -r --arg k "$1" '.parameters[$k] // empty' "$CONFIG_FILE" 2>/dev/null || true
+}
+
+gcp_location_block() {
+  local local_zone src_project src_zone src_net src_cidr answer which detected
+  local_zone=$(detect_local_gce_zone)
+  if [[ -z "${GCP_PROJECT:-}" ]]; then
+    GCP_PROJECT=$(gcp_saved GCP_PROJECT); src_project="saved"
+    [[ -n "$GCP_PROJECT" ]] || { GCP_PROJECT=$(default_gcp_project); src_project="gcloud config, else the lab default"; }
+  else src_project="your answer"; fi
+  if [[ -z "${GCP_ZONE:-}" ]]; then
+    GCP_ZONE=$(gcp_saved GCP_ZONE); src_zone="saved"
+    if [[ -z "$GCP_ZONE" && -n "$local_zone" ]]; then GCP_ZONE="$local_zone"; src_zone="this machine's zone"; fi
+    [[ -n "$GCP_ZONE" ]] || { GCP_ZONE=us-central1-a; src_zone="default"; }
+  else src_zone="your answer"; fi
+  GCP_REGION="${GCP_ZONE%-*}"
+  if [[ -z "${GCP_NETWORK:-}" || -z "${GCP_SUBNET:-}" ]]; then
+    GCP_NETWORK=$(gcp_saved GCP_NETWORK); GCP_SUBNET=$(gcp_saved GCP_SUBNET); src_net="saved"
+    if [[ -z "$GCP_NETWORK" || -z "$GCP_SUBNET" ]]; then
+      detected=$(gcp_detect_network "$GCP_PROJECT" "$GCP_REGION")
+      if [[ -n "$detected" ]]; then read -r GCP_NETWORK GCP_SUBNET <<< "$detected"; src_net="this machine's network"
+      else GCP_NETWORK=default; GCP_SUBNET=default; src_net="every project has 'default'"; fi
+    fi
+  else src_net="your answer"; fi
+  if [[ -z "${SSH_SOURCE_CIDR:-}" ]]; then
+    SSH_SOURCE_CIDR=$(gcp_saved SSH_SOURCE_CIDR); src_cidr="saved"
+    [[ -n "$SSH_SOURCE_CIDR" ]] || { SSH_SOURCE_CIDR=$(detect_public_cidr); src_cidr="this machine's public IP"; }
+  else src_cidr="your answer"; fi
+  NAV_ASKED=1
+  while true; do
+    echo "" >&2
+    hint "Where the VM(s) are created and who may open SSH to them. Detected from this machine and gcloud;" \
+         "Enter accepts all four, c changes one of them."
+    {
+      echo "  Use detected:"
+      printf '    %-9s %-40s (%s)\n' "Project" "$GCP_PROJECT" "$src_project"
+      printf '    %-9s %-40s (%s)\n' "Zone" "${GCP_ZONE}  [region ${GCP_REGION}]" "$src_zone"
+      printf '    %-9s %-40s (%s)\n' "Network" "${GCP_NETWORK} / subnet ${GCP_SUBNET}" "$src_net"
+      printf '    %-9s %-40s (%s)\n' "SSH from" "$SSH_SOURCE_CIDR" "$src_cidr"
+    } >&2
+    if [[ -n "$local_zone" && "${local_zone%-*}" != "$GCP_REGION" && "${INSTALL_MODE:-}" == air-gapped ]]; then
+      warn "Air-gapped: the package (tens of GB) is copied from ${local_zone%-*} to ${GCP_REGION}; a cross-region copy is several times slower."
+    fi
+    read -rp "$(echo -e "${CYAN}?${RESET} Enter = use these, c = change one, < = back: ")" answer ||
+      die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    case "$answer" in
+      "<") NAV_BACK=1; return 0 ;;
+      "")
+        prov_gcp_validate_param GCP_PROJECT "$GCP_PROJECT" && prov_gcp_validate_param GCP_ZONE "$GCP_ZONE" &&
+          prov_gcp_validate_param GCP_NETWORK "$GCP_NETWORK" && prov_gcp_validate_param GCP_SUBNET "$GCP_SUBNET" &&
+          validate_cidr "$SSH_SOURCE_CIDR" && return 0
+        warn "One of the values above cannot be used (reason above); change it with c." ;;
+      c|C)
+        which=$(NAV_CHOICE_BACK=1 prompt_choice "Which value do you want to change?" "Project" "Zone" "Network and subnet" "SSH from (CIDR)") || which=""
+        NAV_BACK=0
+        case "$which" in
+          Project)
+            hint "The Google Cloud project that will own and pay for the VM(s): its ID (lowercase), not the display name;" \
+                 "'gcloud projects list' shows the projects your account can use."
+            prompt_required GCP_PROJECT "GCP Project ID" "$GCP_PROJECT" validate_gcp_project_id
+            (( NAV_BACK )) || src_project="your answer" ;;
+          Zone)
+            hint "Zone = a data center, e.g. europe-west6-b (Zurich) or us-central1-a (Iowa); the region follows from it."
+            prompt_required GCP_ZONE "GCP Zone" "$GCP_ZONE" validate_gcp_zone
+            (( NAV_BACK )) || { src_zone="your answer"; GCP_REGION="${GCP_ZONE%-*}"; }
+            ;;
+          "Network and subnet")
+            hint "VPC network and subnet the VM(s) attach to; the subnet must be in region ${GCP_REGION}."
+            prompt_required GCP_NETWORK "VPC Network name" "$GCP_NETWORK" validate_gcp_network_name
+            (( NAV_BACK )) || prompt_required GCP_SUBNET "Subnet name" "$GCP_SUBNET" validate_gcp_network_name
+            (( NAV_BACK )) || src_net="your answer" ;;
+          "SSH from (CIDR)")
+            hint "Which public IP address may open SSH to the VM(s), e.g. 203.0.113.10/32; 0.0.0.0/0 would allow the whole internet."
+            prompt_required SSH_SOURCE_CIDR "CIDR allowed to SSH to the VM(s)" "$SSH_SOURCE_CIDR" validate_cidr
+            (( NAV_BACK )) || src_cidr="your answer" ;;
+        esac
+        NAV_BACK=0 ;;
+      *) echo "  Please press Enter to use these values, c to change one, or < to go back." >&2 ;;
+    esac
+  done
+}
+
+gcp_location_per_key() {
   use_imported GCP_PROJECT || {
     hint "The Google Cloud project that will own and pay for the VM(s). It is the project ID (lowercase, e.g. instana-support-test-account)," \
          "not the display name. Enter accepts the default; 'gcloud projects list' shows the projects your account can use."
@@ -237,6 +347,7 @@ prov_gcp_collect_location_params() {
 
 # prompt_required validators (VALUE [LABEL]) for the location answers.
 validate_gcp_region() { prov_gcp_validate_param GCP_REGION "$1"; }
+validate_gcp_zone() { prov_gcp_validate_param GCP_ZONE "$1"; }
 validate_gcp_network_name() { prov_gcp_validate_param GCP_NETWORK "$1"; }
 validate_gcp_zone_in_region() {
   prov_gcp_validate_param GCP_ZONE "$1" || return 1
