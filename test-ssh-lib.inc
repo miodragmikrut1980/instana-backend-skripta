@@ -6,6 +6,7 @@
 #   <host>.zero   answer to the pre-format zero check (default ZEROCHECK:0:0)
 #   <host>.zerorc exit code of the pre-format zero check (the read fails)
 #   <host>.deny-user-<user>, deny-key-<key file name>  login refused (exit 255)
+#   locked-<key file name>  that key has a passphrase (ssh-keygen -y fails)
 # Every call is appended to $SSH_LOG (one line, arguments joined by spaces).
 ssh_fakes_setup() {
   FAKE_ROOT="$(mktemp -d)"
@@ -46,7 +47,9 @@ FAKE
 #!/usr/bin/env bash
 echo "ssh-keygen $*" >> "$SSH_LOG"
 case "$*" in
-  *"-y -P"*) [[ "${FAKE_KEY_LOCKED:-no}" == yes ]] && exit 1; exit 0 ;;
+  *"-y -P"*)
+    kf=""; prev=""; for a in "$@"; do [[ "$prev" == "-f" ]] && kf="${a##*/}"; prev="$a"; done
+    [[ "${FAKE_KEY_LOCKED:-no}" == yes || -f "$SCEN/locked-$kf" ]] && exit 1; exit 0 ;;
   *-lf*) echo "256 SHA256:fakefingerprint comment (ED25519)" ;;
   *"-l -F"*)
     name="${3#[}"; name="${name%%]*}"

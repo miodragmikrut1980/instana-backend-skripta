@@ -79,9 +79,10 @@ echo "PASS: a failed host check is explained at the question, with the fix"
 # 5. Cancel from the retry menu stops with a plain message, nothing changed.
 echo 255 > "$SCEN/10.0.0.8.rc"; echo "ssh: connect to host 10.0.0.8 port 22: Connection refused" > "$SCEN/10.0.0.8.err"
 run cancel $'1\n10.0.0.8\n5\n'
-[[ "$RC" != 0 ]] || fail "cancel must stop"
+[[ "$RC" == 0 ]] || fail "an operator cancel must exit 0 (like N at the plan), got $RC"
 has "nothing listens on port 22 of 10.0.0.8 (Connection refused)"
-has "Installation cancelled by the operator. Nothing was changed."
+has "Installation cancelled by the operator. Nothing was created or changed."
+hasnt "Installation Plan"
 echo "PASS: cancel from the retry menu stops cleanly"
 
 # 6. Install type: suggested from CPU/RAM/disks with the reason; production
@@ -184,11 +185,13 @@ echo "PASS: < at the disk mapping goes back"
 
 # 15. No complete mapping possible: explained with the fix, no stop until cancel.
 NO_DATA_DISKS=1 host_facts 10.0.0.7
-run disk_none $'1\n10.0.0.7\n\n1\n1\n5\n'
-[[ "$RC" != 0 ]] || fail "cancel must stop"
+run disk_none $'1\n10.0.0.7\n\n1\n1\n3\n'
+[[ "$RC" == 0 ]] || fail "an operator cancel must exit 0, got $RC"
 has "no unused disk of at least 500 GB is left for the Instana analytics directory"
 has "Attach an empty disk of that size"
 has "? What now?"
+has "check again (after attaching or freeing a disk)"
+hasnt "Installation Plan"
 echo "PASS: a host without suitable disks is explained, with retry options"
 
 # 16. The plan lists the host changes and the network connections; for a
@@ -256,5 +259,67 @@ if ( cd "$CASE"; set --; source ./install.sh; INSTANA_PROVIDER=ssh resolve_provi
   prov_ssh_confirm_host_changes < /dev/null ) > "$CASE/notty.txt" 2>&1; then fail "without a terminal the changes must not be approved"; fi
 grep -q "must be confirmed in a terminal" "$CASE/notty.txt" || fail "no-terminal message"
 echo "PASS: one Y at the plan approves the host changes (terminal only), recorded for --resume"
+
+# 18. At most 4 login tries (fail2ban: 5 failures in 10 min), each with
+#     BatchMode, IdentitiesOnly and exactly one key.
+MANY="$FAKE_ROOT/many"; mkdir -p "$MANY"
+for k in k1 k2 k3 k4 k5 k6; do cp "$FAKE_KEY" "$MANY/$k"; touch "$SCEN/deny-key-$k"; done
+: > "$SSH_LOG"
+INSTANA_SSH_DIR="$MANY" run tries $'1\n10.0.0.5\n5\n'
+tries=$(grep -c -- "-- 10.0.0.5 true" "$SSH_LOG" || true)
+[[ "$tries" == 4 ]] || fail "expected 4 login tries, got $tries"
+while IFS= read -r line; do
+  [[ "$line" == *"-o IdentitiesOnly=yes -o BatchMode=yes"* ]] || fail "probe without BatchMode/IdentitiesOnly: $line"
+  [[ "$(grep -o -- ' -i ' <<< "$line" | wc -l | tr -d ' ')" == 1 ]] || fail "probe must pass exactly one key: $line"
+done < <(grep -- "-- 10.0.0.5 true" "$SSH_LOG")
+for k in k1 k2 k3 k4 k5 k6; do rm -f "$SCEN/deny-key-$k"; done
+echo "PASS: at most 4 tries, each non-interactive with exactly one key"
+
+# 19. A host that does not answer is tried once, not with every key.
+: > "$SSH_LOG"
+run timeout_once $'1\n10.0.0.9\n5\n'
+[[ "$(grep -c -- "-- 10.0.0.9 true" "$SSH_LOG" || true)" == 1 ]] || fail "an unreachable host must be tried once"
+echo "PASS: no further tries when the host itself does not answer"
+
+# 20. A passphrase key that is not in ssh-agent is never passed to ssh.
+LOCK="$FAKE_ROOT/lock"; mkdir -p "$LOCK"; cp "$FAKE_KEY" "$LOCK/google_compute_engine"; cp "$FAKE_KEY" "$LOCK/id_ed25519"
+touch "$SCEN/locked-google_compute_engine"
+: > "$SSH_LOG"
+INSTANA_SSH_DIR="$LOCK" run locked $'1\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
+done_ok
+if grep -q -- "-i $LOCK/google_compute_engine" "$SSH_LOG"; then fail "a locked key without ssh-agent was passed to ssh"; fi
+has "google_compute_engine: passphrase-protected and not loaded in ssh-agent — skipped"
+rm -f "$SCEN/locked-google_compute_engine"
+echo "PASS: a passphrase key without ssh-agent is skipped, never tried"
+
+# 21. A changed login reads the host facts again (no reuse of facts read with
+#     the earlier login).
+: > "$SSH_LOG"
+run login_same $'1\n10.0.0.5\n\n<\n\n1\n1\n\n'"$TAIL"
+done_ok
+base=$(grep -o FACTS_END=1 "$SSH_LOG" | wc -l | tr -d ' ')
+: > "$SSH_LOG"
+run login_change $'1\n10.0.0.5\n\n<\nc\nadmin\n\n\n\n1\n1\n\n'"$TAIL"
+done_ok
+[[ "$(grep -o FACTS_END=1 "$SSH_LOG" | wc -l | tr -d ' ')" == $(( base + 1 )) ]] || fail "facts must be read again after the login changed (and only then)"
+# ... already in the questions (the checks shown are those of the new login).
+[[ "$(count 'Checking 10.0.0.5 (read-only)...')" == 2 ]] || fail "the host checks must run again for the changed login"
+has "SSH login:                     admin on port 22"
+echo "PASS: a changed login reads the host facts again"
+
+# 22. Back to the install type after the disks were mapped: the suggestion
+#     still sees all unused disks (production stays possible).
+run type_after_map $'1\n10.0.0.5\n\n1\n1\n\n<\n<\n2\n\n'"$TAIL"
+done_ok
+[[ "$(count 'Suggested from the checks above: production.')" == 2 ]] || fail "the suggestion must not change after the disk mapping"
+hasnt "This host is too small for production"
+has "Installation type:             production"
+echo "PASS: going back to the type after the disk mapping keeps the suggestion"
+
+# 23. A port given with an earlier address does not stick to new hosts.
+run port_reset $'1\n10.0.0.5:2222\n<\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
+done_ok
+has "SSH login:                     ubuntu on port 22,"
+echo "PASS: host:port does not stick after the hosts are picked again"
 
 echo "All existing-host login flow tests passed."

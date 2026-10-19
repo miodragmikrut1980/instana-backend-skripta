@@ -247,4 +247,13 @@ has "Could not check now whether a VM named 'noperm' exists in us-central1-a: ER
 hasnt "Could not check now whether a VM named 'instana-backend'"
 echo "PASS: a failing name lookup is reported, not treated as a free name"
 
+# 21. The 0.0.0.0/0 placeholder stays refused after "<" and forward again.
+export IPIFY_FAIL=1
+run cidr_back $'1\n1\n1\n1\n\n<\n\n\nc\n4\n198.51.100.7/32\n\ninstana-backend\n'"$TAIL"
+unset IPIFY_FAIL
+done_ok
+[[ "$(count "this machine's public IP could not be detected")" == 2 ]] || fail "Enter must be refused again after going back"
+has "SSH source CIDR:               198.51.100.7/32"
+echo "PASS: the unsafe placeholder is never relabelled or accepted after going back"
+
 echo "All back-navigation tests passed."

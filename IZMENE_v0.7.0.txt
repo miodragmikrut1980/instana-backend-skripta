@@ -373,3 +373,29 @@ and every answer was lost.
 - Tests: test-ssh-login-flow.sh cases 16-17 (plan network section with a
   firewall lookup; approval in a terminal, recorded for --resume, refused
   without a terminal).
+
+2026-10-19 — UX v2: review fixes (CIDR placeholder, type suggestion, login tries, cancel)
+- GCP block: the source of each value (detected, saved, your answer, or the
+  "detection failed" placeholder) is kept when going back and forward, so a
+  0.0.0.0/0 placeholder is never relabelled "your answer" and accepted with
+  Enter; only an explicit change of "SSH from" replaces it. A saved network
+  is worked out again after another project or zone (only a typed one stays).
+- Existing hosts: the install-type suggestion looks at all unused disks, also
+  after the disk mapping (going back to the type no longer refuses production
+  on a host that can take it).
+- Login tries: at most 4 (fail2ban's default is 5 failures in 10 minutes);
+  "check again" and "change the login" try only that one login again.
+- Disk block: when no mapping is possible, the menu is check again / choose
+  other hosts / cancel; "check again" reads the disks again without a hard
+  stop on a connection problem.
+- An SSH port given as host:port no longer sticks when the hosts are picked
+  again without one.
+- Cancelling (confirmed cancel, cancel in a retry menu) is not an error any
+  more: exit code 0 like N at the plan, with "cancelled by the operator.
+  Nothing was created or changed." (before: exit 1).
+- Tests: test-ssh-login-flow.sh 18-23 (4 tries, BatchMode/IdentitiesOnly and
+  one key per try, one try for a host that does not answer, locked key never
+  passed, facts read again after a login change, type after the mapping,
+  port reset), test-nav-back.sh 21 (placeholder after "<"), cancel exit 0 in
+  test-input-reask.sh and test-ssh-login-flow.sh; the fake ssh-keygen can lock
+  single keys.

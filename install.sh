@@ -497,13 +497,22 @@ hint() {
 # An empty answer or an invalid value re-asks the question. The installer only
 # stops when the operator explicitly confirms the cancellation, or when stdin
 # is closed (non-interactive run with no more input).
+# operator_cancel — the operator chose to cancel: not an error (exit 0, like
+# answering N at the plan), and it says that nothing was created.
+operator_cancel() {
+  ERROR_REPORTED=true
+  local op="${OPERATION_NAME:-installation}"
+  log "${op^} cancelled by the operator. Nothing was created or changed."
+  exit 0
+}
+
 confirm_cancel() {
   local answer
   local op="${OPERATION_NAME:-installation}"
   read -rp "$(echo -e "${YELLOW}!${RESET} No valid value entered. Cancel the ${op}? [y/N]: ")" answer ||
     die "Input ended before the answers were complete; ${op} cancelled. Nothing was changed."
   case "${answer,,}" in
-    y|yes) die "${op^} cancelled by the operator. Nothing was changed." ;;
+    y|yes) operator_cancel ;;
   esac
   echo "  Continuing; please answer the question again." >&2
 }

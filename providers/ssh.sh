@@ -595,7 +595,9 @@ ssh_set_hosts() {
   done
   if (( ${#hs[@]} == 1 )); then TOPOLOGY=single-node; VM_HOST="${hs[0]}"; NODE0_HOST="" NODE1_HOST="" NODE2_HOST=""
   else TOPOLOGY=three-node; NODE0_HOST="${hs[0]}" NODE1_HOST="${hs[1]}" NODE2_HOST="${hs[2]}"; VM_HOST=""; fi
-  [[ -z "$port" ]] || SSH_PORT="$port"
+  # A port given with an earlier address does not stick to new ones.
+  if [[ -n "$port" ]]; then SSH_PORT="$port"; SSH_PORT_FROM_HOST=1
+  elif [[ "${SSH_PORT_FROM_HOST:-0}" == 1 ]]; then SSH_PORT=22; SSH_PORT_FROM_HOST=0; fi
 }
 
 # Validates a typed host list (1 or 3 distinct addresses, optional :port).
@@ -714,7 +716,8 @@ ssh_try_login() {
 }
 
 # Finds a working login on HOST: keys (agent-loaded and unlocked first) x users,
-# at most 6 tries; stops early when the host itself does not answer.
+# at most 4 tries (below fail2ban's default of 5 failures in 10 minutes);
+# stops early when the host itself does not answer.
 ssh_probe_login() {
   local host="$1" port="${SSH_PORT:-22}" line key agent locked user tries=0 shown
   local -a users=() keys=()
@@ -725,7 +728,7 @@ ssh_probe_login() {
   if (( ${#keys[@]} == 0 )); then
     SSH_FAIL_KIND=nokey; SSH_FAIL_REASON="no private SSH key was found in $(ssh_dir) (files with a PRIVATE KEY header)"; return 1
   fi
-  log "Finding a login for ${host} (port ${port}; at most 6 tries, 5 s each)..."
+  log "Finding a login for ${host} (port ${port}; at most 4 tries, 5 s each)..."
   for line in "${keys[@]}"; do
     IFS='|' read -r key agent locked <<< "$line"
     shown="${key/#$HOME/~}"
@@ -734,7 +737,7 @@ ssh_probe_login() {
       continue
     fi
     for user in "${users[@]}"; do
-      (( tries < 6 )) || break 2
+      (( tries < 4 )) || break 2
       (( ++tries ))
       if ssh_try_login "$host" "$user" "$key" "$port"; then
         echo "    ${user} @ ${shown}   OK (port ${port})" >&2
@@ -770,7 +773,7 @@ ssh_failure_menu() {
 # Stops for the two final answers of the failure menu; returns for the others.
 ssh_menu_stop() {
   case "$1" in
-    cancel) die "Installation cancelled by the operator. Nothing was changed." ;;
+    cancel) operator_cancel ;;
     eof) die "Input ended before the parameters were complete; installation cancelled. Nothing was created." ;;
   esac
 }
@@ -827,17 +830,26 @@ wiz_ssh_login() {
   # Moving forward again over an unchanged, verified login: nothing to ask.
   if [[ "${WIZ_REVISIT:-}" != wiz_ssh_login && "$SSH_LOGIN_OK" == "${hosts}|${SSH_USER:-}|${SSH_KEY_PATH:-}|${SSH_PORT:-22}" ]]; then return 0; fi
   NAV_ASKED=1
-  local need_probe=1
+  local need_probe=1 retry_one=0
   [[ "$SSH_LOGIN_OK" != "${hosts}|${SSH_USER:-}|${SSH_KEY_PATH:-}|${SSH_PORT:-22}" ]] || need_probe=0
   while true; do
     if (( need_probe )); then
-      if ! ssh_probe_login "$first"; then
+      local probed=0
+      if (( retry_one )) && [[ -n "${SSH_USER:-}" && -n "${SSH_KEY_PATH:-}" ]]; then
+        # "check again": only the login tried last (fail2ban counts every try).
+        log "Trying ${SSH_USER} with ${SSH_KEY_PATH/#$HOME/~} on ${first} again..."
+        ssh_try_login "$first" "$SSH_USER" "$SSH_KEY_PATH" "${SSH_PORT:-22}" && probed=1
+      else
+        ssh_probe_login "$first" && probed=1
+      fi
+      retry_one=0
+      if (( ! probed )); then
         action=$(ssh_failure_menu "Cannot log in to ${first}: ${SSH_FAIL_REASON}." "$first"); ssh_menu_stop "$action"
         case "$action" in
           back) NAV_BACK=1; return 0 ;;
           retype) SSH_HOSTS_TYPE_FIRST=1; NAV_BACK=1; return 0 ;;
-          login) ssh_ask_login; if (( NAV_BACK )); then NAV_BACK=0; fi; SSH_LOGIN_OK=""; continue ;;
-          retry) continue ;;
+          login) ssh_ask_login; if (( NAV_BACK )); then NAV_BACK=0; fi; SSH_LOGIN_OK=""; retry_one=1; continue ;;
+          retry) retry_one=1; continue ;;
         esac
       fi
     fi
@@ -943,13 +955,23 @@ ssh_disk_block() {
     missing=false
     for key in $(prov_ssh_disk_keys); do [[ -n "${!key:-}" ]] || missing=true; done
     if [[ "$missing" == true ]] && ! ssh_auto_map_disks; then
-      action=$(ssh_failure_menu "${SSH_FAIL_REASON}." "$(prov_ssh_hosts | head -1)"); ssh_menu_stop "$action"
-      case "$action" in
-        back|retype) [[ "$action" != retype ]] || SSH_HOSTS_TYPE_FIRST=1; NAV_BACK=1; return 0 ;;
-        *) for key in $(prov_ssh_disk_keys); do printf -v "$key" '%s' ""; done
-           local h; while IFS= read -r h; do unset "SSH_FACT[${h}|GATHERED]"; prov_ssh_ensure_facts "$h"; done < <(prov_ssh_hosts)
-           continue ;;
+      err "${SSH_FAIL_REASON}." >&2
+      local pick
+      pick=$(PROMPT_CHOICE_DEFAULT="check again (after attaching or freeing a disk)" prompt_choice "What now?" \
+        "check again (after attaching or freeing a disk)" "choose other hosts" "cancel the installation (nothing was changed)") || pick=eof
+      case "$pick" in
+        eof) ssh_menu_stop eof ;;
+        cancel*) ssh_menu_stop cancel ;;
+        choose*) NAV_BACK=1; return 0 ;;
       esac
+      for key in $(prov_ssh_disk_keys); do printf -v "$key" '%s' ""; done
+      local h failed_h=""
+      while IFS= read -r h; do
+        unset "SSH_FACT[${h}|GATHERED]"
+        SSH_SOFT=1 prov_ssh_gather_facts "$h" || { failed_h="$h"; break; }
+      done < <(prov_ssh_hosts)
+      [[ -z "$failed_h" ]] || warn "Could not read the disks of ${failed_h} again: ${SSH_FAIL_REASON}."
+      continue
     fi
     NAV_ASKED=1
     echo "" >&2
@@ -988,7 +1010,7 @@ ssh_type_suggestion() {
     [[ "$h" == "$host" && "$parts" == 1 && -z "$mounts" ]] && disks+="${disks:+/}$(gb_of_bytes "$bytes")"
   done
   local have="${cpus} vCPU / ${ram_gb} GB and unused disks ${disks:-none} GB"
-  if (( cpus >= 28 && ram_gb * 100 >= 112 * 95 )) && prov_ssh_disks_fit "1200 1000 1000 500" "$(prov_ssh_free_disk_bytes "$host" "" "")"; then
+  if (( cpus >= 28 && ram_gb * 100 >= 112 * 95 )) && prov_ssh_disks_fit "1200 1000 1000 500" "$(prov_ssh_free_disk_bytes "$host" "" "" all)"; then
     echo "production ${have} meet production (28 vCPU / 112 GB, disks 1200/1000/1000/500 GB)."
   else
     echo "demo ${have}; production needs 28 vCPU / 112 GB and disks 1200/1000/1000/500 GB, demo 16 vCPU / 64 GB and 500/300/250/150 GB."

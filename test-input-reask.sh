@@ -30,11 +30,11 @@ grep -q 'RESULT=valid-project' <<< "$out"
 grep -q 'Invalid GCP Project ID' <<< "$out"
 echo "PASS: invalid value is re-asked with the reason"
 
-# 3. Empty answer and confirmed cancellation stops with a clear message, exit 1.
-if run $'\ny\n' eval 'prompt_required BASE_DOMAIN "Base domain" "" validate_fqdn; echo RESULT=$BASE_DOMAIN' >out.txt 2>err.txt; then
-  echo "FAIL: confirmed cancellation did not stop"; exit 1
-fi
-grep -q 'cancelled by the operator' err.txt out.txt
+# 3. Empty answer and confirmed cancellation stops with a clear message.
+#    The operator's own cancel is not an error: exit 0, like N at the plan.
+rc=0; run $'\ny\n' eval 'prompt_required BASE_DOMAIN "Base domain" "" validate_fqdn; echo RESULT=$BASE_DOMAIN' >out.txt 2>err.txt || rc=$?
+[[ "$rc" == 0 ]] || { echo "FAIL: an operator cancel must exit 0 (got $rc)"; exit 1; }
+grep -q 'Installation cancelled by the operator. Nothing was created or changed.' err.txt out.txt
 if grep -q 'RESULT=' out.txt; then echo "FAIL: test-input-reask.sh:38: unexpected match" >&2; exit 1; fi
 echo "PASS: confirmed cancellation stops the installer"
 
