@@ -94,19 +94,35 @@ expected=("RESULT[x] rc=0" "RESULT[] rc=3" "RESULT[] rc=3" "RESULT[] rc=3" "RESU
 [[ "${res[*]}" == "${expected[*]}" ]] || fail "paced keys, got: ${res[*]}"
 echo "PASS: at human typing speed Backspace undoes the arrow and Enter after it goes back"
 
-# 6. Ctrl+D right after the arrow, or as the first key, ends the input (the
-#    caller then stops as at a closed input); other control keys are ignored.
+# 6. Ctrl+D in a terminal is a deliberate key: it asks "Cancel ...? [y/N]".
+#    N asks the same question again; Y, or Ctrl+D twice, cancels (exit 0,
+#    nothing created). Other control keys are ignored. Keys 0.4 s apart.
 newcase ctrld
 cat > "$CASE/drv.sh" <<'EOF'
 set --; source ./install.sh
 NAV_ON=1
-for i in 1 2 3; do rc=0; v=$(prompt X "Name" "def") || rc=$?; echo "RESULT[$(printf '%q' "$v")] rc=$rc"; done
+for i in 1 2 3; do rc=0; v=$(prompt X "Name" "def") || rc=$?; echo "RESULT[$v] rc=$rc"; done
+echo "AFTER-LOOP"
 EOF
-PTY_GAP=0.4 PTY_SCRIPT=./drv.sh pty_install "$CASE" 'RAW:\x1b[D' 'RAW:\x04' 'RAW:\x04' 'RAW:\x1b[D' 'RAW:\x01' 'RAW:\x7f' 'RAW:z' 'RAW:\n'
+PTY_GAP=0.4 PTY_SCRIPT=./drv.sh pty_install "$CASE" 'RAW:\x1b[D' 'RAW:\x04' 'n' 'abc' 'RAW:\x01' 'RAW:\x04' 'n' 'RAW:\x1b[D' 'RAW:\x01' 'RAW:\x7f' 'z' 'RAW:\x04' 'y'
 OUT="$CASE/pty.txt"
 mapfile -t res < <(grep -o 'RESULT\[[^]]*\] rc=[0-9]' "$OUT")
-expected=("RESULT[''] rc=1" "RESULT[''] rc=1" "RESULT[z] rc=0")
+expected=("RESULT[abc] rc=0" "RESULT[z] rc=0")
 [[ "${res[*]}" == "${expected[*]}" ]] || fail "Ctrl+D, got: ${res[*]}"
-echo "PASS: Ctrl+D after the arrow or on an empty answer ends the input; other control keys are ignored"
+[[ "$(grep -c "Cancel the installation? \[y/N\]" "$OUT")" == 3 ]] || fail "each Ctrl+D must ask before cancelling"
+[[ "$(grep -c "Continuing; please answer the question again." "$OUT")" == 2 ]] || fail "N must ask the question again"
+grep -q "Installation cancelled by the operator. Nothing was created or changed." "$OUT" || fail "Y must cancel"
+if grep -q "AFTER-LOOP" "$OUT"; then fail "the run must end after Y"; fi
+newcase ctrld2
+cat > "$CASE/drv.sh" <<'EOF'
+set --; source ./install.sh
+NAV_ON=1
+rc=0; v=$(prompt X "Name" "def") || rc=$?; echo "RESULT[$v] rc=$rc"
+EOF
+PTY_GAP=0.4 PTY_SCRIPT=./drv.sh pty_install "$CASE" 'RAW:\x04' 'RAW:\x04'
+OUT="$CASE/pty.txt"
+grep -q "Installation cancelled by the operator. Nothing was created or changed." "$OUT" || fail "Ctrl+D twice must cancel"
+if grep -q "RESULT" "$OUT"; then fail "Ctrl+D twice: nothing may continue"; fi
+echo "PASS: Ctrl+D asks before cancelling (N = same question, Y or Ctrl+D again = cancel); control keys ignored"
 
 echo "All answer-key tests passed."

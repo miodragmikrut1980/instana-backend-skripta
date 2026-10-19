@@ -117,6 +117,9 @@ on_exit_report() {
   return 0
 }
 trap 'on_exit_report $? "$BASH_COMMAND"' EXIT
+# Ctrl+D at a question in a terminal, confirmed with Y (ctrl_d_cancel): the
+# answer is read in a subshell, so the main shell is told to cancel.
+trap 'operator_cancel' USR1
 
 # die_with_steps MESSAGE STEP... — like die, but first prints a readable
 # "HOW TO RESOLVE" box. A STEP written as "text|command" shows the command
@@ -506,6 +509,21 @@ show_more_help() {
   for line in "${HINT_MORE[@]}"; do echo -e "    ${line}" >&2; done
 }
 
+# ctrl_d_cancel — Ctrl+D typed at a question in a terminal is a deliberate key,
+# not a closed input: ask before cancelling. N (or Enter) asks the question
+# again; Y, or Ctrl+D once more, cancels ("nothing was created"). Without a
+# terminal a closed input still stops at once (read returns 1).
+ctrl_d_cancel() {
+  local a="" rc=0
+  echo "" >&2
+  CANCEL_ASKING=1 read_answer a "$(echo -e "${YELLOW}!${RESET} Cancel the ${OPERATION_NAME:-installation}? [y/N]: ")" || rc=$?
+  if (( rc != 0 )) || [[ "${a,,}" == y || "${a,,}" == yes ]]; then
+    if [[ "$BASHPID" == "$$" ]]; then operator_cancel; fi
+    kill -USR1 "$$"; exit 0
+  fi
+  echo "  Continuing; please answer the question again." >&2
+}
+
 # read_answer VAR PROMPT [BACK] — reads one typed answer into VAR.
 # Returns 1 at the end of the input and, with BACK=1, 3 for "back": < and
 # Enter. On a terminal the left-arrow key on an empty answer shows a <; the
@@ -535,13 +553,15 @@ read_answer() {
             "") echo "" >&2; return 3 ;;                                  # Enter: back
             $'\x7f'|$'\b') break ;;                                        # Backspace: undo
             $'\e') read_key_rest >/dev/null ;;                             # another special key: ignored
-            $'\x04') echo "" >&2; return 1 ;;                               # Ctrl+D: end of input
+            $'\x04') [[ "${CANCEL_ASKING:-0}" != 1 ]] || { echo "" >&2; return 1; }
+                    ctrl_d_cancel; __pre=""; break ;;                       # Ctrl+D: cancel? (y/N)
             *) [[ "$__k" =~ ^[[:cntrl:]]$ ]] || { __pre="<${__k}"; break; } ;;  # other control keys: ignored
           esac
         done
         if [[ -z "$__pre" ]]; then printf '\r\033[K' >&2; continue; fi
-      elif [[ "$__first" == $'\x04' ]]; then
-        echo "" >&2; return 1                                             # Ctrl+D on an empty answer: end of input
+      elif [[ "$__first" == $'\x04' ]]; then                          # Ctrl+D on an empty answer: cancel? (y/N)
+        [[ "${CANCEL_ASKING:-0}" != 1 ]] || { echo "" >&2; return 1; }
+        ctrl_d_cancel; continue
       elif [[ "$__first" =~ ^[[:cntrl:]]$ ]]; then
         printf '\r\033[K' >&2; continue                                 # Backspace or another control key: ignored
       else
@@ -551,10 +571,10 @@ read_answer() {
         echo "" >&2
       else
         printf '\r\033[K' >&2
-        read -e -r -i "$__pre" -p "$(rl_prompt "$__p")" __v || { echo "" >&2; return 1; }
+        read -e -r -i "$__pre" -p "$(rl_prompt "$__p")" __v || { [[ "${CANCEL_ASKING:-0}" != 1 ]] || { echo "" >&2; return 1; }; ctrl_d_cancel; continue; }
       fi
     else
-      read -e -r -p "$(rl_prompt "$__p")" __v || { echo "" >&2; return 1; }
+      read -e -r -p "$(rl_prompt "$__p")" __v || { [[ "${CANCEL_ASKING:-0}" != 1 ]] || { echo "" >&2; return 1; }; ctrl_d_cancel; continue; }
     fi
     if [[ "$__v" == *$'\e'* ]]; then
       [[ "$__v" != *$'\e[D'* && "$__v" != *$'\eOD'* ]] || __arrow=1
@@ -585,6 +605,11 @@ prompt_secret() {
       printf '%b' "${CYAN}?${RESET} ${BOLD}${prompt_text}${RESET}${extra}: " >&2
       while IFS= read -rs -n1 ch; do
         if [[ -z "$ch" ]]; then break; fi                      # Enter
+        if [[ "$ch" == $'\x04' ]]; then                          # Ctrl+D: cancel? (y/N), then ask again
+          ctrl_d_cancel; value=""
+          printf '%b' "${CYAN}?${RESET} ${BOLD}${prompt_text}${RESET}${extra}: " >&2
+          continue
+        fi
         if [[ "$ch" == $'\x7f' || "$ch" == $'\x08' ]]; then     # Backspace
           if [[ -n "$value" ]]; then value="${value%?}"; printf '\b \b' >&2; fi
           continue

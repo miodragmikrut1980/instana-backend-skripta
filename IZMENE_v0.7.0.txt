@@ -664,3 +664,15 @@ and every answer was lost.
   ... nothing was created"); before, it was stored as a literal ^D ("<^D")
   and a second Ctrl+D did not cancel. Other control keys there are ignored.
 - Tests: test-answer-keys.sh 6 (keys 0.4 s apart).
+
+2026-10-20 — UX v3: Ctrl+D in a terminal asks before cancelling
+- Ctrl+D at a question in a terminal (empty answer, right after the left
+  arrow, at a pick list or inside a key/password) is a deliberate key, not a
+  closed input: "Cancel the installation? [y/N]". N or Enter asks the same
+  question again; Y, or Ctrl+D once more, cancels (exit 0, "Nothing was
+  created or changed", also reported as cancelled inside screen). This
+  replaces the immediate stop of the previous entry, in line with the rule
+  that cancelling needs a confirmation. Without a terminal a closed input
+  still stops at once, as before.
+- Tests: test-answer-keys.sh 6 (N re-asks, Y cancels, Ctrl+D twice cancels,
+  other control keys ignored; keys 0.4 s apart).
