@@ -11,16 +11,24 @@ valid_public_ipv4() {
 print_local_access() {
   local detected="$1" node ip ui_ip='' default answer
   [[ "$DRY_RUN" != true ]] || { echo 'Local hosts instructions will use confirmed public IPv4 at the end of a real installation.'; return 0; }
+  # Only node 0 is used (UI, gateway, acceptors). Its public IP is taken as
+  # detected (GCP external IP, or the existing host's public / external IP);
+  # it is asked only when it is not known.
   local nodes=("${VM_NAME:-}")
-  [[ "$TOPOLOGY" != three-node ]] || nodes=("$NODE0_NAME" "$NODE1_NAME" "$NODE2_NAME")
+  [[ "$TOPOLOGY" != three-node ]] || nodes=("$NODE0_NAME")
   echo
-  echo "$(provider_text_or ip_confirm_line 'Confirm public IPv4 addresses. Enter accepts the GCP value.')"
   for node in "${nodes[@]}"; do
     default="$detected"
-    if [[ "$node" != "${nodes[0]}" ]]; then
-      default=$(provider_get_ip "$node" "$GCP_ZONE" "$GCP_PROJECT" public 2>/dev/null || true)
-    fi
     [[ "$default" != unknown ]] || default=''
+    if valid_public_ipv4 "$default"; then
+      ip="$default"
+      echo "Public IPv4 of ${node}: ${ip} (detected; used for the /etc/hosts lines below)."
+      ui_ip="$ip"
+      save_state "public_ip_${node}" "$ip"
+      continue
+    fi
+    echo "$(provider_text_or ip_confirm_line 'Confirm public IPv4 addresses. Enter accepts the GCP value.')"
+    echo "The public IPv4 of ${node} could not be detected; type it (or skip)."
     while true; do
       if ! read -rp "Public IPv4 of $node [$default] (or skip): " answer; then
         answer="$default"

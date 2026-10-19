@@ -78,6 +78,7 @@ input_example() {
     VM_NAME) echo '"mikrut-lab"' ;;
     NODE0_NAME|NODE1_NAME|NODE2_NAME) echo "\"mikrut-node-${1:4:1}\"" ;;
     SIZE) echo '"minimum", "production" or "custom"' ;;
+    KUBE_USER_ACCESS) echo '"no" (default) or "yes"' ;;
     VM_CPUS) echo '"32"' ;;
     VM_RAM_GB) echo '"128"' ;;
     BASE_DOMAIN) echo '"instana.lab.example.com"' ;;
@@ -121,6 +122,7 @@ input_purpose() {
     NETWORK_RULES_CONFIRMED) echo "confirming the network rules around the hosts" ;;
     DISK_DEV_*) echo "the dedicated data disk for one Instana data directory" ;;
     SIZE|VM_CPUS|VM_RAM_GB) echo "the machine size" ;;
+    KUBE_USER_ACCESS) echo "kubectl without sudo for the SSH user on the Instana host" ;;
     BASE_DOMAIN) echo "the address Instana is reached at" ;;
     TENANT_NAME|UNIT_NAME) echo "the UI address <unit>-<tenant>.<domain>" ;;
     TLS_MODE|TLS_CRT_PATH|TLS_KEY_PATH) echo "the HTTPS certificate" ;;
@@ -165,6 +167,7 @@ input_check() {
     INSTALL_TYPE) input_one_of "$key" "$v" demo production ;;
     UBUNTU_VERSION) input_one_of "$key" "$v" ubuntu-2404-lts-amd64 ubuntu-2204-lts ;;
     SIZE) input_one_of "$key" "$v" minimum production custom ;;
+    KUBE_USER_ACCESS) input_one_of "$key" "$v" no yes ;;
     AIRGAP_SOURCE) input_one_of "$key" "$v" existing build ;;
     TLS_MODE) input_one_of "$key" "$v" "auto-generate (self-signed)" "provide custom certificate files" auto custom ;;
     GCP_PROJECT|GCP_REGION|GCP_NETWORK|GCP_SUBNET) provider_validate_param "$key" "$v" ;;
@@ -505,6 +508,7 @@ input_applicable_keys() {
   elif [[ -z "$tls" ]]; then
     local k; for k in TLS_CRT_PATH TLS_KEY_PATH; do [[ -z "${IMPORTED[$k]:-}" ]] || keys+=("$k"); done
   fi
+  keys+=(KUBE_USER_ACCESS)
   printf '%s\n' "${keys[@]}"
 }
 
@@ -560,8 +564,9 @@ input_evaluate() {
       INPUT_ROWS+=("ok|${key}|not in the file; the host's own name is used")
       continue
     fi
-    if [[ -z "$value" && ( "$key" == UBUNTU_VERSION || "$key" == SIZE ) ]]; then
-      INPUT_ROWS+=("ok|${key}|not in the file; default $([[ "$key" == SIZE ]] && echo minimum || echo ubuntu-2404-lts-amd64) (E at the plan changes it)")
+    if [[ -z "$value" && ( "$key" == UBUNTU_VERSION || "$key" == SIZE || "$key" == KUBE_USER_ACCESS ) ]]; then
+      local dflt=ubuntu-2404-lts-amd64; [[ "$key" != SIZE ]] || dflt=minimum; [[ "$key" != KUBE_USER_ACCESS ]] || dflt=no
+      INPUT_ROWS+=("ok|${key}|not in the file; default ${dflt} (E at the plan changes it)")
       continue
     fi
     if [[ -z "$value" ]]; then
@@ -779,6 +784,7 @@ input_current_keys() {
   else keys+=(STANCTL_VERSION BACKEND_VERSION); fi
   keys+=(TLS_MODE)
   [[ "$TLS_MODE" == "provide custom certificate files" ]] && keys+=(TLS_CRT_PATH TLS_KEY_PATH)
+  keys+=(KUBE_USER_ACCESS)
   printf '%s\n' "${keys[@]}"
 }
 

@@ -619,7 +619,7 @@ declare -A WIZ_DONE=()
 WIZ_STEPS=(wiz_ssh_hosts wiz_ssh_login wiz_topology wiz_mode wiz_type wiz_ubuntu wiz_location wiz_cidr
   wiz_vm_name wiz_node0_name wiz_node1_name wiz_node2_name wiz_size wiz_host_params
   wiz_domain wiz_tenant wiz_unit wiz_admin_password wiz_download_key wiz_agent_key
-  wiz_sales_key wiz_airgap wiz_versions wiz_tls wiz_tls_crt wiz_tls_key)
+  wiz_sales_key wiz_airgap wiz_versions wiz_tls wiz_tls_crt wiz_tls_key wiz_kube)
 
 # ask_choice VAR TEXT OPTION... — sets VAR to the chosen option; the current
 # value (or the saved one when editing saved parameters) is the Enter default.
@@ -1003,6 +1003,20 @@ wiz_tls() {
        "Custom = you provide a certificate and key file for the domain (needed for production)."
   ASK_DEFAULT="auto-generate (self-signed)" ask_choice TLS_MODE "TLS certificate:" "auto-generate (self-signed)" "provide custom certificate files"
 }
+# kubectl without sudo for the login user: not asked (default no, shown in
+# the plan); E at the plan changes it.
+wiz_kube() {
+  use_imported KUBE_USER_ACCESS && return 0
+  if [[ "${EDIT_KEY:-}" == KUBE_USER_ACCESS ]]; then
+    hint "yes: the SSH user on the Instana host gets a copy of the cluster-admin kubeconfig (kubectl without sudo," \
+         "full cluster administration for that user). no: use sudo kubectl."
+    ASK_DEFAULT=no ask_choice KUBE_USER_ACCESS "Let the SSH user run kubectl without sudo?" "no" "yes"
+    return 0
+  fi
+  [[ -n "${KUBE_USER_ACCESS:-}" ]] || KUBE_USER_ACCESS=$(jq -r '.parameters.KUBE_USER_ACCESS // empty' "$CONFIG_FILE" 2>/dev/null || true)
+  [[ -n "${KUBE_USER_ACCESS:-}" ]] || KUBE_USER_ACCESS=no
+}
+
 wiz_tls_crt() {
   [[ "$TLS_MODE" == "provide custom certificate files" ]] || return 0
   use_imported TLS_CRT_PATH && return 0
@@ -1497,6 +1511,7 @@ show_plan() {
   printf "  %-30s %s\n" "Tenant/Unit:"       "${TENANT_NAME}/${UNIT_NAME}"
   printf "  %-30s %s\n" "UI URL (after DNS):" "https://${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}"
   printf "  %-30s %s\n" "TLS:"               "$TLS_MODE"
+  printf "  %-30s %s\n" "kubectl without sudo:" "${KUBE_USER_ACCESS:-no} (for the SSH user on the Instana host; E changes it)"
   ! provider_uses_param SSH_SOURCE_CIDR || printf "  %-30s %s\n" "SSH source CIDR:"   "$SSH_SOURCE_CIDR"
   if [[ -n "${BACKEND_VERSION:-}" ]]; then
     printf "  %-30s %s\n" "stanctl package:"   "${STANCTL_APT_VERSION:-?}"
@@ -2308,12 +2323,14 @@ configure_kubectl_user_access() {
   echo -e "  ${YELLOW}Optional:${RESET} copy the cluster-admin kubeconfig to the current SSH user's home directory."
   echo "  This lets that user run kubectl without sudo and grants that user full cluster administration."
 
-  if [[ "$DRY_RUN" == true || ! -t 0 ]]; then
-    phase_detail warn "Skipped optional user kubeconfig setup; sudo kubectl remains available."
+  # Decided before Start (plan: E → KUBE_USER_ACCESS); never asked at the end.
+  if [[ "${KUBE_USER_ACCESS:-no}" != yes ]]; then
+    phase_detail warn "User kubeconfig not set up (KUBE_USER_ACCESS=no; E at the plan changes it); sudo kubectl remains available."
+    echo "  To allow it later on ${vm_name}: mkdir -p ~/.kube && sudo install -o \$(id -u) -g \$(id -g) -m 600 /etc/rancher/k3s/k3s.yaml ~/.kube/config"
     return 0
   fi
-  if ! prompt_yes_no "Allow the current SSH user on ${vm_name} to run kubectl without sudo?" N; then
-    phase_detail warn "User kubeconfig setup skipped; use sudo kubectl."
+  if [[ "$DRY_RUN" == true ]]; then
+    phase_detail active "Would copy the cluster-admin kubeconfig to the SSH user's ~/.kube/config on ${vm_name}."
     return 0
   fi
 

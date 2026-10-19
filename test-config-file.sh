@@ -64,7 +64,7 @@ completed() {
 new_case full
 run_installer "y" --config examples/single-gcp-online-full.json --dry-run
 completed; no_questions
-has "22 values taken from the file; 0 will be asked below."
+has "23 values taken from the file; 0 will be asked below."   # incl. KUBE_USER_ACCESS (default no)
 has "Base domain:                   instana.lab.example.com"
 has "Backend version:               3.323.470-0"
 for s in test-download-key-0000 test-agent-key-0000 test-sales-key-0000 Test-Admin-Pass-0000; do

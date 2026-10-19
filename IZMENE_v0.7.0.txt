@@ -417,3 +417,15 @@ and every answer was lost.
   its paths are the defaults of the path questions (needs openssl).
 - Tests: test-ssh-login-flow.sh 24 (sslip suggestion, not for air-gapped),
   test-nav-back.sh 22-23 (certificate found, newest package).
+
+2026-10-19 — UX v2, step 8 (also GCP): nothing asked at the end of the run
+- kubectl without sudo for the SSH user on the Instana host is decided
+  before Start: KUBE_USER_ACCESS (default no) is shown in the plan, E
+  changes it, input files may carry it; the 40-minute run no longer stops at
+  the end for this question (with no, the command to do it later is printed).
+- The /etc/hosts lines use node 0 only (all entries point to it); its public
+  IP is taken as detected (GCP external IP, or the existing host's public or
+  Google Cloud external IP) and asked only when it is not known. Before,
+  three-node asked for all three nodes.
+- Tests: test-nav-back.sh 24-25; test-config-file.sh counts the new
+  default row.

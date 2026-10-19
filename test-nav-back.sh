@@ -280,4 +280,27 @@ fi
 grep -q "instana-airgapped-new.tar.gz" "$TEST_ROOT/newest.txt" || { cat "$TEST_ROOT/newest.txt" >&2; fail "the newest package must be the default"; }
 echo "PASS: the newest air-gapped package is the default"
 
+# 24. kubectl without sudo is decided at the plan (default no), never asked
+#     at the end of the run.
+k=$(printf '%s\n' TOPOLOGY INSTALL_MODE INSTALL_TYPE UBUNTU_VERSION GCP_PROJECT GCP_REGION GCP_ZONE GCP_NETWORK GCP_SUBNET SSH_SOURCE_CIDR VM_NAME SIZE BASE_DOMAIN TENANT_NAME UNIT_NAME STANCTL_VERSION BACKEND_VERSION TLS_MODE KUBE_USER_ACCESS | grep -n '^KUBE_USER_ACCESS$' | cut -d: -f1)
+run kube $'1\n1\n1\n1\n\ninstana-backend\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\ne\n'"$k"$'\n2\ny'
+done_ok
+has "kubectl without sudo:          no (for the SSH user on the Instana host; E changes it)"
+has "kubectl without sudo:          yes (for the SSH user on the Instana host; E changes it)"
+has "Would copy the cluster-admin kubeconfig to the SSH user's ~/.kube/config"
+hasnt "Allow the current SSH user"
+echo "PASS: kubectl without sudo is chosen at the plan, not asked at the end"
+
+# 25. /etc/hosts lines: only node 0's IP; taken as detected, asked only when unknown.
+( cd "$TEST_ROOT"; mkdir -p ip; cp -R "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR/providers" ip/; cd ip; set --
+  PATH="$TEST_ROOT/bin:$PATH" bash -c 'source ./install.sh; DRY_RUN=false TOPOLOGY=three-node NODE0_NAME=n0 NODE1_NAME=n1 NODE2_NAME=n2
+    BASE_DOMAIN=lab.example.com TENANT_NAME=t UNIT_NAME=u
+    print_local_access 34.65.1.2 < /dev/null; echo "UI=$CONFIRMED_UI_IP"
+    print_local_access unknown <<< "35.1.2.3"; echo "UI=$CONFIRMED_UI_IP"' ) > "$TEST_ROOT/ip.txt" 2>&1
+grep -q "Public IPv4 of n0: 34.65.1.2 (detected; used for the /etc/hosts lines below)." "$TEST_ROOT/ip.txt" || { cat "$TEST_ROOT/ip.txt" >&2; fail "detected IP must be used without a question"; }
+grep -q "UI=34.65.1.2" "$TEST_ROOT/ip.txt" && grep -q "UI=35.1.2.3" "$TEST_ROOT/ip.txt" || fail "UI IP"
+grep -q "could not be detected; type it" "$TEST_ROOT/ip.txt" || fail "unknown IP must be asked"
+if grep -q "n1\|n2" <(grep "Public IPv4 of" "$TEST_ROOT/ip.txt"); then fail "only node 0 is asked"; fi
+echo "PASS: only node 0's public IP is used; a detected one is not asked"
+
 echo "All back-navigation tests passed."
