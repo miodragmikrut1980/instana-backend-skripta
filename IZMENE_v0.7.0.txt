@@ -357,3 +357,19 @@ and every answer was lost.
   IOPS and throughput); the full table is shown with E → SIZE.
 - Tests: test-nav-back.sh cases 18-20 with a metadata-aware curl mock;
   gcloud mocks answer "not found" for unknown VMs.
+
+2026-10-19 — UX v2, step 6: existing hosts — one Start confirmation
+- The plan lists the changes on the host(s) and the network connections the
+  deployment needs; Y at the plan, typed in a terminal, approves both (the
+  hosts are not asked again after Start, phase 5 does not ask again). The
+  approval is recorded in .install-state.json, so --resume does not ask
+  again either. Without a terminal the host changes are still never
+  approved (a file cannot approve them).
+- When node 0 is a VM of the gcloud project, its ingress firewall rules are
+  checked read-only for TCP 443, 8443 and 80 from anywhere: allowed /
+  missing / not verifiable (rules on service accounts), with the gcloud
+  command to add the missing ones (not run by the installer).
+- A host name that does not resolve no longer stops the plan.
+- Tests: test-ssh-login-flow.sh cases 16-17 (plan network section with a
+  firewall lookup; approval in a terminal, recorded for --resume, refused
+  without a terminal).

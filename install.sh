@@ -1480,6 +1480,12 @@ show_plan() {
   else
     prompt_yes_no "Start now? Type Y to continue or N to cancel" N || { log "Installation was not started; no action was approved from this plan."; exit 0; }
   fi
+  # Y typed in a terminal at this plan approves the changes it lists on
+  # existing hosts and the network connections it lists (one confirmation).
+  if [[ "$(provider_name)" == ssh && -t 0 ]]; then
+    HOST_CHANGES_APPROVED=plan
+    save_state network_rules_confirmed yes
+  fi
   provider_confirm_host_changes
   save_state "provider" "$(provider_name)"
   provider_record_target

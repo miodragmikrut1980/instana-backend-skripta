@@ -249,7 +249,8 @@ prov_ssh_get_ip() {
 }
 
 prov_ssh_resolve_ipv4() {
-  if [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then echo "$1"; else getent ahostsv4 "$1" 2>/dev/null | awk 'NR==1{print $1}'; fi
+  # A name that does not resolve (or no getent on this system) gives nothing, never an error.
+  if [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then echo "$1"; else { getent ahostsv4 "$1" 2>/dev/null || true; } | awk 'NR==1{print $1}'; fi
 }
 
 # Not reachable from the internet: RFC 1918, carrier-grade NAT (100.64/10),
@@ -1097,7 +1098,7 @@ prov_ssh_text() {
       echo "Lowercase letters, digits and hyphens; the host's own name is offered." ;;
     node_names_hint) echo "Names for the three hosts inside the installer (state file, messages); the hosts are not renamed." ;;
     three_node_size_note) echo "Three-node: each host needs at least the small profile (12 vCPUs / 48 GB, documented minimum); checked on the hosts." ;;
-    start_line) echo "Enter Y and press Enter to START installing Instana on the host(s) listed above." ;;
+    start_line) echo "Enter Y and press Enter to START installing Instana on the host(s) listed above; Y also approves the changes on the hosts and confirms the network connections listed." ;;
     resume_mismatch) echo "Host, user or port differs from the saved state of this deployment. No changes made." ;;
     ip_confirm_line)
       echo "Confirm public IPv4 addresses. Enter accepts the address offered."
@@ -1335,8 +1336,59 @@ prov_ssh_plan_resource_lines() {
     done
   done
   echo ""
-  echo "  Changes the installer will make on the host(s) (confirmed separately after Start):"
+  echo "  Changes the installer will make on the host(s) (Y below approves them):"
   prov_ssh_host_changes | sed 's/^/    - /'
+  echo ""
+  echo "  Network (outside the host(s); the installer does not change it):"
+  ssh_network_report | sed 's/^/    /'
+}
+
+# ssh_network_report — the connections the deployment needs. For hosts that
+# are VMs of the gcloud project, the ingress firewall rules are looked up
+# (read-only) for 80/443/8443: allowed, missing or not verifiable.
+ssh_network_report() {
+  local node0 ip project out name net tags missing="" allowed="" unknown="" port
+  echo "from this machine to every host: TCP ${SSH_PORT:-22} (SSH) — works (the installer is logged in)"
+  echo "from users and Instana agents to $( [[ "${TOPOLOGY:-}" == three-node ]] && echo "node 0" || echo "the host" ): TCP 80, 443, 8443"
+  if [[ "${TOPOLOGY:-}" == three-node ]]; then
+    echo "between the three nodes: TCP 22, 53, 6443, 10250, 2379, 2380, 5001, 9443; UDP 53, 8472;"
+    echo "  and the pod/service networks 10.42.0.0/16, 10.43.0.0/16 (all protocols)"
+  fi
+  node0=$(prov_ssh_hosts | head -1)
+  ip=$(prov_ssh_resolve_ipv4 "$node0")
+  project=$(prov_ssh_gce_project)
+  [[ -n "$ip" && -n "$project" ]] || { echo "(not checked here: ${node0} is not a VM of a gcloud project on this machine)"; return 0; }
+  out=$(timeout 20 gcloud compute instances list --project="$project" --filter="networkInterfaces[0].networkIP=${ip}" \
+    --format='value(name,zone.basename(),networkInterfaces[0].network.basename(),tags.items.list())' 2>/dev/null | head -1 || true)
+  local zone
+  read -r name zone net tags <<< "$out"
+  [[ "$name" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ && "$net" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+    { echo "(not checked here: ${node0} is not a VM of gcloud project ${project})"; return 0; }
+  local rules
+  rules=$(timeout 20 gcloud compute firewall-rules list --project="$project" \
+    --filter="network~/${net}\$ AND direction=INGRESS AND disabled=false" --format=json 2>/dev/null || echo '[]')
+  for port in 443 8443 80; do
+    case "$(jq -r --arg p "$port" --arg tags ",${tags}," '
+        def opens($p): (.allowed // []) | any(.IPProtocol == "all" or (.IPProtocol == "tcp" and ((.ports // ["0-65535"]) | any(
+          . as $r | if test("-") then ($r | split("-") | (.[0]|tonumber) <= ($p|tonumber) and ($p|tonumber) <= (.[1]|tonumber)) else $r == $p end))));
+        [ .[] | select(opens($p)) | select((.sourceRanges // []) | index("0.0.0.0/0"))
+          | if (.targetServiceAccounts // []) | length > 0 then "unknown"
+            elif (.targetTags // []) | length == 0 then "yes"
+            elif any(.targetTags[]; . as $t | $tags | contains("," + $t + ",")) then "yes" else empty end ]
+        | if index("yes") then "yes" elif index("unknown") then "unknown" else "no" end' <<< "${rules:-[]}" 2>/dev/null || echo unknown)" in
+      yes) allowed+="${allowed:+, }${port}" ;;
+      no) missing+="${missing:+, }${port}" ;;
+      *) unknown+="${unknown:+, }${port}" ;;
+    esac
+  done
+  echo "gcloud firewall rules for ${name} (network ${net}, read-only check):"
+  [[ -z "$allowed" ]] || echo "  ✓ allowed from anywhere: TCP ${allowed}"
+  [[ -z "$unknown" ]] || echo "  ? not verifiable (rules target service accounts): TCP ${unknown}"
+  if [[ -n "$missing" ]]; then
+    echo "  ✗ missing: TCP ${missing} — the UI and the agents cannot connect until they are allowed. To allow them (not done by the installer):"
+    echo "      gcloud compute firewall-rules create instana-${name}-https --project=${project} --network=${net} \\"
+    echo "        --allow=$(sed -E 's/ //g; s/([0-9]+)/tcp:\1/g' <<< "$missing") --source-ranges=0.0.0.0/0 --target-tags=instana-ui && gcloud compute instances add-tags ${name} --tags=instana-ui --zone=${zone} --project=${project}"
+  fi
 }
 
 prov_ssh_host_changes() {
@@ -1347,10 +1399,19 @@ prov_ssh_host_changes() {
   echo "Instana package repository, stanctl and Kubernetes (k3s) installed"
 }
 
-# Always asked in a terminal, also for runs from an input file: these are
-# changes on machines the installer does not own.
+# Always approved in a terminal, also for runs from an input file: these are
+# changes on machines the installer does not own. The Y at the plan (which
+# lists them) is that approval; it is recorded, so --resume does not ask again.
 prov_ssh_confirm_host_changes() {
   [[ "$DRY_RUN" != true ]] || return 0
+  if [[ "${HOST_CHANGES_APPROVED:-}" == plan && -t 0 ]]; then
+    save_state host_changes_approved yes
+    return 0
+  fi
+  if [[ "${RESUME:-false}" == true && "$(get_state host_changes_approved)" == yes ]]; then
+    log "The changes on the host(s) were approved when this deployment was started."
+    return 0
+  fi
   echo "" >&2
   echo -e "${BOLD}These changes will be made on $(prov_ssh_hosts | paste -sd' ' -):${RESET}" >&2
   prov_ssh_host_changes | sed 's/^/  - /' >&2
@@ -1361,6 +1422,7 @@ prov_ssh_confirm_host_changes() {
   fi
   prompt_yes_no "Make these changes on the host(s)? (the hosts will be rebooted)" N ||
     { log "Installation was not started; the changes on the hosts were not approved."; exit 0; }
+  save_state host_changes_approved yes
 }
 
 prov_ssh_record_target() {
@@ -1573,6 +1635,8 @@ prov_ssh_ensure_firewall() {
   warn "Ports 80, 443 and 8443$( [[ "${TOPOLOGY:-}" == three-node ]] && echo " and the node-to-node ports" ) can only be tested after Instana is running."
   [[ "$DRY_RUN" != true ]] || return 0
   [[ "${NETWORK_RULES_CONFIRMED:-}" == true ]] || use_imported NETWORK_RULES_CONFIRMED || true
+  # The plan listed these connections and Y at the plan (in a terminal) confirmed them.
+  if [[ "${NETWORK_RULES_CONFIRMED:-}" != true && "$(get_state network_rules_confirmed)" == yes ]]; then NETWORK_RULES_CONFIRMED=true; fi
   if [[ "${NETWORK_RULES_CONFIRMED:-}" == true ]]; then
     ok "Network rules confirmed (NETWORK_RULES_CONFIRMED=true)."
     return 0

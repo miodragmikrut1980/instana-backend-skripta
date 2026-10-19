@@ -191,4 +191,70 @@ has "Attach an empty disk of that size"
 has "? What now?"
 echo "PASS: a host without suitable disks is explained, with retry options"
 
+# 16. The plan lists the host changes and the network connections; for a
+#     host that is a VM of the gcloud project the firewall rules are looked up
+#     (read-only): allowed / missing, with the command to add the missing ones.
+cat > "$FAKE_ROOT/bin/gcloud" <<'FAKE'
+#!/usr/bin/env bash
+case "$*" in
+  *"config get-value project"*) echo test-project ;;
+  *"instances list"*"networkIP=10.0.0.5"*) echo "ssh-test-1 europe-west6-b default" ;;
+  *"instances list"*"status=RUNNING"*) echo "ssh-test-1 europe-west6-b 10.0.0.5 34.65.106.11 n2-standard-16" ;;
+  *"firewall-rules list"*) echo '[{"name":"allow-https","allowed":[{"IPProtocol":"tcp","ports":["443"]}],"sourceRanges":["0.0.0.0/0"]},
+                                  {"name":"tagged","allowed":[{"IPProtocol":"tcp","ports":["8443"]}],"sourceRanges":["0.0.0.0/0"],"targetTags":["other"]}]' ;;
+esac
+exit 0
+FAKE
+chmod +x "$FAKE_ROOT/bin/gcloud"
+run plan_network $'1\n1\n\n1\n1\n\n'"$TAIL"
+done_ok
+has "Changes the installer will make on the host(s) (Y below approves them):"
+has "Network (outside the host(s); the installer does not change it):"
+has "gcloud firewall rules for ssh-test-1 (network default, read-only check):"
+has "✓ allowed from anywhere: TCP 443"
+has "✗ missing: TCP 8443, 80"
+has "--allow=tcp:8443,tcp:80"
+# (a real run's start line; a dry-run shows its own)
+( cd "$CASE"; set --; source ./install.sh; INSTANA_PROVIDER=ssh resolve_provider; provider_text start_line ) |
+  grep -q "Y also approves the changes on the hosts and confirms the network connections listed" || fail "start line"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_ROOT/bin/gcloud"
+echo "PASS: the plan lists host changes and checks the firewall rules read-only"
+
+# 17. One confirmation: Y at the plan in a terminal is the approval of the host
+#     changes (recorded; --resume does not ask again). Without a terminal the
+#     changes are never approved.
+CASE="$TEST_ROOT/approve"; mkdir -p "$CASE"; cp -R "$SRC"/*.sh "$SRC/providers" "$CASE/"
+python3 - "$CASE" <<'PY'
+import os, pty, sys, time
+d = sys.argv[1]
+script = ('cd "%s"; set --; source ./install.sh; INSTANA_PROVIDER=ssh resolve_provider; DRY_RUN=false; '
+          'TOPOLOGY=single-node VM_HOST=10.0.0.5 SSH_USER=ubuntu SSH_PORT=22; HOST_CHANGES_APPROVED=plan; '
+          'prov_ssh_confirm_host_changes; echo APPROVED=$(get_state host_changes_approved)') % d
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("bash", ["bash", "-c", script])
+out = b""; end = time.time() + 30
+while time.time() < end:
+    try:
+        b = os.read(fd, 4096)
+    except OSError:
+        break
+    if not b: break
+    out += b
+os.waitpid(pid, 0)
+open(d + "/pty.txt", "wb").write(out)
+PY
+grep -q "APPROVED=yes" "$CASE/pty.txt" || { cat "$CASE/pty.txt" >&2; fail "plan Y in a terminal must record the approval"; }
+if grep -q "Make these changes on the host" "$CASE/pty.txt"; then fail "a second confirmation was asked"; fi
+( cd "$CASE"; set --; source ./install.sh; INSTANA_PROVIDER=ssh resolve_provider; DRY_RUN=false RESUME=true
+  TOPOLOGY=single-node VM_HOST=10.0.0.5 SSH_USER=ubuntu SSH_PORT=22
+  prov_ssh_confirm_host_changes < /dev/null ) > "$CASE/resume.txt" 2>&1 || { cat "$CASE/resume.txt" >&2; fail "resume must not ask again"; }
+grep -q "were approved when this deployment was started" "$CASE/resume.txt" || fail "resume message"
+rm -f "$CASE/.install-state.json"
+if ( cd "$CASE"; set --; source ./install.sh; INSTANA_PROVIDER=ssh resolve_provider; DRY_RUN=false
+  TOPOLOGY=single-node VM_HOST=10.0.0.5 SSH_USER=ubuntu SSH_PORT=22; HOST_CHANGES_APPROVED=plan
+  prov_ssh_confirm_host_changes < /dev/null ) > "$CASE/notty.txt" 2>&1; then fail "without a terminal the changes must not be approved"; fi
+grep -q "must be confirmed in a terminal" "$CASE/notty.txt" || fail "no-terminal message"
+echo "PASS: one Y at the plan approves the host changes (terminal only), recorded for --resume"
+
 echo "All existing-host login flow tests passed."
