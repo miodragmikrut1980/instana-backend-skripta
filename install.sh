@@ -179,6 +179,8 @@ Usage: ./install.sh [option]
                 combine with --dry-run to only preview what would be deleted
   --report      print the final report (UI URL, IP, hosts entries) of the last
                 successful installation from this folder
+  --verbose     show the full help text before every question (otherwise:
+                answer ? to see it)
   --help        this text
 USAGE
 }
@@ -213,6 +215,7 @@ for (( _i = 0; _i < ${#_args[@]}; _i++ )); do
     --start=dry-run) START_CHOICE=dry-run; DRY_RUN=true ;;
     --start=resume) START_CHOICE=resume; RESUME=true ;;
     --dry-run) DRY_RUN=true ;;
+    --verbose) export INSTANA_VERBOSE=1 ;;
     --destroy) DESTROY=true ;;
     --report)
       if [[ -f "${SCRIPT_DIR}/.install-report.txt" ]]; then cat "${SCRIPT_DIR}/.install-report.txt"; exit 0
@@ -409,17 +412,99 @@ prompt() {
   [[ "${WIZ_ACTIVE:-0}" != 1 || -z "${!var_name:-}" ]] || default="${!var_name}"
   # Changing one value from the plan: its current value is the default.
   [[ -n "${EDIT_KEY:-}" && "$var_name" == "$EDIT_KEY" && -n "${EDIT_DEFAULT:-}" ]] && default="$EDIT_DEFAULT"
-  local value back=""
-  [[ "${NAV_ON:-0}" != 1 ]] || back=" (< = back)"
-  if [[ -n "$default" ]]; then
-    read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text} [${default}]${back}: ")" value || return 1
-    [[ "${NAV_ON:-0}" != 1 || "$value" != "<" ]] || return 3
-    echo "${value:-$default}"
-  else
-    read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text}${back}: ")" value || return 1
-    [[ "${NAV_ON:-0}" != 1 || "$value" != "<" ]] || return 3
-    echo "$value"
-  fi
+  local value back="" nav="${NAV_ON:-0}" shown="$prompt_text"
+  [[ "$nav" != 1 ]] || back=" $(back_label)"
+  [[ -z "$default" ]] || shown+=" [${default}]"
+  read_answer value "$(echo -e "${CYAN}?${RESET} ${BOLD}${shown}${RESET}${back}: ")" "$nav" || return $?
+  echo "${value:-$default}"
+}
+
+# ── Reading answers ──────────────────────────────────────────────────────────
+# back_label — how "back" is given at a text question: on a terminal the
+# left-arrow key (or < and Enter), otherwise < and Enter.
+back_label() {
+  if [[ -t 0 ]]; then echo -e "${DIM}[← = back]${RESET}"; else echo "(< = back)"; fi
+}
+
+# strip_keys TEXT — TEXT without the escape sequences of arrow and other
+# special keys (typed into a plain read they arrive as ^[[D and the like).
+strip_keys() {
+  local v="$1" re=$'\e''(\[[0-9;?]*[A-Za-z~]|O[A-Za-z])?'
+  while [[ "$v" =~ $re ]]; do v="${v/"${BASH_REMATCH[0]}"/}"; done
+  printf '%s' "$v"
+}
+
+# read_key_rest — after an ESC typed on a terminal: reads and prints the rest
+# of that key's sequence only ([D for the left arrow, OD in application
+# mode, [1;5D ...), never the characters typed after it.
+read_key_rest() {
+  local c seq=""
+  IFS= read -rsn1 -t 0.1 c || { printf ''; return 0; }
+  seq="$c"
+  case "$c" in
+    "[") while IFS= read -rsn1 -t 0.1 c; do seq+="$c"; [[ "$c" != [@-~] ]] || break; done ;;
+    O) IFS= read -rsn1 -t 0.1 c && seq+="$c" ;;
+  esac
+  printf '%s' "$seq"
+}
+
+# rl_prompt TEXT — TEXT for readline's prompt: colour codes marked as
+# invisible so line editing keeps the cursor in the right place.
+rl_prompt() {
+  local p="$1" out="" re=$'^([^\e]*)(\e\[[0-9;]*m)(.*)$'
+  while [[ "$p" =~ $re ]]; do out+="${BASH_REMATCH[1]}"$'\001'"${BASH_REMATCH[2]}"$'\002'; p="${BASH_REMATCH[3]}"; done
+  printf '%s' "${out}${p}"
+}
+
+# show_more_help — the longer explanation of the current question ("?").
+show_more_help() {
+  local line
+  if (( ${#HINT_MORE[@]} == 0 )); then echo "    No more help for this question." >&2; return 0; fi
+  for line in "${HINT_MORE[@]}"; do echo -e "    ${line}" >&2; done
+}
+
+# read_answer VAR PROMPT [BACK] — reads one typed answer into VAR.
+# Returns 1 at the end of the input and, with BACK=1, 3 for "back": < and
+# Enter. On a terminal the left-arrow key on an empty answer writes the <
+# (Enter then goes back; Backspace takes it away), so "arrow, <, Enter" and
+# "arrow, Enter" both go back exactly one question. "?" and Enter shows the
+# longer help and asks again. On a terminal the answer is edited with
+# readline (arrows, Backspace, Tab completes paths). Escape sequences of
+# special keys never reach the answer.
+read_answer() {
+  local __var="$1" __p="$2" __back="${3:-0}" __v __first __rest __arrow __pre __backre='^[<]+$'
+  while true; do
+    __v="" __arrow=0 __pre=""
+    if [[ ! -t 0 ]]; then
+      read -r __v || return 1
+    elif [[ "$__back" == 1 ]]; then
+      printf '%s' "$__p" >&2
+      IFS= read -rsn1 __first || { echo "" >&2; return 1; }
+      if [[ "$__first" == $'\e' ]]; then
+        __rest=$(read_key_rest)
+        [[ "$__rest" != "[D" && "$__rest" != "OD" ]] || __pre="<"     # other keys: ignored
+      elif [[ "$__first" != $'\x7f' && "$__first" != $'\b' ]]; then
+        __pre="$__first"
+      fi
+      if [[ -z "$__first" ]]; then
+        echo "" >&2
+      else
+        printf '\r\033[K' >&2
+        read -e -r -i "$__pre" -p "$(rl_prompt "$__p")" __v || { echo "" >&2; return 1; }
+      fi
+    else
+      read -e -r -p "$(rl_prompt "$__p")" __v || { echo "" >&2; return 1; }
+    fi
+    if [[ "$__v" == *$'\e'* ]]; then
+      [[ "$__v" != *$'\e[D'* && "$__v" != *$'\eOD'* ]] || __arrow=1
+      __v=$(strip_keys "$__v")
+      __v="${__v#"${__v%%[![:space:]]*}"}"; __v="${__v%"${__v##*[![:space:]]}"}"
+    fi
+    if [[ "$__back" == 1 ]] && [[ "$__v" =~ $__backre || ( "$__arrow" == 1 && -z "$__v" ) ]]; then return 3; fi
+    if [[ "$__v" == "?" ]]; then show_more_help; continue; fi
+    printf -v "$__var" '%s' "$__v"
+    return 0
+  done
 }
 
 # Hidden input that still gives feedback: one • per typed character,
@@ -429,53 +514,80 @@ prompt_secret() {
   local value="" ch extra="" keep=""
   if [[ "${NAV_ON:-0}" == 1 ]]; then
     keep="${!var_name:-}"
-    if [[ -n "$keep" ]]; then extra=" (< = back, Enter = keep the one typed before)"; else extra=" (< = back)"; fi
+    if [[ -n "$keep" ]]; then extra=" ${DIM}[< Enter = back, Enter = keep the one typed before]${RESET}"; else extra=" ${DIM}[< Enter = back]${RESET}"; fi
   fi
-  if [[ ! -t 0 ]]; then
-    read -rs value || return 1
-    [[ "${NAV_ON:-0}" != 1 || "$value" != "<" ]] || return 3
-    echo "${value:-$keep}"; return 0
-  fi
-  printf '%b' "${CYAN}?${RESET} ${prompt_text}${extra}: " >&2
-  while IFS= read -rs -n1 ch; do
-    if [[ -z "$ch" ]]; then break; fi                      # Enter
-    if [[ "$ch" == $'\x7f' || "$ch" == $'\x08' ]]; then     # Backspace
-      if [[ -n "$value" ]]; then value="${value%?}"; printf '\b \b' >&2; fi
-      continue
+  while true; do
+    value=""
+    if [[ ! -t 0 ]]; then
+      read -rs value || return 1
+    else
+      printf '%b' "${CYAN}?${RESET} ${BOLD}${prompt_text}${RESET}${extra}: " >&2
+      while IFS= read -rs -n1 ch; do
+        if [[ -z "$ch" ]]; then break; fi                      # Enter
+        if [[ "$ch" == $'\x7f' || "$ch" == $'\x08' ]]; then     # Backspace
+          if [[ -n "$value" ]]; then value="${value%?}"; printf '\b \b' >&2; fi
+          continue
+        fi
+        if [[ "$ch" == $'\e' ]]; then                          # arrow or other special key: ignored
+          read_key_rest >/dev/null
+          continue
+        fi
+        value+="$ch"
+        printf '•' >&2
+      done || { echo "" >&2; return 1; }
+      echo "" >&2
     fi
-    value+="$ch"
-    printf '•' >&2
-  done || { echo "" >&2; return 1; }
-  echo "" >&2
-  [[ "${NAV_ON:-0}" != 1 || "$value" != "<" ]] || return 3
-  echo "${value:-$keep}"
+    [[ "$value" != *$'\e'* ]] || value=$(strip_keys "$value")
+    [[ "${NAV_ON:-0}" != 1 || "$value" != "<" ]] || return 3
+    if [[ "$value" == "?" ]]; then show_more_help; continue; fi
+    echo "${value:-$keep}"
+    return 0
+  done
 }
 
 # prompt_choice TEXT OPTION... — prints the chosen option. With
 # PROMPT_CHOICE_DEFAULT set to one of the options (only for this call:
 # PROMPT_CHOICE_DEFAULT=x prompt_choice ...), Enter selects it.
+# An option may carry a short explanation after a TAB ("label<TAB>detail");
+# it is shown dimmed (a literal \n in it starts a new line), and only the
+# label is printed as the answer. With NAV_CHOICE_BACK=1 the list ends with
+# "0) ← back" (0, < or the left-arrow key: return 3).
 prompt_choice() {
   local prompt_text="$1"; shift
-  local options=("$@") def="${PROMPT_CHOICE_DEFAULT:-}" def_i=0
-  echo -e "${CYAN}?${RESET} ${prompt_text}" >&2
+  local options=("$@") def="${PROMPT_CHOICE_DEFAULT:-}" def_i=0 back="${NAV_CHOICE_BACK:-0}"
+  local opt label detail line width=0
+  for opt in "${options[@]}"; do label="${opt%%$'\t'*}"; (( ${#label} <= width )) || width=${#label}; done
+  echo -e "${CYAN}?${RESET} ${BOLD}${prompt_text}${RESET}" >&2
   local i=1
   for opt in "${options[@]}"; do
-    echo "  $i) $opt" >&2
+    label="${opt%%$'\t'*}"; detail=""
+    [[ "$opt" != *$'\t'* ]] || detail="${opt#*$'\t'}"
+    if [[ -z "$detail" ]]; then
+      echo "  $i) $label" >&2
+    elif [[ "$detail" != *'\n'* ]]; then
+      printf '  %s) %-*s   %b\n' "$i" "$width" "$label" "${DIM}${detail}${RESET}" >&2
+    else
+      echo "  $i) $label" >&2
+      while IFS= read -r line; do echo -e "       ${DIM}${line}${RESET}" >&2; done <<< "${detail//'\n'/$'\n'}"
+    fi
     # The default matches an option exactly or its first word ("demo" → "demo (suggested)").
-    [[ -z "$def" || "$def_i" != 0 ]] || [[ "$opt" != "$def" && "$opt" != "$def "* ]] || def_i=$i
+    [[ -z "$def" || "$def_i" != 0 ]] || [[ "$label" != "$def" && "$label" != "$def "* ]] || def_i=$i
     (( i++ ))
   done
-  local choice range="1-${#options[@]}"
+  [[ "$back" != 1 ]] || echo "  0) ← back" >&2
+  local choice range="1-${#options[@]}" rc
   (( def_i == 0 )) || range+=", Enter = ${def_i}"
-  [[ "${NAV_CHOICE_BACK:-0}" != 1 ]] || range+=", < = back"
   while true; do
-    read -rp "$(echo -e "${CYAN}  Select [${range}]:${RESET} ")" choice || return 1
-    [[ "${NAV_CHOICE_BACK:-0}" != 1 || "$choice" != "<" ]] || return 3
+    rc=0; read_answer choice "$(echo -e "  ${BOLD}Select [${range}]:${RESET} ")" "$back" || rc=$?
+    (( rc == 0 )) || return "$rc"
+    [[ "$back" != 1 || "$choice" != 0 ]] || return 3
     [[ -n "$choice" || "$def_i" == 0 ]] || choice=$def_i
     [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )) && break
-    echo "Invalid selection: type a number from 1 to ${#options[@]}." >&2
+    if [[ "$back" == 1 ]]; then echo "Invalid selection: type a number from 1 to ${#options[@]}, or 0 to go back." >&2
+    else echo "Invalid selection: type a number from 1 to ${#options[@]}." >&2; fi
   done
-  echo "${options[$((choice - 1))]}"
+  label="${options[$((choice - 1))]}"
+  echo "${label%%$'\t'*}"
 }
 
 # Yes/no questions always show both answers and which one Enter selects,
@@ -485,7 +597,7 @@ prompt_yes_no() {
   local answer hint
   if [[ "${default^^}" == Y ]]; then hint="[Y/n] (Enter = yes)"; else hint="[y/N] (Enter = no)"; fi
   while true; do
-    read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text} ${hint}: ")" answer || return 1
+    read_answer answer "$(echo -e "${CYAN}?${RESET} ${BOLD}${prompt_text}${RESET} ${hint}: ")" || return 1
     answer="${answer:-$default}"
     case "${answer,,}" in
       y|yes) return 0 ;;
@@ -500,7 +612,7 @@ prompt_yes_no() {
 prompt_plan_decision() {
   local answer
   while true; do
-    read -rp "$(echo -e "${CYAN}?${RESET} Start now? Y = start, E = edit a value, S = save to a file, N = cancel [y/e/s/N] (Enter = no): ")" answer || { echo no; return 0; }
+    read_answer answer "$(echo -e "${CYAN}?${RESET} ${BOLD}Start now? Y = start, E = edit a value, S = save to a file, N = cancel [y/e/s/N] (Enter = no):${RESET} ")" || { echo no; return 0; }
     case "${answer,,}" in
       y|yes) echo yes; return 0 ;;
       e|edit) echo edit; return 0 ;;
@@ -511,13 +623,37 @@ prompt_plan_decision() {
   done
 }
 
-# hint TEXT... — one or more short explanation lines shown before a question,
-# for operators who see the installer for the first time.
+# hint LINE [MORE...] — the short explanation shown before a question: only
+# its first line; the other lines are the longer help, shown when "?" is
+# answered (or always with --verbose / INSTANA_VERBOSE=1).
+HINT_MORE=()
 hint() {
   local line
+  HINT_MORE=("${@:2}")
+  if [[ "${INSTANA_VERBOSE:-0}" == 1 ]]; then
+    for line in "$@"; do echo -e "    ${DIM}${line}${RESET}" >&2; done
+    return 0
+  fi
+  if (( $# > 1 )); then echo -e "    ${DIM}${1}  ? = more${RESET}" >&2
+  else echo -e "    ${DIM}${1}${RESET}" >&2; fi
+}
+
+# opt_detail NAME LINE... — "NAME<TAB>text" from the line "NAME: text" (the
+# explanation shown dimmed next to a pick-list option), or NAME alone.
+opt_detail() {
+  local name="$1" line; shift
   for line in "$@"; do
-    echo -e "    ${DIM:-}${line}${RESET}" >&2
+    [[ "$line" != "${name}: "* ]] || { printf '%s\t%s' "$name" "${line#"${name}: "}"; return 0; }
   done
+  printf '%s' "$name"
+}
+
+# type_detail demo|production — the IBM minimum of a single-node type.
+type_detail() {
+  case "$1" in
+    demo) echo "16 vCPU / 64 GB, disks 500/300/250/150 GB" ;;
+    production) echo "28 vCPU / 112 GB, disks 1200/1000/1000/500 GB" ;;
+  esac
 }
 
 # ── Interactive input never aborts silently ──────────────────────────────────
@@ -552,7 +688,7 @@ screen_stop_reason() {
 confirm_cancel() {
   local answer
   local op="${OPERATION_NAME:-installation}"
-  read -rp "$(echo -e "${YELLOW}!${RESET} No valid value entered. Cancel the ${op}? [y/N]: ")" answer ||
+  read_answer answer "$(echo -e "${YELLOW}!${RESET} No valid value entered. Cancel the ${op}? [y/N]: ")" ||
     die "Input ended before the answers were complete; ${op} cancelled. Nothing was changed."
   case "${answer,,}" in
     y|yes) operator_cancel ;;
@@ -581,6 +717,7 @@ prompt_required() {
       continue
     fi
     printf -v "$var_name" '%s' "$value"
+    HINT_MORE=()
     return 0
   done
 }
@@ -596,6 +733,7 @@ prompt_secret_required() {
     (( rc == 0 )) || die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
     if validate_secret "$value" "$label"; then
       printf -v "$var_name" '%s' "$value"
+      HINT_MORE=()
       return 0
     fi
     confirm_cancel
@@ -676,7 +814,7 @@ ask_choice() {
   NAV_ASKED=1
   v=$(PROMPT_CHOICE_DEFAULT="$def" NAV_CHOICE_BACK="${NAV_ON:-0}" prompt_choice "$text" "$@") || rc=$?
   case "$rc" in
-    0) printf -v "$var" '%s' "$v" ;;
+    0) printf -v "$var" '%s' "$v"; HINT_MORE=() ;;
     3) NAV_BACK=1 ;;
     *) die "Input ended before the parameters were complete; installation cancelled. Nothing was created." ;;
   esac
@@ -775,8 +913,8 @@ wiz_topology() {
   mapfile -t topo_hint < <(provider_text_or topology_hint \
     "single-node: everything on one VM (labs, demos, small setups)." \
     "three-node: Instana spread over three VMs, IBM 'production' type, needs 3x n2-standard-16.")
-  hint "${topo_hint[@]}"
-  ASK_DEFAULT=single-node ask_choice TOPOLOGY "Select deployment topology:" "single-node" "three-node"
+  ASK_DEFAULT=single-node ask_choice TOPOLOGY "Select deployment topology:" \
+    "$(opt_detail single-node "${topo_hint[@]}")" "$(opt_detail three-node "${topo_hint[@]}")"
 }
 
 wiz_mode() {
@@ -785,8 +923,8 @@ wiz_mode() {
   mapfile -t mode_hint < <(provider_text_or mode_hint \
     "online: the Instana VM downloads stanctl and images from the Instana repository itself (simplest)." \
     "air-gapped: everything comes from one instana-airgapped.tar.gz package; you will be guided to obtain or build it.")
-  hint "${mode_hint[@]}"
-  ASK_DEFAULT=online ask_choice INSTALL_MODE "Select installation connectivity mode:" "online" "air-gapped"
+  ASK_DEFAULT=online ask_choice INSTALL_MODE "Select installation connectivity mode:" \
+    "$(opt_detail online "${mode_hint[@]}")" "$(opt_detail air-gapped "${mode_hint[@]}")"
 }
 
 wiz_type() {
@@ -799,9 +937,11 @@ wiz_type() {
   local suggested=demo why=""
   if [[ "$(provider_name)" == ssh && -n "${VM_HOST:-}" ]] && declare -F ssh_type_suggestion >/dev/null; then
     read -r suggested why <<< "$(ssh_type_suggestion "$VM_HOST")"
-    hint "Suggested from the checks above: ${suggested}." "Why: ${why}"
+    hint "Suggested from the checks above: ${suggested} (${why})."
     while true; do
-      ASK_DEFAULT=$suggested ask_choice INSTALL_TYPE "Select installation type:" "demo$([[ $suggested == demo ]] && echo ' (suggested)')" "production$([[ $suggested == production ]] && echo ' (suggested)')"
+      ASK_DEFAULT=$suggested ask_choice INSTALL_TYPE "Select installation type:" \
+        "demo$([[ $suggested == demo ]] && echo ' (suggested)')"$'\t'"$(type_detail demo)" \
+        "production$([[ $suggested == production ]] && echo ' (suggested)')"$'\t'"$(type_detail production)"
       INSTALL_TYPE="${INSTALL_TYPE%% *}"
       (( NAV_BACK == 0 )) || return 0
       [[ "$INSTALL_TYPE" == production && "$suggested" == demo ]] || return 0
@@ -809,8 +949,9 @@ wiz_type() {
       INSTALL_TYPE=""
     done
   fi
-  hint "demo: smaller disks/resources for evaluation. production: IBM-sized disks (larger, more expensive)."
-  ASK_DEFAULT=demo ask_choice INSTALL_TYPE "Select installation type:" "demo" "production"
+  hint "demo = lab / evaluation, production = IBM-sized (larger, more expensive)."
+  ASK_DEFAULT=demo ask_choice INSTALL_TYPE "Select installation type:" \
+    "demo"$'\t'"$(type_detail demo)" "production"$'\t'"$(type_detail production)"
 }
 
 # Ubuntu version — from docs: Ubuntu 24.04 and 22.04 only
@@ -846,7 +987,7 @@ wiz_cidr() {
   # Typed answers: part of the location block ("Use detected").
   [[ "$PARAMS_SOURCE" == import ]] || return 0
   use_imported SSH_SOURCE_CIDR && return 0
-  hint "Which public IP address may open SSH to the VM(s). Default = this machine's own public IP with /32 (only this machine)." \
+  hint "Public IP that may open SSH to the VM(s); default = this machine's own IP with /32." \
        "0.0.0.0/0 would allow the whole internet; avoid it."
   prompt_required "SSH_SOURCE_CIDR" "CIDR allowed to SSH to the VM(s)" "$(detect_public_cidr)" validate_cidr
 }
@@ -857,8 +998,9 @@ wiz_vm_name() {
   wiz_host_name VM_NAME default_vm_name && return 0
   local -a name_hint
   mapfile -t name_hint < <(provider_text_or vm_name_hint \
-    "Name of the new VM in GCP; the four data disks will be named <vm>-analytics/-metrics/-objects/-data." \
-    "Lowercase letters, digits and hyphens. Must not already exist in the zone.")
+    "Name of the new VM (its disks get the same name + -analytics, -metrics, -objects, -data)." \
+    "Lowercase letters, digits and hyphens, starting with a letter, at most 63 characters." \
+    "It must not exist yet in the zone (checked right after you answer).")
   hint "${name_hint[@]}"
   prompt_required "VM_NAME" "VM name" "$(provider_text_or default_vm_name instana-backend)" validate_new_vm_name VM_NAME
 }
@@ -929,12 +1071,13 @@ wiz_domain() {
   local suggest=""
   suggest=$(lab_domain_suggestion)
   if [[ -n "$suggest" ]]; then
-    hint "Domain under which Instana will be reached. Suggested: a free wildcard name for the host's public IP" \
-         "(${suggest#instana.}: sslip.io resolves every sub-name to that IP, no DNS setup needed)." \
+    hint "Domain for the UI; suggested: ${suggest#instana.} (sslip.io, no DNS setup needed)." \
+         "sslip.io resolves every sub-name to the host's public IP, so a lab needs no DNS records." \
          "Use your own domain (you must be able to add DNS records) for anything that is not a short-lived lab."
   else
-    hint "Domain under which Instana will be reached, e.g. instana.example.com. You must own it and be able to add DNS records;" \
-         "for a lab you can instead put the entries printed at the end into /etc/hosts on your computer."
+    hint "Domain for the UI, e.g. instana.example.com (you add its DNS records)." \
+         "You must own the domain and be able to add DNS records." \
+         "For a lab you can instead put the entries printed at the end into /etc/hosts on your computer."
   fi
   prompt_required "BASE_DOMAIN" "Base domain (e.g. instana.example.com)" "$suggest" validate_fqdn
 }
@@ -956,8 +1099,8 @@ lab_domain_suggestion() {
 # Tenant / unit names
 wiz_tenant() {
   use_imported TENANT_NAME && return 0
-  hint "Tenant and unit are Instana's two-level naming; they form the UI address <unit>-<tenant>.<domain>." \
-       "Any short lowercase names are fine (e.g. company name and 'prod' or 'lab')."
+  hint "Tenant and unit form the UI address <unit>-<tenant>.<domain>." \
+       "They are Instana's two-level naming; any short lowercase names are fine (e.g. company name and 'prod' or 'lab')."
   prompt_required "TENANT_NAME" "Tenant name (max 15 chars, lowercase alphanumeric, start with letter)" "tenant0" validate_tenant_unit_name "Tenant name"
 }
 wiz_unit() {
@@ -971,8 +1114,8 @@ wiz_admin_password() {
   use_imported_secret ADMIN_PASSWORD && return 0
   echo ""
   log "Instana admin password (will not be stored in any file or log)"
-  hint "Password you choose now for the first UI user admin@instana.local. Typing shows • per character." \
-       "A password that is only '<' is not possible here ('<' alone goes back); '<' inside a password is fine."
+  hint "Password you choose now for the first UI user admin@instana.local (shown as •)." \
+       "A password that is only '<' or '?' is not possible here ('<' alone goes back, '?' shows this help); inside a password both are fine."
   prompt_secret_required "ADMIN_PASSWORD" "Instana admin password" "Admin password"
 }
 
@@ -981,7 +1124,8 @@ wiz_download_key() {
   use_imported_secret DOWNLOAD_KEY && return 0
   echo ""
   log "Instana license keys (will not be stored in any file or log)"
-  hint "The three keys come from your Instana/IBM entitlement (Instana portal or the IBM license center):" \
+  hint "Download key: access to IBM's software repository (from your Instana entitlement)." \
+       "The three keys come from the Instana portal or the IBM license center:" \
        "download key = access to the software repository; agent key = lets agents connect; sales key = your license." \
        "Paste each one (typing shows • per character)."
   prompt_secret_required "DOWNLOAD_KEY" "Instana download key" "Download key"
@@ -1044,12 +1188,13 @@ wiz_tls() {
   local found; found=$(find_tls_cert_for_domain)
   if [[ -n "$found" ]]; then
     TLS_FOUND_CRT="${found%% *}"; TLS_FOUND_KEY="${found#* }"
-    hint "Found a certificate for ${BASE_DOMAIN} in this folder: ${TLS_FOUND_CRT} (key ${TLS_FOUND_KEY}); Enter uses it." \
+    hint "Found a certificate for ${BASE_DOMAIN} here: $(basename "$TLS_FOUND_CRT"); Enter uses it." \
+         "Certificate ${TLS_FOUND_CRT}, key ${TLS_FOUND_KEY}." \
          "Self-signed is generated automatically instead (the browser warns; fine for a lab)."
     ASK_DEFAULT="provide custom certificate files" ask_choice TLS_MODE "TLS certificate:" "auto-generate (self-signed)" "provide custom certificate files"
     return 0
   fi
-  hint "HTTPS certificate for the UI. Self-signed is generated automatically (browser will warn; fine for a lab)." \
+  hint "HTTPS certificate for the UI: self-signed (browser warns; fine for a lab) or your own files." \
        "Custom = you provide a certificate and key file for the domain (needed for production)."
   ASK_DEFAULT="auto-generate (self-signed)" ask_choice TLS_MODE "TLS certificate:" "auto-generate (self-signed)" "provide custom certificate files"
 }
@@ -1058,8 +1203,8 @@ wiz_tls() {
 wiz_kube() {
   use_imported KUBE_USER_ACCESS && return 0
   if [[ "${EDIT_KEY:-}" == KUBE_USER_ACCESS ]]; then
-    hint "yes: the SSH user on the Instana host gets a copy of the cluster-admin kubeconfig (kubectl without sudo," \
-         "full cluster administration for that user). no: use sudo kubectl."
+    hint "yes = the SSH user gets the cluster-admin kubeconfig (kubectl without sudo)." \
+         "That is full cluster administration for that user. no: use sudo kubectl."
     ASK_DEFAULT=no ask_choice KUBE_USER_ACCESS "Let the SSH user run kubectl without sudo?" "no" "yes"
     return 0
   fi
@@ -1336,7 +1481,7 @@ select_versions_upfront() {
   echo "" >&2
   log "Backend version selection"
   imported_usable STANCTL_VERSION BACKEND_VERSION ||
-  hint "Choose the exact Instana backend version to install, e.g. the version your customer runs." \
+  hint "Pick the exact Instana backend version, e.g. the one your customer runs." \
        "The matching stanctl is installed on this machine first (needs sudo, Ubuntu/Debian and access to" \
        "artifact-public.instana.io with your download key) so the list below is the one IBM publishes for it." \
        "The versions are pinned for this run and shown in the plan and the final report."
@@ -2728,8 +2873,8 @@ offer_reattach_running_installer() {
   (( ${#sessions[@]} > 0 )) || return 0
   echo "" >&2
   log "An installer session is still running in screen: ${sessions[*]}"
-  hint "It survived because it runs inside screen. Reattaching shows its live output exactly where it left off;" \
-       "nothing is restarted. Detach again at any time with Ctrl+A then D."
+  hint "It kept running inside screen; reattaching shows its live output (nothing restarts)." \
+       "Detach again at any time with Ctrl+A then D."
   local choice
   choice=$(prompt_choice "Reattach to it (recommended after a lost connection) or start something new?" \
     "reattach to the running installer ${sessions[0]}" \
@@ -2750,7 +2895,8 @@ ensure_detachable_session() {
   [[ "${REATTACH_OFFERED:-0}" == 1 ]] || offer_reattach_running_installer
   echo "" >&2
   warn "You are not inside a screen/tmux session."
-  hint "Why this matters: this installer runs 30-40 min for single-node online (longer for three-node and air-gapped) and drives 'stanctl up' on the Instana VM through an SSH" \
+  hint "A dropped connection would kill the installation; screen keeps it running." \
+       "Why this matters: this installer runs 30-40 min for single-node online (longer for three-node and air-gapped) and drives 'stanctl up' on the Instana VM through an SSH" \
        "connection from THIS terminal. If your own connection to this machine drops (Wi-Fi, VPN, laptop sleep), Linux" \
        "closes the terminal and kills everything started from it, including stanctl up in the middle of the installation." \
        "'screen' keeps the installer running on this machine independent of your connection: you can disconnect at any" \
@@ -2880,6 +3026,7 @@ main() {
   if [[ -t 0 && -t 1 && -z "${STY:-}" && -z "${TMUX:-}" && "${INSTANA_NO_SCREEN:-}" != 1 ]]; then
     offer_reattach_running_installer; REATTACH_OFFERED=1
   fi
+  [[ "${1:-}" != --verbose ]] || shift
   if [[ $# -eq 0 && -t 0 ]]; then
     start_menu
     case "${START_CHOICE:-}" in

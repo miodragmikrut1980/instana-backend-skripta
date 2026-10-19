@@ -34,7 +34,7 @@ plain() { sed 's/\x1b\[[0-9;]*m//g' "$OUT"; }
 
 ( init; prov_ssh_ask_host VM_HOST "Host address" < <(printf '2\n') > "$OUT" 2>&1; test "$VM_HOST" = 10.172.0.9 )
 o=$(plain)
-[[ "$o" == *"Running VMs in Google Cloud project test-project"* ]]
+[[ "$o" == *"Running VMs in project test-project; pick one"* ]]
 [[ "$o" == *"aa-b  (europe-west6-b, 10.172.0.7)"*"ssh-test-1  (europe-west6-b, 10.172.0.9)"*"zz-a  (us-central1-a, 10.128.0.5)"*"enter another address"* ]] ||
   { echo "FAIL: list order or content: $o" >&2; exit 1; }
 if [[ "$o" == *"ctl  ("* || "$o" == *"bad;name"* ]]; then echo "FAIL: this machine or an unsafe name offered" >&2; exit 1; fi

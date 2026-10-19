@@ -545,3 +545,26 @@ and every answer was lost.
 - Log files (install-*.log, destroy-*.log) never contain colour codes, also
   when the screen shows colours; a dry-run command line is logged on one line.
 - Tests: test-plain-output.sh (pipe, terminal + log, NO_COLOR); mutants killed.
+
+2026-10-19 — UX v3: clear "back", one-line help, keys never in answers
+- Pick lists end with "0) ← back" (0, < and Enter, or the left arrow).
+- Text questions say "[← = back]": on a terminal the left-arrow key on an
+  empty answer writes "<" and Enter goes back (Backspace undoes it), so
+  "arrow + Enter", "arrow + < + Enter" and "< + Enter" all go back exactly one
+  question. Without a terminal "<" + Enter, as before. Secrets: arrows are
+  ignored, "[< Enter = back]".
+- Escape sequences of arrow and other special keys are removed from every
+  answer before it is checked or stored (a real run sent "^[[D<" from the
+  "Use detected" question and it was refused); they never reach a value or
+  the log.
+- On a terminal, text answers are edited with readline (cursor keys,
+  Backspace, Tab completes paths).
+- Help above a question is one short line; "?" + Enter shows the longer
+  explanation; --verbose (or INSTANA_VERBOSE=1) always shows all of it.
+  Topology, mode and type options carry their short explanation on the
+  option line; the questions are bold, explanations dimmed.
+- Tests: test-answer-keys.sh (terminal: arrow+Enter, arrow+<+Enter, ESC O D,
+  ?, Backspace, pick list 0/arrow/default; without a terminal: ^[[D<, ^[OD,
+  other keys dropped; secret ignores arrows); wording updated in
+  test-nav-back.sh, test-ssh-login-flow.sh, test-ssh-host-choice.sh;
+  mutants killed (no stripping, arrow acting at once, 0 not going back).

@@ -319,8 +319,7 @@ prov_ssh_agent_preflight() {
     SSH_AGENT_CHECKED="$key"; ok "SSH key ${key} is loaded in ssh-agent."; return 0
   fi
   if [[ -t 0 ]]; then
-    hint "SSH key ${key} is protected by a passphrase and not loaded in ssh-agent yet." \
-         "ssh-add will now ask for the passphrase once (typed into ssh-add, not into this installer)."
+    hint "SSH key ${key} has a passphrase: ssh-add asks for it once now (typed into ssh-add, not here)."
     if ssh-add "$key"; then
       SSH_AGENT_CHECKED="$key"; ok "SSH key ${key} loaded in ssh-agent."; return 0
     fi
@@ -489,19 +488,19 @@ size_at_least_gb() { (( ${1:-0} * 100 >= ${2} * 1000000000 * 97 )); }
 prov_ssh_collect_location_params() {
   if [[ "$TOPOLOGY" == three-node ]]; then
     imported_usable NODE0_HOST NODE1_HOST NODE2_HOST ||
-      hint "Addresses of the three existing hosts (IPv4 or DNS name reachable from this machine)." \
+      hint "The three existing hosts (IPv4 or DNS name reachable from here)." \
            "Node 0 runs the backend and stanctl, node 1 the data stores (three big disks), node 2 the rest."
     prov_ssh_ask_host NODE0_HOST "Node 0 host (backend)"
     prov_ssh_ask_host NODE1_HOST "Node 1 host (data store)"
     prov_ssh_ask_host NODE2_HOST "Node 2 host (other)"
   else
     imported_usable VM_HOST ||
-      hint "Address of the existing Ubuntu host (IPv4 or DNS name reachable from this machine)." \
+      hint "The existing Ubuntu host (IPv4 or DNS name reachable from here)." \
            "The installer checks it before anything is changed; it never deletes or recreates the host."
     prov_ssh_ask_host VM_HOST "Host address"
   fi
   imported_usable SSH_USER SSH_KEY_PATH SSH_PORT ||
-    hint "How this machine logs in: a user with passwordless sudo on the host(s), the private key file and the SSH port." \
+    hint "Login: a user with passwordless sudo on the host(s), a private key here, the SSH port." \
          "The key never leaves this machine; only its path is saved."
   # Ubuntu cloud images (GCP, AWS, ...) log in as "ubuntu"; a saved value comes first.
   use_imported SSH_USER || prompt_required SSH_USER "SSH user" "ubuntu" validate_ssh_user
@@ -510,8 +509,8 @@ prov_ssh_collect_location_params() {
   use_imported SSH_PORT || prompt_required SSH_PORT "SSH port" "22" validate_ssh_port
   if [[ "$TOPOLOGY" == three-node ]]; then
     use_imported SSH_VIA_PRIVATE || {
-      hint "Are the node addresses above private (this machine is in the same network)? Then the public address" \
-           "for the browser is asked at the end instead of being taken from them."
+      hint "Private node addresses (this machine is in the same network)?" \
+           "Then the public address for the browser is asked at the end instead of being taken from them."
       SSH_VIA_PRIVATE=$(prompt_choice "Node addresses are:" "false" "true")
     }
   else
@@ -530,8 +529,8 @@ prov_ssh_collect_location_params() {
     if [[ -z "$known" ]]; then
       known=$(prov_ssh_known_key "$host")
       warn "First connection to ${host}: its SSH host key is now trusted for this deployment: ${known:-not recorded}."
-      hint "Compare it with the key on the host's console if you can (sudo ssh-keygen -l -f /etc/ssh/ssh_host_ed25519_key.pub)." \
-           "From now on a different key on this address stops the installer."
+      hint "From now on a different key on this address stops the installer." \
+           "Compare it with the key on the host's console if you can (sudo ssh-keygen -l -f /etc/ssh/ssh_host_ed25519_key.pub)."
     fi
     ok "${host}: $(prov_ssh_fact "$host" OS_NAME), $(prov_ssh_fact "$host" CPUS) vCPUs, $(( $(prov_ssh_fact "$host" MEM_KB) / 1000000 )) GB RAM, hostname $(prov_ssh_fact "$host" HOSTNAME)."
   done < <(prov_ssh_hosts)
@@ -621,7 +620,7 @@ ssh_validate_host_list() {
 
 wiz_ssh_hosts() {
   [[ "$(provider_name)" == ssh && "$PARAMS_SOURCE" != import ]] || return 0
-  local -a cands; local c i=1 name ip nat zone mt src answer prev tok picked
+  local -a cands; local c i=1 name ip nat zone mt src answer prev tok picked rc
   prev=$(ssh_current_hosts | xargs)
   [[ -n "$prev" || "${CONFIG_LOADED:-false}" != true ]] || prev=$(jq -r '[.parameters.VM_HOST // empty, .parameters.NODE0_HOST // empty, .parameters.NODE1_HOST // empty, .parameters.NODE2_HOST // empty] | map(select(. != "")) | join(" ")' "$CONFIG_FILE" 2>/dev/null || true)
   mapfile -t cands < <(ssh_host_candidates)
@@ -629,7 +628,7 @@ wiz_ssh_hosts() {
   echo "" >&2
   if (( ${#cands[@]} == 0 || SSH_HOSTS_TYPE_FIRST )); then
     SSH_HOSTS_TYPE_FIRST=0
-    hint "The machine(s) Instana goes on: 1 address for single-node, 3 for three-node (node 0 first), separated by spaces." \
+    hint "1 address for single-node, 3 for three-node (node 0 first), separated by spaces." \
          "IPv4 or a DNS name reachable from this machine; host:port for another SSH port."
     SSH_HOSTS_INPUT="$prev"
     prompt_required SSH_HOSTS_INPUT "Host address(es)" "$prev" ssh_validate_host_list
@@ -637,7 +636,7 @@ wiz_ssh_hosts() {
     ssh_set_hosts "$SSH_HOSTS_INPUT"
     return 0
   fi
-  hint "The machine(s) Instana goes on: pick 1 host for single-node or 3 for three-node (node 0 = the first one)." \
+  hint "Pick 1 host for single-node or 3 for three-node (node 0 = the first one)." \
        "Listed: running VMs of the gcloud project $(prov_ssh_gce_project) and Host entries of ~/.ssh/config (this control machine is not listed)."
   {
     echo -e "${CYAN}?${RESET} Host(s)"
@@ -651,8 +650,9 @@ wiz_ssh_hosts() {
     echo "   a)  enter another address"
   } >&2
   while true; do
-    read -rp "$(echo -e "${CYAN}  Select [numbers separated by spaces, a = type addresses${prev:+, Enter = ${prev}}, < = back]:${RESET} ")" answer ||
-      die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    rc=0; read_answer answer "$(echo -e "  ${BOLD}Select [numbers separated by spaces, a = type addresses${prev:+, Enter = ${prev}}, 0 = back]:${RESET} ")" 1 || rc=$?
+    (( rc != 1 )) || die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    [[ "$rc" != 3 && "$answer" != 0 ]] || answer="<"
     [[ -n "$answer" || -z "$prev" ]] || { ssh_set_hosts "$prev"; return 0; }
     case "$answer" in
       "<") NAV_BACK=1; return 0 ;;
@@ -668,7 +668,7 @@ wiz_ssh_hosts() {
     if [[ "$picked" != "!" ]] && ssh_validate_host_list "$picked" >&2; then
       ssh_set_hosts "$picked"; ok "Host(s): ${picked% } → ${TOPOLOGY}"; return 0
     fi
-    echo "  Type 1 number (single-node) or 3 numbers (three-node) from the list, a to type addresses, or < to go back." >&2
+    echo "  Type 1 number (single-node) or 3 numbers (three-node) from the list, a to type addresses, or 0 to go back." >&2
   done
 }
 
@@ -781,7 +781,7 @@ ssh_menu_stop() {
 
 # Manual login: user, key and port (each with "<" back to the summary).
 ssh_ask_login() {
-  hint "How this machine logs in: a user with passwordless sudo on the host(s), its private key file here and the SSH port." \
+  hint "Login: a user with passwordless sudo on the host(s), a private key here, the SSH port." \
        "The key never leaves this machine; only its path is saved."
   prompt_required SSH_USER "SSH user" "${SSH_USER:-ubuntu}" validate_ssh_user; (( NAV_BACK )) && return 0
   prompt_required SSH_KEY_PATH "SSH private key path" "${SSH_KEY_PATH:-$(prov_ssh_default_key)}" validate_ssh_key; (( NAV_BACK )) && return 0
@@ -825,7 +825,7 @@ ssh_early_checks() {
 
 wiz_ssh_login() {
   [[ "$(provider_name)" == ssh && "$PARAMS_SOURCE" != import ]] || return 0
-  local hosts first key_note answer action host known
+  local hosts first key_note answer action host known rc
   hosts=$(ssh_current_hosts | xargs); first="${hosts%% *}"
   SSH_PORT="${SSH_PORT:-22}"
   # Moving forward again over an unchanged, verified login: nothing to ask.
@@ -861,8 +861,9 @@ wiz_ssh_login() {
       echo "  Use detected login:"
       printf '    %-6s %s\n' User "$SSH_USER" Key "${SSH_KEY_PATH/#$HOME/~}  (${key_note})" Port "${SSH_PORT:-22}"
     } >&2
-    read -rp "$(echo -e "${CYAN}?${RESET} Enter = use this login, c = change user/key/port, < = back: ")" answer ||
-      die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    rc=0; read_answer answer "$(echo -e "${CYAN}?${RESET} ${BOLD}Use this login? [Enter = yes, c = change user/key/port]${RESET} $(back_label): ")" 1 || rc=$?
+    (( rc != 1 )) || die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    (( rc != 3 )) || answer="<"
     case "$answer" in
       "<") NAV_BACK=1; return 0 ;;
       c|C) ssh_ask_login; NAV_BACK=0
@@ -876,7 +877,7 @@ wiz_ssh_login() {
              *) continue ;;
            esac ;;
       "") ;;
-      *) echo "  Please press Enter to use this login, c to change it, or < to go back." >&2; need_probe=0; continue ;;
+      *) echo "  Please press Enter to use this login, c to change it, or go back (left arrow, or < and Enter)." >&2; need_probe=0; continue ;;
     esac
     prov_ssh_agent_preflight
     # The read-only facts and checks of every host, right away.
@@ -951,7 +952,7 @@ ssh_disk_row() {
 
 # The mapping block: Enter = use it, c = choose each disk yourself, < = back.
 ssh_disk_block() {
-  local node host role key answer action missing
+  local node host role key answer action missing rc
   while true; do
     missing=false
     for key in $(prov_ssh_disk_keys); do [[ -n "${!key:-}" ]] || missing=true; done
@@ -976,7 +977,7 @@ ssh_disk_block() {
     fi
     NAV_ASKED=1
     echo "" >&2
-    hint "Each Instana data directory gets its own disk; matched by size (largest need first, smallest disk that fits)." \
+    hint "Each data directory gets its own disk (largest need first, smallest disk that fits)." \
          "The disks are formatted (ext4) when the installation starts, and only if they are blank."
     for node in $(prov_ssh_nodes); do
       host=$(prov_ssh_host_for "$node")
@@ -987,8 +988,9 @@ ssh_disk_block() {
         ssh_disk_row "$host" "$role" "${!key}" >&2
       done
     done
-    read -rp "$(echo -e "${CYAN}?${RESET} Enter = use this mapping, c = choose the disks yourself, < = back: ")" answer ||
-      die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    rc=0; read_answer answer "$(echo -e "${CYAN}?${RESET} ${BOLD}Use this mapping? [Enter = yes, c = choose the disks yourself]${RESET} $(back_label): ")" 1 || rc=$?
+    (( rc != 1 )) || die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    (( rc != 3 )) || answer="<"
     case "$answer" in
       "") return 0 ;;
       "<") NAV_BACK=1; return 0 ;;
@@ -996,7 +998,7 @@ ssh_disk_block() {
         for key in $(prov_ssh_disk_keys); do printf -v "$key" '%s' ""; done
         local NAV_ON=0
         prov_ssh_collect_host_params ;;
-      *) echo "  Please press Enter to use this mapping, c to choose the disks yourself, or < to go back." >&2 ;;
+      *) echo "  Please press Enter to use this mapping, c to choose the disks yourself, or go back (left arrow, or < and Enter)." >&2 ;;
     esac
   done
 }
@@ -1039,8 +1041,8 @@ prov_ssh_ask_host() {
     [[ -z "$project" ]] || mapfile -t found < <(prov_ssh_gce_instances "$project")
     if (( ${#found[@]} > 0 )); then
       for c in "${found[@]}"; do IFS='|' read -r name zone ip <<< "$c"; options+=("${name}  (${zone}, ${ip})"); done
-      hint "Running VMs in Google Cloud project ${project} (listed with gcloud; this control machine and hosts already chosen are not listed)." \
-           "Pick one to use its internal IP, or choose 'enter another address' for any other host."
+      hint "Running VMs in project ${project}; pick one to use its internal IP." \
+           "Listed with gcloud; this control machine and hosts already chosen are not listed. 'enter another address' for any other host."
       choice=$(prompt_choice "${label}:" "${options[@]}" "enter another address") || choice=""
       if [[ -n "$choice" && "$choice" != "enter another address" ]]; then
         ip="${choice##*, }"; ip="${ip%)}"
@@ -1306,8 +1308,8 @@ prov_ssh_choose_disk() {
     IFS='|' read -r p gb model dev <<< "$c"
     options+=("${p}  (${gb} GB, ${model}, now ${dev})")
   done
-  hint "Disk on ${host} for the Instana ${role,,} directory (at least ${min} GB). Only unused whole disks are offered" \
-       "that still leave a disk for every other directory; it is formatted ext4 in phase 9 only if it is blank." \
+  hint "Disk for the ${role,,} directory on ${host} (at least ${min} GB)." \
+       "Only unused whole disks are offered that still leave a disk for every other directory; it is formatted ext4 in phase 9 only if it is blank." \
        "Stable /dev/disk/by-id names survive reboots."
   chosen=$(prompt_choice "Disk for ${role,,} on ${node}:" "${options[@]}") ||
     host_stop "$host" "input ended while choosing the disk for ${role,,}." \

@@ -246,7 +246,7 @@ gcp_redetect_network() {
 }
 
 gcp_location_block() {
-  local local_zone answer which detected
+  local local_zone answer which detected rc
   local_zone=$(detect_local_gce_zone)
   if [[ -z "${GCP_PROJECT:-}" ]]; then
     GCP_PROJECT=$(gcp_saved GCP_PROJECT); GCP_SRC_PROJECT="saved"
@@ -289,15 +289,16 @@ gcp_location_block() {
     if [[ -n "$local_zone" && "${local_zone%-*}" != "$GCP_REGION" && "${INSTALL_MODE:-}" == air-gapped ]]; then
       warn "Air-gapped: the package (tens of GB) is copied from ${local_zone%-*} to ${GCP_REGION}; a cross-region copy is several times slower."
     fi
-    read -rp "$(echo -e "${CYAN}?${RESET} Enter = use these, c = change one, < = back: ")" answer ||
-      die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    rc=0; read_answer answer "$(echo -e "${CYAN}?${RESET} ${BOLD}Use these? [Enter = yes, c = change one]${RESET} $(back_label): ")" 1 || rc=$?
+    (( rc != 1 )) || die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    (( rc != 3 )) || answer="<"
     case "$answer" in
       "<") NAV_BACK=1; return 0 ;;
       "")
         if [[ "$GCP_SRC_CIDR" == "$GCP_CIDR_UNSAFE" ]]; then
           warn "SSH from: this machine's public IP could not be detected, and 0.0.0.0/0 would open SSH to the whole internet."
-          hint "Press c, choose 'SSH from (CIDR)' and type your public IP with /32 (find it with: curl ifconfig.me)," \
-               "or type 0.0.0.0/0 there yourself if SSH from anywhere is really intended."
+          hint "Press c, choose 'SSH from (CIDR)' and type your public IP with /32 (curl ifconfig.me shows it)." \
+               "Or type 0.0.0.0/0 there yourself if SSH from anywhere is really intended."
           continue
         fi
         prov_gcp_validate_param GCP_PROJECT "$GCP_PROJECT" && prov_gcp_validate_param GCP_ZONE "$GCP_ZONE" &&
@@ -309,12 +310,12 @@ gcp_location_block() {
         NAV_BACK=0
         case "$which" in
           Project)
-            hint "The Google Cloud project that will own and pay for the VM(s): its ID (lowercase), not the display name;" \
+            hint "Project ID (lowercase), not the display name." \
                  "'gcloud projects list' shows the projects your account can use."
             prompt_required GCP_PROJECT "GCP Project ID" "$GCP_PROJECT" validate_gcp_project_id
             (( NAV_BACK )) || { GCP_SRC_PROJECT="your answer"; gcp_redetect_network; } ;;
           Zone)
-            hint "Zone = a data center, e.g. europe-west6-b (Zurich) or us-central1-a (Iowa); the region follows from it."
+            hint "Zone = a data center, e.g. europe-west6-b (Zurich) or us-central1-a (Iowa)." "The region follows from the zone."
             prompt_required GCP_ZONE "GCP Zone" "$GCP_ZONE" validate_gcp_zone
             (( NAV_BACK )) || { GCP_SRC_ZONE="your answer"; GCP_REGION="${GCP_ZONE%-*}"; gcp_redetect_network; }
             ;;
@@ -324,20 +325,20 @@ gcp_location_block() {
             (( NAV_BACK )) || prompt_required GCP_SUBNET "Subnet name" "$GCP_SUBNET" validate_gcp_network_name
             (( NAV_BACK )) || GCP_SRC_NET="your answer" ;;
           "SSH from (CIDR)")
-            hint "Which public IP address may open SSH to the VM(s), e.g. 203.0.113.10/32; 0.0.0.0/0 would allow the whole internet."
+            hint "Public IP that may open SSH to the VM(s), e.g. 203.0.113.10/32." "0.0.0.0/0 would allow the whole internet."
             prompt_required SSH_SOURCE_CIDR "CIDR allowed to SSH to the VM(s)" "$SSH_SOURCE_CIDR" validate_cidr
             (( NAV_BACK )) || GCP_SRC_CIDR="your answer" ;;
         esac
         NAV_BACK=0 ;;
-      *) echo "  Please press Enter to use these values, c to change one, or < to go back." >&2 ;;
+      *) echo "  Please press Enter to use these values, c to change one, or go back (left arrow, or < and Enter)." >&2 ;;
     esac
   done
 }
 
 gcp_location_per_key() {
   use_imported GCP_PROJECT || {
-    hint "The Google Cloud project that will own and pay for the VM(s). It is the project ID (lowercase, e.g. instana-support-test-account)," \
-         "not the display name. Enter accepts the default; 'gcloud projects list' shows the projects your account can use."
+    hint "The project that owns and pays for the VM(s): its ID, e.g. instana-support-test-account." \
+         "Not the display name. Enter accepts the default; 'gcloud projects list' shows the projects your account can use."
     prompt_required "GCP_PROJECT" "GCP Project ID" "$(default_gcp_project)" validate_gcp_project_id
   }
   if use_imported GCP_REGION; then
@@ -354,7 +355,7 @@ gcp_location_per_key() {
     else
       local_region="us-central1"
     fi
-    hint "Region = geographic area (e.g. europe-west6 = Zurich, us-central1 = Iowa); zone = a data center inside it (suffix -a/-b/-c)." \
+    hint "Region = area (europe-west6 = Zurich), zone = a data center in it (-a/-b/-c)." \
          "Keep the defaults unless you need another location."
     prompt_required "GCP_REGION" "GCP Region" "$local_region" validate_gcp_region
     if use_imported GCP_ZONE; then :
@@ -369,7 +370,7 @@ gcp_location_per_key() {
     fi
   fi
   imported_usable GCP_NETWORK GCP_SUBNET ||
-    hint "VPC network and subnet the VM(s) attach to. Every project has one called 'default'; keep it unless your admin gave you another."
+    hint "VPC network and subnet of the VM(s); keep 'default' unless your admin gave you another."
   use_imported GCP_NETWORK || prompt_required "GCP_NETWORK" "VPC Network name" "default" validate_gcp_network_name
   use_imported GCP_SUBNET || prompt_required "GCP_SUBNET" "Subnet name" "default" validate_gcp_network_name
 }
@@ -892,7 +893,7 @@ resume_firewalls() {
       else
         other_id="${desc#instana-lab-id=}"
         warn "Firewall rule ${name} carries another deployment identity (${other_id}; this run is ${DEPLOYMENT_ID}), but its content matches this deployment exactly."
-        hint "This happens when the state file of an earlier attempt with the same node names was lost or replaced." \
+        hint "It is left from an earlier attempt whose state file was lost or replaced." \
              "Adopting re-tags the rule for this deployment; nothing else changes."
         if prompt_yes_no "Adopt firewall rule ${name} for this deployment?" Y; then
           run gcloud compute firewall-rules update "$name" --project="$GCP_PROJECT" --description="instana-lab-id=$DEPLOYMENT_ID"
@@ -1113,16 +1114,17 @@ prov_gcp_destroy_by_name() {
     else echo "        cost: the disks are billed while they exist" >&2; fi
     (( ++i ))
   done
-  local answer pick
+  local answer pick rc
   while true; do
-    read -rp "$(echo -e "${CYAN}  Select [1-${#labs[@]}, n = look up a VM by name, < = back]:${RESET} ")" answer ||
-      die "Input ended; clean-up cancelled. Nothing was deleted."
+    rc=0; read_answer answer "$(echo -e "  ${BOLD}Select [1-${#labs[@]}, n = look up a VM by name, 0 = back]:${RESET} ")" 1 || rc=$?
+    (( rc != 1 )) || die "Input ended; clean-up cancelled. Nothing was deleted."
+    [[ "$rc" != 3 && "$answer" != 0 ]] || answer="<"
     case "$answer" in
       "<") prov_gcp_destroy_by_name; return ;;
       n|N) gcp_destroy_by_vm_name "$project"; return ;;
     esac
     if [[ "$answer" =~ ^[0-9]+$ ]] && (( answer >= 1 && answer <= ${#labs[@]} )); then pick="${labs[$((answer-1))]}"; break; fi
-    echo "  Type a number from 1 to ${#labs[@]}, n to look a VM up by name, or < to choose another project." >&2
+    echo "  Type a number from 1 to ${#labs[@]}, n to look a VM up by name, or 0 to choose another project." >&2
   done
   IFS='|' read -r key zones title vms dsk rules <<< "$pick"
   gcp_delete_lab "$project" "$zones" "$title" "$vms" "$dsk" "$rules"

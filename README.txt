@@ -81,11 +81,16 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
    Three-node ne pita velicinu (uvek small, 3x n2-standard-16).
 
 6) TOK PITANJA (UX v2) - NAZAD, PREDLOZI, PLAN:
-   - U svakom pitanju "<" vraca na prethodno pitanje; raniji odgovori ostaju
-     kao Enter. Promenjen odgovor ponovo pita samo ono sto od njega zavisi.
-     Blokovi bez "<" (paket, liste verzija, hostovi iz fajla) se preskacu na
-     putu nazad; njihove vrednosti menja E na planu.
-   - Liste imaju podrazumevani izbor: "Select [1-2, Enter = 1, < = back]".
+   - NAZAD: u listama stavka "0) ← back" (kucaj 0). U tekstualnim pitanjima
+     "[← = back]": strelica levo na praznom odgovoru upise "<", Enter vraca
+     na prethodno pitanje (Backspace ponistava). "<" + Enter radi svuda, i
+     bez terminala. Raniji odgovori ostaju kao Enter; promenjen odgovor ponovo
+     pita samo ono sto od njega zavisi. Blokovi bez nazad (paket, liste
+     verzija, hostovi iz fajla) se preskacu; njihove vrednosti menja E na planu.
+   - Pomoc: iznad pitanja je jedan kratak red; "?" + Enter prikazuje duze
+     objasnjenje. ./install.sh --verbose (ili INSTANA_VERBOSE=1) uvek sve.
+   - Boje samo u terminalu i bez NO_COLOR; logovi su uvek cist tekst.
+   - Liste imaju podrazumevani izbor: "Select [1-2, Enter = 1]".
    - GCP: projekat, zona (region iz zone), mreza i SSH CIDR su JEDAN blok
      "Use detected" (iz gcloud-a i ove masine): Enter = prihvati, c = promeni.
      Ako javna IP ove masine nije otkrivena, 0.0.0.0/0 se ne prihvata Enterom.

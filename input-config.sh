@@ -680,7 +680,8 @@ default_input_file() {
 
 ask_input_file() {
   echo "" >&2
-  hint "Path of the JSON file on THIS machine, e.g. ${SCRIPT_DIR}/instana-config.json." \
+  hint "Path of the JSON file on this machine (made with config-generator.html)." \
+       "Example: ${SCRIPT_DIR}/instana-config.json." \
        "To make one: open config-generator.html (in this folder) in a browser, fill it in, press 'Copy as paste-in command'" \
        "and paste that into a terminal here; or copy the downloaded file over with gcloud compute scp." \
        "Values missing or invalid in the file are asked here afterwards, one by one."
@@ -891,8 +892,8 @@ edit_parameters_before_start() {
 offer_blank_input_secrets() {
   [[ "$DRY_RUN" != true && "$INPUT_HAD_SECRETS" == true && -n "$INPUT_CONFIG" && -f "$INPUT_CONFIG" ]] || return 0
   echo "" >&2
-  hint "${INPUT_CONFIG} still contains the keys and/or the admin password in plain text." \
-       "They are not needed in it any more; removing them keeps the file safe to keep and to reuse (they are asked next time)."
+  hint "${INPUT_LABEL} still contains the keys and/or the admin password in plain text." \
+       "${INPUT_CONFIG}: they are not needed in it any more; removing them keeps the file safe to keep and to reuse (they are asked next time)."
   if prompt_yes_no "Remove the keys and the admin password from ${INPUT_LABEL} now?" Y; then
     local tmp; tmp=$(mktemp "${INPUT_CONFIG}.XXXXXX"); chmod 600 "$tmp"
     if jq '.secrets = {DOWNLOAD_KEY:"", AGENT_KEY:"", SALES_KEY:"", ADMIN_PASSWORD:""}' "$INPUT_CONFIG" > "$tmp" && mv -f "$tmp" "$INPUT_CONFIG"; then

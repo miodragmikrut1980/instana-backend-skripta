@@ -1,5 +1,5 @@
 # Shared by tests that need a real terminal (sourced, not run).
-# pty_install DIR ANSWERS... — runs "bash ./install.sh $PTY_ARGS" in DIR inside a
+# pty_install DIR ANSWERS... — runs "bash ${PTY_SCRIPT:-./install.sh} $PTY_ARGS" in DIR inside a
 # pseudo terminal and sends one answer per pause in the output (Enter added).
 # An answer "RAW:<python bytes literal body>" is sent as is, without Enter,
 # e.g. RAW:\x1b[D for the left-arrow key, RAW:\x04 for Ctrl+D.
@@ -13,7 +13,7 @@ args = sys.argv[1].split() if sys.argv[1] else []
 answers = sys.argv[2:]
 pid, fd = pty.fork()
 if pid == 0:
-    os.execvp("bash", ["bash", "./install.sh"] + args)
+    os.execvp("bash", ["bash", os.environ.get("PTY_SCRIPT", "./install.sh")] + args)
 out = b""; end = time.time() + 60; last = time.time()
 while time.time() < end:
     r, _, _ = select.select([fd], [], [], 0.2)

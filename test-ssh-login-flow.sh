@@ -90,14 +90,14 @@ echo "PASS: cancel from the retry menu stops cleanly"
 host_facts 10.0.0.6 CPUS=16 MEM_KB=65000000
 run type_small $'1\n10.0.0.6\n\n1\n2\n1\n\n'"$TAIL"
 done_ok
-has "Suggested from the checks above: demo."
+has "Suggested from the checks above: demo ("
 has "production needs 28 vCPU / 112 GB"
 has "This host is too small for production"
 has "Installation type:             demo"
 host_facts 10.0.0.6
 run type_big $'1\n10.0.0.5\n\n1\n\n\n'"$TAIL"
 done_ok
-has "Suggested from the checks above: production."
+has "Suggested from the checks above: production ("
 has "Installation type:             production"
 echo "PASS: the install type is suggested from the host, with the reason"
 
@@ -311,7 +311,7 @@ echo "PASS: a changed login reads the host facts again"
 #     still sees all unused disks (production stays possible).
 run type_after_map $'1\n10.0.0.5\n\n1\n1\n\n<\n<\n2\n\n'"$TAIL"
 done_ok
-[[ "$(count 'Suggested from the checks above: production.')" == 2 ]] || fail "the suggestion must not change after the disk mapping"
+[[ "$(count 'Suggested from the checks above: production (')" == 2 ]] || fail "the suggestion must not change after the disk mapping"
 hasnt "This host is too small for production"
 has "Installation type:             production"
 echo "PASS: going back to the type after the disk mapping keeps the suggestion"
@@ -337,7 +337,7 @@ FAKE
 chmod +x "$FAKE_ROOT/bin/gcloud"
 run sslip $'1\n1\n\n1\n1\n\n\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\ny'
 done_ok
-has "Suggested: a free wildcard name for the host's public IP"
+has "Domain for the UI; suggested: 34-65-106-11.sslip.io (sslip.io, no DNS setup needed)."
 has "Base domain:                   instana.34-65-106-11.sslip.io"
 run sslip_air $'1\n1\n\n2\n1\n\ninstana.example.com\n'
 hasnt "sslip.io"

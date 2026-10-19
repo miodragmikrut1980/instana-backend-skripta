@@ -264,7 +264,7 @@ if command -v openssl >/dev/null && openssl req -x509 -newkey rsa:2048 -nodes -d
      -keyout "$TEST_ROOT/lab.key" -out "$TEST_ROOT/lab.crt" >/dev/null 2>&1; then
   CERTDIR=1 run tls_found $'1\n1\n1\n1\n\ninstana-backend\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n\n\n\ny'
   done_ok
-  has "Found a certificate for instana.example.com in this folder:"
+  has "Found a certificate for instana.example.com here: lab.crt; Enter uses it."
   has "TLS:                           provide custom certificate files"
   echo "PASS: a certificate for the domain in the folder is offered"
 else
