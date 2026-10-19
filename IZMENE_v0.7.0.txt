@@ -216,3 +216,11 @@ creates, deletes, or reboots a host without confirmation.
   instead of "Installation Complete!" with "DRY-RUN" as IP and /etc/hosts
   lines (also GCP; the rest of the GCP dry-run output is unchanged).
 - Disk prompts say "the Instana <role> directory" (no more "data data").
+
+2026-10-19 — UX v2, step 1: pick-list default, control machine never listed
+- Pick lists can carry a default: "Select [1-3, Enter = 1]" and Enter
+  takes it (used by the next UX steps; lists without a default still
+  re-ask on Enter, now with "type a number from 1 to N").
+- Existing hosts: the control machine is never offered as a host, matched
+  by its name and by its addresses (its own interfaces, and on Google Cloud
+  its internal and external IP from the metadata server).

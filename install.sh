@@ -412,20 +412,26 @@ prompt_secret() {
   echo "$value"
 }
 
+# prompt_choice TEXT OPTION... — prints the chosen option. With
+# PROMPT_CHOICE_DEFAULT set to one of the options (only for this call:
+# PROMPT_CHOICE_DEFAULT=x prompt_choice ...), Enter selects it.
 prompt_choice() {
   local prompt_text="$1"; shift
-  local options=("$@")
+  local options=("$@") def="${PROMPT_CHOICE_DEFAULT:-}" def_i=0
   echo -e "${CYAN}?${RESET} ${prompt_text}" >&2
   local i=1
   for opt in "${options[@]}"; do
     echo "  $i) $opt" >&2
+    [[ -z "$def" || "$opt" != "$def" || "$def_i" != 0 ]] || def_i=$i
     (( i++ ))
   done
-  local choice
+  local choice range="1-${#options[@]}"
+  (( def_i == 0 )) || range+=", Enter = ${def_i}"
   while true; do
-    read -rp "$(echo -e "${CYAN}  Select [1-${#options[@]}]:${RESET} ")" choice || return 1
+    read -rp "$(echo -e "${CYAN}  Select [${range}]:${RESET} ")" choice || return 1
+    [[ -n "$choice" || "$def_i" == 0 ]] || choice=$def_i
     [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )) && break
-    echo "Invalid selection." >&2
+    echo "Invalid selection: type a number from 1 to ${#options[@]}." >&2
   done
   echo "${options[$((choice - 1))]}"
 }

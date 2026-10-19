@@ -545,7 +545,7 @@ prov_ssh_ask_host() {
     [[ -z "$project" ]] || mapfile -t found < <(prov_ssh_gce_instances "$project")
     if (( ${#found[@]} > 0 )); then
       for c in "${found[@]}"; do IFS='|' read -r name zone ip <<< "$c"; options+=("${name}  (${zone}, ${ip})"); done
-      hint "Running VMs in Google Cloud project ${project} (listed with gcloud from this machine; this machine and hosts already chosen are left out)." \
+      hint "Running VMs in Google Cloud project ${project} (listed with gcloud; this control machine and hosts already chosen are not listed)." \
            "Pick one to use its internal IP, or choose 'enter another address' for any other host."
       choice=$(prompt_choice "${label}:" "${options[@]}" "enter another address") || choice=""
       if [[ -n "$choice" && "$choice" != "enter another address" ]]; then
@@ -572,10 +572,29 @@ prov_ssh_gce_project() {
   [[ -n "$project" && "$project" != "(unset)" ]] || return 0
   [[ ! "$project" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || printf '%s\n' "$project"
 }
+# Addresses of this (control) machine: its own interfaces, and on Google
+# Cloud its internal and external IP from the metadata server. A host with one
+# of them, or with this machine's name, is never offered as an Instana host.
+prov_ssh_local_ips() {
+  local ip
+  { hostname -I 2>/dev/null || true
+    curl -fsS --max-time 2 -H 'Metadata-Flavor: Google' \
+      http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip 2>/dev/null || true
+    echo
+    curl -fsS --max-time 2 -H 'Metadata-Flavor: Google' \
+      http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip 2>/dev/null || true
+    echo
+  } | tr ' ' '\n' | while read -r ip; do
+    [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] && printf '%s\n' "$ip"
+  done
+  return 0
+}
+
 prov_ssh_gce_instances() {
   local project="$1" here self out name zone ip used k
   here=$(! declare -F detect_local_gce_zone >/dev/null || detect_local_gce_zone)
   self=$(hostname -s 2>/dev/null || true)
+  local mine=" $(prov_ssh_local_ips | paste -sd' ' -) "
   out=$(timeout 20 gcloud compute instances list --project="$project" --filter=status=RUNNING \
     --format='value(name,zone.basename(),networkInterfaces[0].networkIP)' 2>/dev/null) || return 0
   used=" "
@@ -583,7 +602,7 @@ prov_ssh_gce_instances() {
   while read -r name zone ip _; do
     [[ "$name" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ && "$zone" =~ ^[a-z]+-[a-z]+[0-9]+-[a-z]$ ]] || continue
     prov_ssh_host_valid "$ip" && [[ "$ip" =~ ^[0-9.]+$ ]] || continue
-    [[ "$name" != "$self" && "$used" != *" $ip "* ]] || continue
+    [[ "$name" != "$self" && "$used" != *" $ip "* && "$mine" != *" $ip "* ]] || continue
     printf '%s|%s|%s|%s\n' "$([[ "$zone" == "$here" ]] && echo 0 || echo 1)" "$name" "$zone" "$ip"
   done <<< "$out" | sort -t'|' -k1,1 -k2,2 | cut -d'|' -f2-
 }

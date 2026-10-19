@@ -67,4 +67,13 @@ out=$(run $'/nonexistent.tar.gz\nn\n'"$TEST_DIR/instana-airgapped.tar.gz"$'\n' e
 grep -q 'RESULT=3.290.1-0/1.11.0' <<< "$out"
 echo "PASS: air-gapped archive path is re-asked and versions are detected"
 
+# Pick lists: Enter selects the marked default; without one Enter is re-asked.
+out=$(run $'\n' eval 'PROMPT_CHOICE_DEFAULT=online prompt_choice "Mode:" online air-gapped' 2>err.txt)
+[[ "$out" == online ]] || { echo "FAIL: Enter did not select the default" >&2; exit 1; }
+out=$(run $'\n2\n' eval 'prompt_choice "Mode:" online air-gapped' 2>err.txt)
+[[ "$out" == air-gapped ]] || { echo "FAIL: without a default Enter must be re-asked" >&2; exit 1; }
+grep -q 'Invalid selection: type a number from 1 to 2.' err.txt
+echo "PASS: pick lists: Enter = default when one is given, otherwise re-asked"
+
 echo "All input re-ask tests passed."
+

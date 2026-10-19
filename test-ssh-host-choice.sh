@@ -68,6 +68,13 @@ host_facts 10.172.0.9
 ( init; prov_ssh_collect_location_params < <(printf '2\n\n%s\n22\n' "$FAKE_KEY") > "$OUT" 2>&1; test "$VM_HOST" = 10.172.0.9; test "$SSH_USER" = ubuntu )
 echo 'PASS: the SSH user defaults to ubuntu'
 
+# The control machine is left out by its address too (another name, same IP).
+printf '#!/usr/bin/env bash\ncase "$1" in -I) echo "10.172.0.2 172.17.0.1" ;; *) echo renamed-ctl ;; esac\n' > "$FAKE_ROOT/bin/hostname"
+( init; prov_ssh_ask_host VM_HOST "Host address" < <(printf '1\n') > "$OUT" 2>&1; test "$VM_HOST" = 10.172.0.7 )
+if plain | grep -q '10.172.0.2)'; then echo "FAIL: control machine offered by its IP" >&2; exit 1; fi
+printf '#!/usr/bin/env bash\necho ctl\n' > "$FAKE_ROOT/bin/hostname"
+echo 'PASS: the control machine is not listed, also when only its IP matches'
+
 # gcloud without a project: no list, no guessed project.
 printf '#!/usr/bin/env bash\ncase "$*" in *"get-value project"*) echo "(unset)" ;; *) echo "SHOULD-NOT-LIST" ;; esac\n' > "$FAKE_ROOT/bin/gcloud"
 ( init; prov_ssh_ask_host VM_HOST "Host address" < <(printf '10.0.0.8\n') > "$OUT" 2>&1; test "$VM_HOST" = 10.0.0.8 )
