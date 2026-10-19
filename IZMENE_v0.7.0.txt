@@ -165,3 +165,22 @@ creates, deletes, or reboots a host without confirmation.
   RESOLVE boxes shell-quote the key and file paths. Tests: the three-node
   mount step, a failing read, and a 5.5 MiB image with data in its last
   half MiB.
+
+2026-10-19 — Existing hosts: findings from the first real run (ssh-test-1)
+- A new deployment with another provider in a folder that records one: in
+  a terminal (not --resume) the installer shows the recorded deployment
+  (provider, project/zone or hosts, VMs, last phase, cost reminder for GCP)
+  and offers to continue it, to set its files aside (renamed, nothing
+  deleted) and start the new one, or to cancel. --resume and runs without a
+  terminal still stop; the stop also names ./install.sh --destroy.
+- Existing-host runs no longer show GCP wording before the provider is
+  resolved: the dry-run notice, the first checklist and the phase 1 text
+  follow INSTANA_PROVIDER or the recorded provider. The plan does not show
+  a GCP image name as "Ubuntu version" (each host's OS is listed instead).
+- After a successful run inside screen the outer terminal prints the
+  duration, ./install.sh --report and the log path, not only
+  "[screen is terminating]".
+- The "SSH login failed" stop and README section 6 explain two real
+  causes: running the installer as a different Linux user than the key
+  owner, and GCP OS Login (enable-oslogin=TRUE) ignoring metadata keys.
+- GCP dry-run output is unchanged.
