@@ -377,14 +377,19 @@ prompt() {
     default="$(jq -r --arg k "$var_name" '.parameters[$k] // empty' "$CONFIG_FILE")"
     [[ -n "$default" ]] || default="${3:-}"
   fi
+  # In the question wizard an answer given before (then "<" back) is the default.
+  [[ "${NAV_ON:-0}" != 1 || -z "${!var_name:-}" ]] || default="${!var_name}"
   # Changing one value from the plan: its current value is the default.
   [[ -n "${EDIT_KEY:-}" && "$var_name" == "$EDIT_KEY" && -n "${EDIT_DEFAULT:-}" ]] && default="$EDIT_DEFAULT"
-  local value
+  local value back=""
+  [[ "${NAV_ON:-0}" != 1 ]] || back=" (< = back)"
   if [[ -n "$default" ]]; then
-    read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text} [${default}]: ")" value || return 1
+    read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text} [${default}]${back}: ")" value || return 1
+    [[ "${NAV_ON:-0}" != 1 || "$value" != "<" ]] || return 3
     echo "${value:-$default}"
   else
-    read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text}: ")" value || return 1
+    read -rp "$(echo -e "${CYAN}?${RESET} ${prompt_text}${back}: ")" value || return 1
+    [[ "${NAV_ON:-0}" != 1 || "$value" != "<" ]] || return 3
     echo "$value"
   fi
 }
@@ -393,12 +398,17 @@ prompt() {
 # Backspace removes the last one. Nothing typed is ever echoed or logged.
 prompt_secret() {
   local var_name="$1" prompt_text="$2"
-  local value="" ch
+  local value="" ch extra="" keep=""
+  if [[ "${NAV_ON:-0}" == 1 ]]; then
+    keep="${!var_name:-}"
+    if [[ -n "$keep" ]]; then extra=" (< = back, Enter = keep the one typed before)"; else extra=" (< = back)"; fi
+  fi
   if [[ ! -t 0 ]]; then
     read -rs value || return 1
-    echo "$value"; return 0
+    [[ "${NAV_ON:-0}" != 1 || "$value" != "<" ]] || return 3
+    echo "${value:-$keep}"; return 0
   fi
-  printf '%b' "${CYAN}?${RESET} ${prompt_text}: " >&2
+  printf '%b' "${CYAN}?${RESET} ${prompt_text}${extra}: " >&2
   while IFS= read -rs -n1 ch; do
     if [[ -z "$ch" ]]; then break; fi                      # Enter
     if [[ "$ch" == $'\x7f' || "$ch" == $'\x08' ]]; then     # Backspace
@@ -409,7 +419,8 @@ prompt_secret() {
     printf '•' >&2
   done || { echo "" >&2; return 1; }
   echo "" >&2
-  echo "$value"
+  [[ "${NAV_ON:-0}" != 1 || "$value" != "<" ]] || return 3
+  echo "${value:-$keep}"
 }
 
 # prompt_choice TEXT OPTION... — prints the chosen option. With
@@ -427,8 +438,10 @@ prompt_choice() {
   done
   local choice range="1-${#options[@]}"
   (( def_i == 0 )) || range+=", Enter = ${def_i}"
+  [[ "${NAV_CHOICE_BACK:-0}" != 1 ]] || range+=", < = back"
   while true; do
     read -rp "$(echo -e "${CYAN}  Select [${range}]:${RESET} ")" choice || return 1
+    [[ "${NAV_CHOICE_BACK:-0}" != 1 || "$choice" != "<" ]] || return 3
     [[ -n "$choice" || "$def_i" == 0 ]] || choice=$def_i
     [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )) && break
     echo "Invalid selection: type a number from 1 to ${#options[@]}." >&2
@@ -499,10 +512,12 @@ confirm_cancel() {
 # as: VALIDATOR VALUE LABEL and must print its own error and return non-zero.
 prompt_required() {
   local var_name="$1" prompt_text="$2" default="${3:-}" validator="${4:-}" label="${5:-}"
-  local value
+  local value rc
+  NAV_ASKED=1
   while true; do
-    value=$(prompt "$var_name" "$prompt_text" "$default") ||
-      die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    rc=0; value=$(prompt "$var_name" "$prompt_text" "$default") || rc=$?
+    if (( rc == 3 )); then NAV_BACK=1; return 0; fi
+    (( rc == 0 )) || die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
     if [[ -z "$value" ]]; then
       confirm_cancel
       continue
@@ -519,10 +534,12 @@ prompt_required() {
 # prompt_secret_required VAR TEXT LABEL — same contract, hidden input.
 prompt_secret_required() {
   local var_name="$1" prompt_text="$2" label="$3"
-  local value
+  local value rc
+  NAV_ASKED=1
   while true; do
-    value=$(prompt_secret "$var_name" "$prompt_text") ||
-      die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    rc=0; value=$(prompt_secret "$var_name" "$prompt_text") || rc=$?
+    if (( rc == 3 )); then NAV_BACK=1; return 0; fi
+    (( rc == 0 )) || die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
     if validate_secret "$value" "$label"; then
       printf -v "$var_name" '%s' "$value"
       return 0
@@ -577,6 +594,304 @@ use_provider_default_name() {
   log "${var} = ${name} (not in $(input_source_label); the host's own name)"
 }
 
+# ── Question wizard: one step per question, "<" goes back ────────────────────
+# collect_parameters runs WIZ_STEPS in order. A step asks at most one question
+# (or does one automatic job) and is skipped when a value comes from an input
+# file. Answering "<" (NAV_BACK) re-runs the previous step that really asked;
+# every later step then runs again with its earlier answer as the Enter
+# default. When an answer CHANGES on the way back, the answers that depend on
+# it are cleared (wiz_dependents) and asked again. Heavy steps (connecting to
+# hosts, package, versions) are not repeated by moving forward again unless
+# something they depend on changed; there is no "<" inside them.
+NAV_ON=0; NAV_BACK=0; NAV_ASKED=0; WIZ_EXIT=done
+declare -A WIZ_DONE=()
+WIZ_STEPS=(wiz_topology wiz_mode wiz_type wiz_ubuntu wiz_location wiz_cidr
+  wiz_vm_name wiz_node0_name wiz_node1_name wiz_node2_name wiz_size wiz_host_params
+  wiz_domain wiz_tenant wiz_unit wiz_admin_password wiz_download_key wiz_agent_key
+  wiz_sales_key wiz_airgap wiz_versions wiz_tls wiz_tls_crt wiz_tls_key)
+
+# ask_choice VAR TEXT OPTION... — sets VAR to the chosen option; the current
+# value (or the saved one when editing saved parameters) is the Enter default.
+ask_choice() {
+  local var="$1" text="$2" def v rc=0; shift 2
+  def="${!var:-}"
+  [[ -n "$def" || "$CONFIG_LOADED" != true || ! -f "${CONFIG_FILE:-}" ]] ||
+    def=$(jq -r --arg k "$var" '.parameters[$k] // empty' "$CONFIG_FILE" 2>/dev/null || true)
+  NAV_ASKED=1
+  v=$(PROMPT_CHOICE_DEFAULT="$def" NAV_CHOICE_BACK="${NAV_ON:-0}" prompt_choice "$text" "$@") || rc=$?
+  case "$rc" in
+    0) printf -v "$var" '%s' "$v" ;;
+    3) NAV_BACK=1 ;;
+    *) die "Input ended before the parameters were complete; installation cancelled. Nothing was created." ;;
+  esac
+}
+
+# Keys a step sets (compared before/after a revisit to find a changed answer).
+wiz_keys() {
+  case "$1" in
+    wiz_topology) echo TOPOLOGY ;;
+    wiz_mode) echo INSTALL_MODE ;;
+    wiz_type) echo INSTALL_TYPE ;;
+    wiz_location) provider_param_keys ;;
+    wiz_size) echo SIZE_CHOICE ;;
+    wiz_download_key) echo DOWNLOAD_KEY ;;
+    wiz_tls) echo TLS_MODE ;;
+  esac
+}
+
+# What a changed answer of STEP invalidates: variables to clear and heavy
+# steps (WIZ_DONE) to run again.
+wiz_dependents() {
+  local v
+  case "$1" in
+    wiz_topology)
+      echo INSTALL_TYPE VM_NAME NODE0_NAME NODE1_NAME NODE2_NAME SIZE SIZE_CHOICE VM_CPUS VM_RAM_GB done:host_params
+      if [[ "$(provider_name)" == ssh ]]; then echo VM_HOST NODE0_HOST NODE1_HOST NODE2_HOST SSH_VIA_PRIVATE done:location; fi ;;
+    wiz_type) echo SIZE SIZE_CHOICE VM_CPUS VM_RAM_GB done:host_params ;;
+    wiz_mode) echo AIRGAP_ARCHIVE done:airgap done:versions ;;
+    wiz_location)
+      echo done:host_params
+      [[ "$(provider_name)" != ssh ]] || echo VM_NAME NODE0_NAME NODE1_NAME NODE2_NAME ;;
+    wiz_size) echo VM_CPUS VM_RAM_GB ;;
+    wiz_download_key) echo done:versions done:airgap ;;
+    wiz_tls) echo TLS_CRT_PATH TLS_KEY_PATH ;;
+  esac
+  case "$1" in wiz_topology|wiz_type|wiz_location) for v in $(compgen -v DISK_DEV_ || true); do echo "$v"; done ;; esac
+}
+
+wiz_snapshot() {
+  local k out=""
+  for k in $(wiz_keys "$1"); do out+="${k}=${!k:-}|"; done
+  printf '%s' "$out"
+}
+
+# Only a real change (the step had an answer before) clears its dependents;
+# they are then asked again, also when they came from a file or the plan.
+wiz_clear_dependents() {
+  local d
+  for d in $(wiz_dependents "$1"); do
+    if [[ "$d" == done:* ]]; then unset "WIZ_DONE[${d#done:}]"; continue; fi
+    printf -v "$d" '%s' ""
+    unset "IMPORTED[$d]"
+  done
+}
+
+# wiz_run STEP... — sets WIZ_EXIT=back when "<" is answered at the first
+# question that was asked (the caller decides where that leads).
+wiz_run() {
+  local -a steps=("$@") stack=()
+  local i=0 before step revisit=-1
+  WIZ_EXIT=done
+  while (( i < ${#steps[@]} )); do
+    step="${steps[i]}"
+    before=$(wiz_snapshot "$step")
+    # A step reached with "<" runs again even when it is a heavy one.
+    WIZ_REVISIT=""; (( i != revisit )) || WIZ_REVISIT="$step"
+    revisit=-1
+    NAV_BACK=0; NAV_ASKED=0; NAV_ON=1
+    "$step"
+    NAV_ON=0; WIZ_REVISIT=""
+    if (( NAV_BACK )); then
+      if (( ${#stack[@]} == 0 )); then WIZ_EXIT=back; return 0; fi
+      i="${stack[-1]}"; unset 'stack[-1]'
+      revisit=$i
+      continue
+    fi
+    if [[ -n "$before" && "$before" != *"=|"* && "$(wiz_snapshot "$step")" != "$before" ]]; then
+      wiz_clear_dependents "$step"
+    fi
+    (( NAV_ASKED == 0 )) || stack+=("$i")
+    (( ++i ))
+  done
+}
+
+wiz_topology() {
+  use_imported TOPOLOGY && return 0
+  local -a topo_hint
+  mapfile -t topo_hint < <(provider_text_or topology_hint \
+    "single-node: everything on one VM (labs, demos, small setups)." \
+    "three-node: Instana spread over three VMs, IBM 'production' type, needs 3x n2-standard-16.")
+  hint "${topo_hint[@]}"
+  ask_choice TOPOLOGY "Select deployment topology:" "single-node" "three-node"
+}
+
+wiz_mode() {
+  use_imported INSTALL_MODE && return 0
+  hint "online: the Instana VM downloads stanctl and images from the Instana repository itself (simplest)." \
+       "air-gapped: everything comes from one instana-airgapped.tar.gz package; you will be guided to obtain or build it."
+  ask_choice INSTALL_MODE "Select installation connectivity mode:" "online" "air-gapped"
+}
+
+wiz_type() {
+  if [[ "$TOPOLOGY" != "single-node" ]]; then
+    INSTALL_TYPE="production"
+    log "Three-node clusters require production installation type (per documentation)."
+    return 0
+  fi
+  use_imported INSTALL_TYPE && return 0
+  hint "demo: smaller disks/resources for evaluation. production: IBM-sized disks (larger, more expensive)."
+  ask_choice INSTALL_TYPE "Select installation type:" "demo" "production"
+}
+
+# Ubuntu version — from docs: Ubuntu 24.04 and 22.04 only
+wiz_ubuntu() {
+  provider_uses_param UBUNTU_VERSION || return 0
+  use_imported UBUNTU_VERSION && return 0
+  hint "Operating system image for the new VM(s). 24.04 is the current IBM-supported default."
+  ask_choice UBUNTU_VERSION "Select Ubuntu version (supported: 24.04, 22.04):" "ubuntu-2404-lts-amd64" "ubuntu-2204-lts"
+}
+
+# Provider location questions (GCP project/zone/network, or the existing hosts
+# and the SSH login). Asked as one block; "<" is not offered inside it yet.
+wiz_location() {
+  [[ -z "${WIZ_DONE[location]:-}" || "${WIZ_REVISIT:-}" == wiz_location ]] || return 0
+  local NAV_ON=0
+  provider_collect_location_params
+  WIZ_DONE[location]=1
+}
+
+wiz_cidr() {
+  provider_uses_param SSH_SOURCE_CIDR || return 0
+  use_imported SSH_SOURCE_CIDR && return 0
+  hint "Which public IP address may open SSH to the VM(s). Default = this machine's own public IP with /32 (only this machine)." \
+       "0.0.0.0/0 would allow the whole internet; avoid it."
+  prompt_required "SSH_SOURCE_CIDR" "CIDR allowed to SSH to the VM(s)" "$(detect_public_cidr)" validate_cidr
+}
+
+wiz_vm_name() {
+  [[ "$TOPOLOGY" == "single-node" ]] || return 0
+  use_imported VM_NAME || use_provider_default_name VM_NAME default_vm_name && return 0
+  local -a name_hint
+  mapfile -t name_hint < <(provider_text_or vm_name_hint \
+    "Name of the new VM in GCP; the four data disks will be named <vm>-analytics/-metrics/-objects/-data." \
+    "Lowercase letters, digits and hyphens. Must not already exist in the zone.")
+  hint "${name_hint[@]}"
+  prompt_required "VM_NAME" "VM name" "$(provider_text_or default_vm_name instana-backend)" validate_vm_name VM_NAME
+}
+
+# wiz_node_name N LABEL — one of the three node names.
+wiz_node_name() {
+  local n="$1" label="$2" var="NODE${1}_NAME"
+  [[ "$TOPOLOGY" == "three-node" ]] || return 0
+  use_imported "$var" || use_provider_default_name "$var" "default_node${n}_name" && return 0
+  [[ "$n" != 0 ]] ||
+    hint "$(provider_text_or node_names_hint "Names of the three new VMs. Node 0 runs the backend and stanctl, node 1 the data stores, node 2 the rest.")"
+  prompt_required "$var" "$label" "$(provider_text_or "default_node${n}_name" "instana-${n}")" validate_node_name "$var"
+}
+wiz_node0_name() { wiz_node_name 0 "Node 0 name (instana-0, backend)"; }
+wiz_node1_name() { wiz_node_name 1 "Node 1 name (instana-1, data store)"; }
+wiz_node2_name() { wiz_node_name 2 "Node 2 name (instana-2, other)"; }
+
+# Machine type selection
+wiz_size() { show_hw_requirements_and_pick_machine_type; }
+
+# Provider values that need the names and the size (existing hosts: data disks).
+wiz_host_params() {
+  [[ -z "${WIZ_DONE[host_params]:-}" || "${WIZ_REVISIT:-}" == wiz_host_params ]] || return 0
+  local NAV_ON=0
+  provider_collect_host_params
+  WIZ_DONE[host_params]=1
+}
+
+# FQDN
+wiz_domain() {
+  use_imported BASE_DOMAIN && return 0
+  echo ""
+  log "DNS entries required (all must point to the VM's external IP):"
+  log "  <base_domain>"
+  log "  agent-acceptor.<base_domain>"
+  log "  opamp-acceptor.<base_domain>"
+  log "  otlp-http.<base_domain>"
+  log "  otlp-grpc.<base_domain>"
+  log "  <unit>-<tenant>.<base_domain>"
+  echo ""
+  hint "Domain under which Instana will be reached, e.g. instana.example.com. You must own it and be able to add DNS records;" \
+       "for a lab you can instead put the entries printed at the end into /etc/hosts on your computer."
+  prompt_required "BASE_DOMAIN" "Base domain (e.g. instana.example.com)" "" validate_fqdn
+}
+
+# Tenant / unit names
+wiz_tenant() {
+  use_imported TENANT_NAME && return 0
+  hint "Tenant and unit are Instana's two-level naming; they form the UI address <unit>-<tenant>.<domain>." \
+       "Any short lowercase names are fine (e.g. company name and 'prod' or 'lab')."
+  prompt_required "TENANT_NAME" "Tenant name (max 15 chars, lowercase alphanumeric, start with letter)" "tenant0" validate_tenant_unit_name "Tenant name"
+}
+wiz_unit() {
+  use_imported UNIT_NAME && return 0
+  hint "The unit is the second part of the UI address <unit>-<tenant>.<domain>, e.g. 'prod' or 'lab'."
+  prompt_required "UNIT_NAME" "Unit name (max 15 chars, lowercase alphanumeric, start with letter)" "unit0" validate_tenant_unit_name "Unit name"
+}
+
+# Admin password
+wiz_admin_password() {
+  use_imported_secret ADMIN_PASSWORD && return 0
+  echo ""
+  log "Instana admin password (will not be stored in any file or log)"
+  hint "Password you choose now for the first UI user admin@instana.local. Typing shows • per character."
+  prompt_secret_required "ADMIN_PASSWORD" "Instana admin password" "Admin password"
+}
+
+# Instana keys — never logged or stored in local state/logs
+wiz_download_key() {
+  use_imported_secret DOWNLOAD_KEY && return 0
+  echo ""
+  log "Instana license keys (will not be stored in any file or log)"
+  hint "The three keys come from your Instana/IBM entitlement (Instana portal or the IBM license center):" \
+       "download key = access to the software repository; agent key = lets agents connect; sales key = your license." \
+       "Paste each one (typing shows • per character)."
+  prompt_secret_required "DOWNLOAD_KEY" "Instana download key" "Download key"
+}
+wiz_agent_key() {
+  use_imported_secret AGENT_KEY && return 0
+  hint "Agent key: lets the Instana agents connect to this backend."
+  prompt_secret_required "AGENT_KEY" "Instana agent key" "Agent key"
+}
+wiz_sales_key() {
+  use_imported_secret SALES_KEY && return 0
+  hint "Sales key: your Instana license."
+  prompt_secret_required "SALES_KEY" "Instana sales key" "Sales key"
+}
+
+wiz_airgap() {
+  [[ "$INSTALL_MODE" == "air-gapped" ]] || return 0
+  [[ -z "${WIZ_DONE[airgap]:-}" ]] || return 0
+  local NAV_ON=0
+  obtain_airgapped_archive
+  WIZ_DONE[airgap]=1
+}
+
+wiz_versions() {
+  [[ -z "${WIZ_DONE[versions]:-}" ]] || return 0
+  local NAV_ON=0
+  select_versions_upfront
+  WIZ_DONE[versions]=1
+}
+
+# TLS certificate
+wiz_tls() {
+  use_imported TLS_MODE && return 0
+  hint "HTTPS certificate for the UI. Self-signed is generated automatically (browser will warn; fine for a lab)." \
+       "Custom = you provide a certificate and key file for the domain (needed for production)."
+  ask_choice TLS_MODE "TLS certificate:" "auto-generate (self-signed)" "provide custom certificate files"
+}
+wiz_tls_crt() {
+  [[ "$TLS_MODE" == "provide custom certificate files" ]] || return 0
+  use_imported TLS_CRT_PATH && return 0
+  hint "The certificate (PEM) for the base domain, as a file on this machine."
+  prompt_required "TLS_CRT_PATH" "Full path to TLS certificate file (.crt)" "" validate_file_exists "TLS certificate file"
+}
+wiz_tls_key() {
+  [[ "$TLS_MODE" == "provide custom certificate files" ]] || return 0
+  use_imported TLS_KEY_PATH && return 0
+  hint "The private key (PEM) of that certificate, as a file on this machine."
+  prompt_required "TLS_KEY_PATH" "Full path to TLS key file (.key)" "" validate_file_exists "TLS key file"
+}
+
+# collect_parameters — the questions. "<" at the first question asked:
+# typed answers from the parameter-source menu (WIZ_BACK_EXIT=1) go back to
+# the menu; values from a file or the plan cannot be gone back to, so the
+# operator is told where to change them and the question is asked again.
 collect_parameters() {
   echo ""
   echo -e "${BOLD}════════════════════════════════════════════════════════════════${RESET}"
@@ -585,133 +900,19 @@ collect_parameters() {
   echo ""
   # Every question first takes a usable value from an input file (use_imported,
   # input-config.sh); without one it is asked exactly as before.
-
-  # Topology
-  use_imported TOPOLOGY || {
-    local -a topo_hint
-    mapfile -t topo_hint < <(provider_text_or topology_hint \
-      "single-node: everything on one VM (labs, demos, small setups)." \
-      "three-node: Instana spread over three VMs, IBM 'production' type, needs 3x n2-standard-16.")
-    hint "${topo_hint[@]}"
-    TOPOLOGY=$(prompt_choice "Select deployment topology:" \
-      "single-node" \
-      "three-node")
-  }
-
-  use_imported INSTALL_MODE || {
-    hint "online: the Instana VM downloads stanctl and images from the Instana repository itself (simplest)." \
-         "air-gapped: everything comes from one instana-airgapped.tar.gz package; you will be guided to obtain or build it."
-    INSTALL_MODE=$(prompt_choice "Select installation connectivity mode:" \
-      "online" \
-      "air-gapped")
-  }
-
-  # Install type
-  if [[ "$TOPOLOGY" == "single-node" ]]; then
-    use_imported INSTALL_TYPE || {
-      hint "demo: smaller disks/resources for evaluation. production: IBM-sized disks (larger, more expensive)."
-      INSTALL_TYPE=$(prompt_choice "Select installation type:" \
-        "demo" \
-        "production")
-    }
-  else
-    INSTALL_TYPE="production"
-    log "Three-node clusters require production installation type (per documentation)."
-  fi
-
-  # Ubuntu version — from docs: Ubuntu 24.04 and 22.04 only
-  ! provider_uses_param UBUNTU_VERSION || use_imported UBUNTU_VERSION || {
-    hint "Operating system image for the new VM(s). 24.04 is the current IBM-supported default."
-    UBUNTU_VERSION=$(prompt_choice "Select Ubuntu version (supported: 24.04, 22.04):" \
-      "ubuntu-2404-lts-amd64" \
-      "ubuntu-2204-lts")
-  }
-
-  provider_collect_location_params
-  ! provider_uses_param SSH_SOURCE_CIDR || use_imported SSH_SOURCE_CIDR || {
-    hint "Which public IP address may open SSH to the VM(s). Default = this machine's own public IP with /32 (only this machine)." \
-         "0.0.0.0/0 would allow the whole internet; avoid it."
-    prompt_required "SSH_SOURCE_CIDR" "CIDR allowed to SSH to the VM(s)" "$(detect_public_cidr)" validate_cidr
-  }
-  if [[ "$TOPOLOGY" == "single-node" ]]; then
-    use_imported VM_NAME || use_provider_default_name VM_NAME default_vm_name || {
-      local -a name_hint
-      mapfile -t name_hint < <(provider_text_or vm_name_hint \
-        "Name of the new VM in GCP; the four data disks will be named <vm>-analytics/-metrics/-objects/-data." \
-        "Lowercase letters, digits and hyphens. Must not already exist in the zone.")
-      hint "${name_hint[@]}"
-      prompt_required "VM_NAME" "VM name" "$(provider_text_or default_vm_name instana-backend)" validate_vm_name VM_NAME
-    }
-  else
-    imported_usable NODE0_NAME NODE1_NAME NODE2_NAME ||
-      hint "$(provider_text_or node_names_hint "Names of the three new VMs. Node 0 runs the backend and stanctl, node 1 the data stores, node 2 the rest.")"
-    use_imported NODE0_NAME || use_provider_default_name NODE0_NAME default_node0_name || prompt_required "NODE0_NAME" "Node 0 name (instana-0, backend)" "$(provider_text_or default_node0_name instana-0)" validate_node_name NODE0_NAME
-    use_imported NODE1_NAME || use_provider_default_name NODE1_NAME default_node1_name || prompt_required "NODE1_NAME" "Node 1 name (instana-1, data store)" "$(provider_text_or default_node1_name instana-1)" validate_node_name NODE1_NAME
-    use_imported NODE2_NAME || use_provider_default_name NODE2_NAME default_node2_name || prompt_required "NODE2_NAME" "Node 2 name (instana-2, other)" "$(provider_text_or default_node2_name instana-2)" validate_node_name NODE2_NAME
-  fi
-
-  # Machine type selection
-  show_hw_requirements_and_pick_machine_type
-  # Provider values that need the names and the size (existing hosts: data disks).
-  provider_collect_host_params
-
-  # FQDN
-  use_imported BASE_DOMAIN || {
-    echo ""
-    log "DNS entries required (all must point to the VM's external IP):"
-    log "  <base_domain>"
-    log "  agent-acceptor.<base_domain>"
-    log "  opamp-acceptor.<base_domain>"
-    log "  otlp-http.<base_domain>"
-    log "  otlp-grpc.<base_domain>"
-    log "  <unit>-<tenant>.<base_domain>"
-    echo ""
-    hint "Domain under which Instana will be reached, e.g. instana.example.com. You must own it and be able to add DNS records;" \
-         "for a lab you can instead put the entries printed at the end into /etc/hosts on your computer."
-    prompt_required "BASE_DOMAIN" "Base domain (e.g. instana.example.com)" "" validate_fqdn
-  }
-  # Tenant / unit names
-  imported_usable TENANT_NAME UNIT_NAME ||
-    hint "Tenant and unit are Instana's two-level naming; they form the UI address <unit>-<tenant>.<domain>." \
-         "Any short lowercase names are fine (e.g. company name and 'prod' or 'lab')."
-  use_imported TENANT_NAME || prompt_required "TENANT_NAME" "Tenant name (max 15 chars, lowercase alphanumeric, start with letter)" "tenant0" validate_tenant_unit_name "Tenant name"
-  use_imported UNIT_NAME || prompt_required "UNIT_NAME" "Unit name (max 15 chars, lowercase alphanumeric, start with letter)" "unit0" validate_tenant_unit_name "Unit name"
-  # Admin password
-  use_imported_secret ADMIN_PASSWORD || {
-    echo ""
-    log "Instana admin password (will not be stored in any file or log)"
-    hint "Password you choose now for the first UI user admin@instana.local. Typing shows • per character."
-    prompt_secret_required "ADMIN_PASSWORD" "Instana admin password" "Admin password"
-  }
-  # Instana keys — never logged or stored in local state/logs
-  if ! imported_usable_secret DOWNLOAD_KEY AGENT_KEY SALES_KEY; then
-    echo ""
-    log "Instana license keys (will not be stored in any file or log)"
-    hint "The three keys come from your Instana/IBM entitlement (Instana portal or the IBM license center):" \
-         "download key = access to the software repository; agent key = lets agents connect; sales key = your license." \
-         "Paste each one (typing shows • per character)."
-  fi
-  use_imported_secret DOWNLOAD_KEY || prompt_secret_required "DOWNLOAD_KEY" "Instana download key" "Download key"
-  use_imported_secret AGENT_KEY || prompt_secret_required "AGENT_KEY" "Instana agent key" "Agent key"
-  use_imported_secret SALES_KEY || prompt_secret_required "SALES_KEY" "Instana sales key" "Sales key"
-  if [[ "$INSTALL_MODE" == "air-gapped" ]]; then
-    obtain_airgapped_archive
-  fi
-  select_versions_upfront
-
-  # TLS certificate
-  use_imported TLS_MODE || {
-    hint "HTTPS certificate for the UI. Self-signed is generated automatically (browser will warn; fine for a lab)." \
-         "Custom = you provide a certificate and key file for the domain (needed for production)."
-    TLS_MODE=$(prompt_choice "TLS certificate:" \
-      "auto-generate (self-signed)" \
-      "provide custom certificate files")
-  }
-
-  if [[ "$TLS_MODE" == "provide custom certificate files" ]]; then
-    use_imported TLS_CRT_PATH || prompt_required "TLS_CRT_PATH" "Full path to TLS certificate file (.crt)" "" validate_file_exists "TLS certificate file"
-    use_imported TLS_KEY_PATH || prompt_required "TLS_KEY_PATH" "Full path to TLS key file (.key)" "" validate_file_exists "TLS key file"
-  fi
+  while true; do
+    wiz_run "${WIZ_STEPS[@]}"
+    [[ "$WIZ_EXIT" == back ]] || return 0
+    # Changing one value from the plan: back = keep it (the caller says so).
+    [[ -z "${EDIT_KEY:-}" ]] || return 0
+    if [[ "$PARAMS_SOURCE" == import ]]; then
+      warn "This is the first question to answer; the values before it come from $(input_source_label). Change those with E at the plan."
+      continue
+    fi
+    # From the parameter-source menu: back to the menu.
+    [[ "${WIZ_BACK_EXIT:-0}" != 1 ]] || return 0
+    warn "This is the first question; there is nothing before it."
+  done
 }
 
 # run_with_read_progress FILE COMMAND... — runs COMMAND and, while it reads FILE,
@@ -1104,10 +1305,11 @@ show_hw_requirements_and_pick_machine_type() {
       show_single_node_requirements "$INSTALL_TYPE"
       echo -e "  Official minimum: ${BOLD}${min_cpu} vCPUs, ${min_ram} GB RAM${RESET}"
       echo ""
-      SIZE_CHOICE=$(prompt_choice "Machine size:" \
+      ask_choice SIZE_CHOICE "Machine size:" \
         "minimum (${min_cpu} vCPUs / ${min_ram} GB) — from documentation" \
         "production recommended (production-small: 28 vCPUs / 112 GB)" \
-        "custom — enter manually")
+        "custom — enter manually"
+      (( ${NAV_BACK:-0} == 0 )) || return 0
     fi
 
     case "$SIZE_CHOICE" in
@@ -1118,6 +1320,7 @@ show_hw_requirements_and_pick_machine_type() {
       "custom"*)
         SIZE=custom
         if ! { use_imported VM_CPUS && use_imported VM_RAM_GB; }; then
+          local NAV_ON=0
           collect_cpu_ram VM_CPUS VM_RAM_GB "$min_cpu" "$min_ram" "single-node $INSTALL_TYPE"
         fi
         ;;

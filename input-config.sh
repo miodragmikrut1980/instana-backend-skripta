@@ -672,6 +672,7 @@ ask_input_file() {
        "and paste that into a terminal here; or copy the downloaded file over with gcloud compute scp." \
        "Values missing or invalid in the file are asked here afterwards, one by one."
   prompt_required INPUT_CONFIG "JSON file path" "$(default_input_file)" validate_input_file "Input file"
+  (( ${NAV_BACK:-0} == 0 )) || return 0
   INPUT_CONFIG=$(input_expand_path "$INPUT_CONFIG")
   [[ "$INPUT_CONFIG" == /* ]] || INPUT_CONFIG="${PWD}/${INPUT_CONFIG}"
   INPUT_LABEL=$(basename "$INPUT_CONFIG")
@@ -713,19 +714,31 @@ choose_parameter_source() {
     options+=("reuse the parameters saved in this folder (.install-config.json; keys are asked again)" \
               "edit the parameters saved in this folder (saved values offered as defaults)")
   fi
-  echo "" >&2
-  hint "Type the answers now, or import a file prepared with config-generator.html: values from the file are" \
-       "checked like typed answers, and only the missing or invalid ones are asked."
-  choice=$(prompt_choice "How do you want to provide the deployment parameters?" "${options[@]}") ||
-    die_with_steps "Input ended before the way to provide the parameters was chosen; the installation was not started and nothing was created." \
-      "Run the installer in a terminal and answer the menu (1 = type the answers, 2 = import a file):|./install.sh" \
-      "Or, without a terminal, give a complete input file:|./install.sh --config instana-config.json"
-  case "$choice" in
-    "enter"*) PARAMS_SOURCE=manual; collect_parameters ;;
-    "import"*) ask_input_file; import_parameters ;;
-    "reuse"*) PARAMS_SOURCE=saved; offer_saved_parameters "reuse saved parameters" || collect_parameters ;;
-    *) PARAMS_SOURCE=saved; offer_saved_parameters "edit parameters (saved text values as defaults)" || collect_parameters ;;
-  esac
+  # "<" at the first question (or at the file path) comes back to this menu.
+  local WIZ_BACK_EXIT=1
+  while true; do
+    echo "" >&2
+    hint "Type the answers now, or import a file prepared with config-generator.html: values from the file are" \
+         "checked like typed answers, and only the missing or invalid ones are asked." \
+         "In every question, < goes back to the previous one."
+    choice=$(prompt_choice "How do you want to provide the deployment parameters?" "${options[@]}") ||
+      die_with_steps "Input ended before the way to provide the parameters was chosen; the installation was not started and nothing was created." \
+        "Run the installer in a terminal and answer the menu (1 = type the answers, 2 = import a file):|./install.sh" \
+        "Or, without a terminal, give a complete input file:|./install.sh --config instana-config.json"
+    WIZ_EXIT=done
+    case "$choice" in
+      "enter"*) PARAMS_SOURCE=manual; collect_parameters ;;
+      "import"*)
+        NAV_BACK=0; NAV_ON=1; INPUT_CONFIG=""; ask_input_file; NAV_ON=0
+        if (( NAV_BACK )); then INPUT_CONFIG=""; continue; fi
+        import_parameters ;;
+      "reuse"*) PARAMS_SOURCE=saved; offer_saved_parameters "reuse saved parameters" || collect_parameters ;;
+      *) PARAMS_SOURCE=saved; offer_saved_parameters "edit parameters (saved text values as defaults)" || collect_parameters ;;
+    esac
+    [[ "$WIZ_EXIT" == back ]] || return 0
+    # Back to the menu: a later import or manual entry starts clean.
+    PARAMS_SOURCE=manual; CONFIG_LOADED=false; IMPORTED=(); IMPORTED_SECRET=(); IMPORTED_SECRET_SRC=()
+  done
 }
 
 # ── after the plan: edit one value, write the input file, blank secrets ──────
@@ -850,9 +863,11 @@ edit_parameters_before_start() {
   for key in ${keys[@]}; do IMPORTED[$key]=$(input_current_value "$key"); done
   for key in $INPUT_SECRET_KEYS; do IMPORTED_SECRET[$key]="${!key:-}"; IMPORTED_SECRET_SRC[$key]="the current plan"; done
   local saved_label="$INPUT_LABEL"
+  WIZ_DONE=()
   PARAMS_SOURCE=import; INPUT_LABEL="the current plan"; QUIET_OK=true
   log "Changing ${EDIT_KEY}; every other value is kept (values that depend on it are checked again)."
   collect_parameters
+  [[ "$WIZ_EXIT" != back ]] || log "${EDIT_KEY} was not changed; back to the plan."
   QUIET_OK=false; EDIT_KEY=""; EDIT_DEFAULT=""; INPUT_LABEL="$saved_label"
   provider_normalize_params || true
 }

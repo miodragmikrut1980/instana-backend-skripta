@@ -224,3 +224,28 @@ creates, deletes, or reboots a host without confirmation.
 - Existing hosts: the control machine is never offered as a host, matched
   by its name and by its addresses (its own interfaces, and on Google Cloud
   its internal and external IP from the metadata server).
+
+2026-10-19 — UX v2, step 2: "<" goes back to the previous question
+Why: a wrong or unknown answer (an IP address, a size) could only be fixed
+by cancelling the whole run.
+- The questions run as steps (collect_parameters → wiz_run). Answering "<"
+  re-asks the previous question that was really asked; every later question
+  is then asked again with its earlier answer as the Enter default
+  ("[earlier] (< = back)"; pick lists "Select [1-2, Enter = 1, < = back]").
+- A changed earlier answer clears what depends on it: topology → install
+  type, names, size, (existing hosts: host addresses and disks); install type
+  → size and disks; connectivity → package and versions; download key →
+  versions; TLS mode → certificate paths. These are then asked again.
+- Keys and password: "<" goes back; Enter keeps the one typed before.
+- "<" at the first question goes back to the parameter-source menu; "<" at
+  the JSON file path too. In a run from a file, values from the file are not
+  "previous questions": "<" at the first question that is asked says where
+  they come from and to change them with E at the plan.
+- Plan E: "<" at the value keeps it ("... was not changed; back to the plan").
+- "<" is never stored as a value. There is no "<" after Start, inside the
+  air-gapped package menu, the version lists, the host/login block and the
+  disk choice yet (next steps). "Edit saved parameters" now also offers the
+  saved choice as the Enter default in pick lists.
+- Unit, agent key and sales key got their own one-line hint (each question
+  can now be reached on its own with "<").
+- New test-nav-back.sh. Dry-run output: only the new hint lines.
