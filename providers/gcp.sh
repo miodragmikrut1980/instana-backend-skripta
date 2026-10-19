@@ -1043,7 +1043,9 @@ gcp_list_labs() {
         | map(select(. != "")) | unique ) as $ids
     | ( $ids[] as $id
         | ($vms | map(select(lab == $id))) as $v
-        | ($dsk | map(select(lab == $id))) as $d
+        | ($v | map(.name)) as $vn
+        # a labelled disk in use by a VM outside the lab is never part of it
+        | ($dsk | map(select(lab == $id and (users | all(. as $u | $vn | index($u) != null))))) as $d
         | ($fws | map(select((.description // "") == ("instana-lab-id=" + $id)))) as $f
         | select(($v | length) + ($d | length) + ($f | length) > 0)
         | [ "lab:" + $id,
@@ -1188,8 +1190,11 @@ gcp_delete_lab() {
     echo "  NOT deleted:"; if (( ${#left[@]} )); then printf '    - %s\n' "${left[@]}"; else echo "    (nothing)"; fi
   } >&2
   if (( ${#left[@]} )); then
-    die_with_steps "Clean-up of ${title} is incomplete: ${#left[@]} resource(s) were NOT deleted (listed above; the gcloud message is above each)." \
-      "Fix the cause (permission, a VM still running, a disk still attached), then run the clean-up again; the remaining resources are listed again (orphaned ones as their own entry):|./install.sh"
+    local again="Fix the cause (permission, a VM still running, a disk still attached), then run the clean-up again; labelled resources that are left are listed again (orphaned ones as their own entry):|./install.sh"
+    # A single-node lab is recognised by its VM: once the VM is gone, its
+    # leftover disks are not listed again; they are found with n (by name).
+    [[ "$title" != "single-node lab "* ]] || again="Fix the cause, then run the clean-up again and choose n (look up a VM by name) with '${title#single-node lab }': once the VM is gone, the leftover disks are not in the lab list any more:|./install.sh"
+    die_with_steps "Clean-up of ${title} is incomplete: ${#left[@]} resource(s) were NOT deleted (listed above; the gcloud message is above each)." "$again"
   fi
   ok "Clean-up of ${title} in project ${project} finished; everything listed was deleted."
   exit 0

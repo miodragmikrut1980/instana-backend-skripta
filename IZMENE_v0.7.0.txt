@@ -529,3 +529,12 @@ and every answer was lost.
   marker; the outer terminal then says "ended: cancelled / not started"
   instead of "Completed".
 - Tests: test-start-flow.sh 4-6.
+
+2026-10-19 — UX v2: clean-up follow-up (review Q1, Q3, B, D)
+- A labelled disk that is in use by a VM outside the lab (e.g. a production
+  VM) is not part of the lab: not listed, not tried.
+- When a single-node clean-up is incomplete, the stop says that the leftover
+  disks are not in the lab list any more once the VM is gone, and how to find
+  them (n = look up a VM by name).
+- Tests: a VM with only one of the four installer disks is not listed; a
+  failed disk delete is reported NOT deleted; mutants killed.

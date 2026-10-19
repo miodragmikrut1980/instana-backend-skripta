@@ -22,7 +22,9 @@ cat > "$TEST_ROOT/inst.json" <<J
  {"name":"web","zone":"z/europe-west6-b","status":"RUNNING","creationTimestamp":"2026-09-01T09:00:00","networkInterfaces":[{"networkIP":"10.172.0.41"}]},
  {"name":"db","zone":"z/europe-west6-b","status":"RUNNING","creationTimestamp":"2026-09-01T09:00:00","networkInterfaces":[{"networkIP":"10.172.0.42"}]},
  {"name":"ctl","zone":"z/europe-west6-b","status":"RUNNING","creationTimestamp":"2026-09-01T09:00:00","networkInterfaces":[{"networkIP":"10.172.0.2"}]},
- {"name":"ctl-copy","zone":"z/europe-west6-b","status":"RUNNING","creationTimestamp":"2026-09-01T09:00:00","networkInterfaces":[{"networkIP":"10.172.0.2"}]}
+ {"name":"ctl-copy","zone":"z/europe-west6-b","status":"RUNNING","creationTimestamp":"2026-09-01T09:00:00","networkInterfaces":[{"networkIP":"10.172.0.2"}]},
+ {"name":"lab-10","zone":"z/europe-west6-b","status":"RUNNING","creationTimestamp":"2026-09-01T09:00:00","networkInterfaces":[{"networkIP":"10.172.0.50"}]},
+ {"name":"prod-db","zone":"z/europe-west6-b","status":"RUNNING","creationTimestamp":"2026-09-01T09:00:00","networkInterfaces":[{"networkIP":"10.172.0.60"}]}
 ]
 J
 cat > "$TEST_ROOT/disks.json" <<J
@@ -40,7 +42,9 @@ cat > "$TEST_ROOT/disks.json" <<J
  {"name":"web-metrics","zone":"z/europe-west6-b","sizeGb":"300"},
  {"name":"web-objects","zone":"z/europe-west6-b","sizeGb":"250"},
  {"name":"web-data","zone":"z/europe-west6-b","sizeGb":"150","users":["$U/db"]},
- {"name":"ctl-copy-scratch","zone":"z/europe-west6-b","sizeGb":"50","labels":{"instana-lab-id":"abc"},"users":["$U/ctl-copy"]}
+ {"name":"ctl-copy-scratch","zone":"z/europe-west6-b","sizeGb":"50","labels":{"instana-lab-id":"abc"},"users":["$U/ctl-copy"]},
+ {"name":"lab-10-analytics","zone":"z/europe-west6-b","sizeGb":"500","users":["$U/lab-10"]},
+ {"name":"prod-data","zone":"z/europe-west6-b","sizeGb":"200","labels":{"instana-lab-id":"abc"},"users":["$U/prod-db"]}
 ]
 J
 cat > "$TEST_ROOT/fw.json" <<'J'
@@ -100,6 +104,8 @@ has "1) three-node lab instana-0, instana-1  (zone europe-west6-b, europe-west6-
 has "2) orphaned resources of lab gone1 (no VM left)  (zone europe-west6-a)"
 has "3) single-node lab mikrut-air  (zone europe-west6-b)"
 hasnt "single-node lab web"; hasnt "lab ctl"
+hasnt "single-node lab lab-10"      # only 1 of the 4 installer disks
+hasnt "prod-data"                   # labelled, but in use by a VM outside the lab
 has "disks: 1500 GB in 2 disk(s); firewall rules: 1"
 echo "PASS: labs are listed; the control machine, its disks and a VM with a borrowed disk are not"
 
@@ -164,5 +170,16 @@ echo "PASS: a listing error is explained and nothing is deleted"
 run back $'\n<\n\n1' --dry-run
 [[ "$(grep -c 'Labs in test-project' "$OUT")" == 2 ]] || fail "< must ask the project again and list again"
 echo "PASS: < at the list goes back to the project"
+
+# 9. A disk whose delete fails is reported NOT deleted; for a single-node lab
+#    the stop says the leftovers are found with n (by name).
+touch "$TEST_ROOT/fail-mikrut-air-data"
+run disk_fail $'\n3\nDELETE test-project/europe-west6-b'
+rm -f "$TEST_ROOT/fail-mikrut-air-data"
+[[ "$RC" != 0 ]] || fail "a failed disk delete must exit non-zero"
+has "Disk mikrut-air-data was NOT deleted."
+has "disk mikrut-air-data (europe-west6-b): still exists"
+has "choose n (look up a VM by name) with 'mikrut-air'"
+echo "PASS: a failed disk delete is reported, with how to find the leftovers"
 
 echo "All clean-up list tests passed."
