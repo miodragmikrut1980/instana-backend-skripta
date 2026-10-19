@@ -471,3 +471,22 @@ and every answer was lost.
   n = look a VM up by name (the earlier clean-up), < = another project.
   Existing hosts (ssh) are unchanged: nothing is deleted there.
 - New test-cleanup-list.sh.
+
+2026-10-19 — UX v2: clean-up review fixes (E1-E3)
+- A single-node lab is listed only when the VM has all four installer disks
+  (<vm>-analytics/-metrics/-objects/-data) in its zone and each of them is
+  unattached or attached only to that VM; its boot disk only when attached
+  only to it. A VM whose installer-like disk belongs to another VM is not
+  listed (n looks it up by name).
+- Every resource is deleted in its own zone; the list and the preview show
+  each zone, and the confirmation phrase names all zones of the lab
+  (DELETE <project>/<zone>[,<zone>...]).
+- Deleting is verified: each VM must be gone before the disks are touched
+  (disks of a VM that is still there are not tried), every disk and rule is
+  checked after its delete. The run ends with a "Deleted / NOT deleted" table;
+  anything left stops with HOW TO RESOLVE and a non-zero exit.
+- Labelled disks or rules whose VMs are gone are listed as their own entry
+  ("orphaned resources of lab <id>"). Disks attached to the control machine
+  are never listed.
+- test-cleanup-list.sh rewritten (multi-zone lab, orphaned resources, a
+  borrowed disk, partial failure); mutants for each rule are killed.

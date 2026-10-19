@@ -1010,12 +1010,16 @@ prov_gcp_destroy_from_state() {
 # the installer lists the VM, the disks named <vm>-* and the instana-allow-*
 # firewall rules, shows them, and deletes only after an explicit confirmation.
 # ── Clean-up: pick a lab from a list (UX v2) ────────────────────────────────
-# Labs in the project, read-only: VMs, disks and firewall rules carrying the
-# same instana-lab-id label (three-node labs), and single-node VMs with the
-# installer's disk names <vm>-analytics/-metrics/-objects/-data. Nothing
-# without that label or exact naming is ever listed; the control machine never.
-# Prints one line per lab: "key|zone|vms|disks|rules|summary" (lists are
-# space-separated names; vms "name:status:created", disks "name:sizeGB").
+# Labs in the project, read-only. Listed are only:
+#  - label groups: VMs, disks and firewall rules carrying the same
+#    instana-lab-id (three-node labs; resources left without their VMs are an
+#    "orphaned" entry of their own),
+#  - single-node labs: an unlabelled VM with ALL four installer disks
+#    <vm>-analytics/-metrics/-objects/-data in its zone, each unattached or
+#    attached only to that VM (plus its boot disk when attached only to it).
+# The control machine (name or address) and the disks attached to it are
+# never listed. One line per lab: "key|zones|title|vms|disks|rules" with
+# vms "name@zone:status:created", disks "name@zone:sizeGB" (space-separated).
 gcp_list_labs() {
   local project="$1" inst disks fws self mine
   inst=$(gcloud compute instances list --project="$project" --format=json 2>"$GCP_LIST_ERR") || return 1
@@ -1025,26 +1029,38 @@ gcp_list_labs() {
   mine=$( { declare -F prov_ssh_local_ips >/dev/null && prov_ssh_local_ips; } | jq -R . | jq -s . 2>/dev/null || echo '[]')
   jq -r -n --argjson inst "${inst:-[]}" --argjson disks "${disks:-[]}" --argjson fws "${fws:-[]}" \
      --arg self "$self" --argjson mine "${mine:-[]}" '
-    def zone: (.zone // "" | split("/") | last);
-    def ip: (.networkInterfaces[0].networkIP // "");
-    def nat: (.networkInterfaces[0].accessConfigs[0].natIP // "");
-    ($inst | map(select(.name != $self and ((ip as $i | $mine | index($i)) | not) and ((nat as $n | $n == "" or ($mine | index($n) | not)))))) as $vms
-    | ($vms | map(select((.labels["instana-lab-id"] // "") != "")) | group_by(.labels["instana-lab-id"])) as $groups
-    | ( $groups[] | (.[0].labels["instana-lab-id"]) as $id
-        | ($disks | map(select((.labels["instana-lab-id"] // "") == $id))) as $d
+    def zone: ((.zone // "") | split("/") | last);
+    def users: ((.users // []) | map(split("/") | last));
+    def lab: (.labels["instana-lab-id"] // "");
+    def excluded: (.name == $self
+      or ((.networkInterfaces[0].networkIP // "") as $i | $i != "" and ($mine | index($i)) != null)
+      or ((.networkInterfaces[0].accessConfigs[0].natIP // "") as $n | $n != "" and ($mine | index($n)) != null));
+    def created: ((.creationTimestamp // "") | .[0:10]);
+    ($inst | map(select(excluded | not))) as $vms
+    | ($inst | map(select(excluded) | .name)) as $excl
+    | ($disks | map(select(users | any(. as $u | $excl | index($u) != null) | not))) as $dsk
+    | ( ([$vms[], $dsk[] | lab] + [$fws[] | (.description // "") | select(startswith("instana-lab-id=")) | ltrimstr("instana-lab-id=")])
+        | map(select(. != "")) | unique ) as $ids
+    | ( $ids[] as $id
+        | ($vms | map(select(lab == $id))) as $v
+        | ($dsk | map(select(lab == $id))) as $d
         | ($fws | map(select((.description // "") == ("instana-lab-id=" + $id)))) as $f
-        | [ "lab:" + $id, (.[0] | zone),
-            (map(.name + ":" + .status + ":" + (.creationTimestamp // "" | .[0:10])) | join(" ")),
-            ($d | map(.name + ":" + (.sizeGb // "0")) | join(" ")),
-            ($f | map(.name) | join(" ")),
-            "three-node lab " + (map(.name) | join(", ")) ] | join("|") ),
-      ( $vms[] | select((.labels["instana-lab-id"] // "") == "") | . as $v | ($v | zone) as $z
-        | ($disks | map(select((.zone | split("/") | last) == $z and (.name as $n | ["-analytics","-metrics","-objects","-data"] | map($v.name + .) | index($n))))) as $d
-        | select($d | length > 0)
-        | ($disks | map(select((.zone | split("/") | last) == $z and .name == $v.name))) as $boot
-        | [ "vm:" + $v.name, $z, ($v.name + ":" + $v.status + ":" + ($v.creationTimestamp // "" | .[0:10])),
-            (($d + $boot) | map(.name + ":" + (.sizeGb // "0")) | join(" ")), "",
-            "single-node lab " + $v.name ] | join("|") )'
+        | select(($v | length) + ($d | length) + ($f | length) > 0)
+        | [ "lab:" + $id,
+            (($v + $d) | map(zone) | unique | join(",")),
+            (if ($v | length) > 0 then "three-node lab " + ($v | map(.name) | join(", "))
+             else "orphaned resources of lab " + $id + " (no VM left)" end),
+            ($v | map(.name + "@" + zone + ":" + .status + ":" + created) | join(" ")),
+            ($d | map(.name + "@" + zone + ":" + (.sizeGb // "0")) | join(" ")),
+            ($f | map(.name) | join(" ")) ] | join("|") ),
+      ( $vms[] | select(lab == "") | . as $v | ($v | zone) as $z
+        | (["-analytics","-metrics","-objects","-data"] | map($v.name + .)) as $roles
+        | ($dsk | map(select(zone == $z and lab == "" and (.name as $n | $roles | index($n)) != null))) as $rd
+        | select(($rd | length) == 4 and ($rd | all(users | all(. == $v.name))))
+        | ($dsk | map(select(zone == $z and .name == $v.name and (users | all(. == $v.name))))) as $boot
+        | [ "vm:" + $v.name, $z, "single-node lab " + $v.name,
+            ($v.name + "@" + $z + ":" + $v.status + ":" + ($v | created)),
+            (($rd + $boot) | map(.name + "@" + zone + ":" + (.sizeGb // "0")) | join(" ")), "" ] | join("|") )'
 }
 
 prov_gcp_destroy_by_name() {
@@ -1071,26 +1087,28 @@ prov_gcp_destroy_by_name() {
   fi
   rm -f "$GCP_LIST_ERR"
   [[ -z "$out" ]] || mapfile -t labs <<< "$out"
+  hint "Listed: labs with the instana-lab-id label, and single-node VMs whose four data disks" \
+       "(<name>-analytics/-metrics/-objects/-data) belong only to them. Anything else: n = look a VM up by name."
   if (( ${#labs[@]} == 0 )); then
-    ok "No labs of this installer were found in project ${project} (VMs with the instana-lab-id label, or VMs with <name>-analytics/-metrics/-objects/-data disks)."
-    hint "A VM made in another way can be looked up by its name instead."
+    ok "No labs of this installer were found in project ${project}."
     if prompt_yes_no "Look up a VM by its name?" N; then gcp_destroy_by_vm_name "$project"; fi
     log "Nothing was deleted."
     exit 0
   fi
-  local i=1 key zone vms dsk rules summ v n st cr d sz total running
+  local i=1 key zones title vms dsk rules v n st cr d sz total running line
   echo "" >&2
   echo -e "${CYAN}?${RESET} Labs in ${project} (this control machine is not listed):" >&2
   for line in "${labs[@]}"; do
-    IFS='|' read -r key zone vms dsk rules summ <<< "$line"
+    IFS='|' read -r key zones title vms dsk rules <<< "$line"
     total=0; running=0
     for d in $dsk; do sz="${d##*:}"; (( total += ${sz:-0} )); done
     for v in $vms; do [[ "$v" == *:RUNNING:* ]] && (( ++running )); done
-    printf '  %2d) %s  (zone %s)\n' "$i" "$summ" "$zone" >&2
-    for v in $vms; do IFS=: read -r n st cr <<< "$v"; printf '        VM %-24s %-10s created %s\n' "$n" "$st" "$cr" >&2; done
+    printf '  %2d) %s  (zone %s)\n' "$i" "$title" "${zones//,/, }" >&2
+    for v in $vms; do IFS=: read -r n st cr <<< "$v"; printf '        VM %-24s %-10s %-16s created %s\n' "${n%@*}" "$st" "${n#*@}" "$cr" >&2; done
     printf '        disks: %s GB in %s disk(s)%s\n' "$total" "$(wc -w <<< "$dsk" | tr -d ' ')" "${rules:+; firewall rules: $(wc -w <<< "$rules" | tr -d ' ')}" >&2
     if (( running > 0 )); then echo "        cost: running VMs are billed per hour, disks while they exist" >&2
-    else echo "        cost: VMs stopped, but the disks are still billed while they exist" >&2; fi
+    elif [[ -n "$vms" ]]; then echo "        cost: VMs stopped, but the disks are still billed while they exist" >&2
+    else echo "        cost: the disks are billed while they exist" >&2; fi
     (( ++i ))
   done
   local answer pick
@@ -1104,47 +1122,76 @@ prov_gcp_destroy_by_name() {
     if [[ "$answer" =~ ^[0-9]+$ ]] && (( answer >= 1 && answer <= ${#labs[@]} )); then pick="${labs[$((answer-1))]}"; break; fi
     echo "  Type a number from 1 to ${#labs[@]}, n to look a VM up by name, or < to choose another project." >&2
   done
-  IFS='|' read -r key zone vms dsk rules summ <<< "$pick"
-  gcp_delete_lab "$project" "$zone" "$summ" "$vms" "$dsk" "$rules"
+  IFS='|' read -r key zones title vms dsk rules <<< "$pick"
+  gcp_delete_lab "$project" "$zones" "$title" "$vms" "$dsk" "$rules"
 }
 
-# gcp_delete_lab PROJECT ZONE TITLE "VMS" "DISKS" "RULES" — shows exactly what
-# is deleted; a preview (--dry-run) stops there; a real run needs the typed
-# DELETE phrase, then deletes VMs, the remaining disks and the lab's rules.
+# gcp_gone KIND NAME ZONE PROJECT — 0 when gcloud says the resource does not
+# exist; 1 when it exists or the answer is not a clear "not found".
+gcp_gone() {
+  local out
+  if [[ "$1" == firewall-rules ]]; then out=$(gcloud compute firewall-rules describe "$2" --project="$4" --format='value(name)' 2>&1 >/dev/null) && return 1
+  else out=$(gcloud compute "$1" describe "$2" --zone="$3" --project="$4" --format='value(name)' 2>&1 >/dev/null) && return 1; fi
+  [[ "$out" == *"was not found"* || "$out" == *"notFound"* ]]
+}
+
+# gcp_delete_lab PROJECT ZONES TITLE "VMS" "DISKS" "RULES" — shows exactly
+# what is deleted (each resource in its own zone); a preview stops there; a
+# real run needs the typed DELETE phrase naming every zone, deletes the VMs,
+# checks they are gone, then their disks, then the lab's rules, and ends with
+# a deleted / NOT deleted table (exit 1 when something is left).
 gcp_delete_lab() {
-  local project="$1" zone="$2" title="$3" vms="$4" dsk="$5" rules="$6" v n st cr d expected confirm
+  local project="$1" zones="$2" title="$3" vms="$4" dsk="$5" rules="$6" v n z st cr d expected confirm
   echo "" >&2
-  echo -e "${BOLD}This is what would be deleted (${title}, ${project}/${zone}):${RESET}" >&2
-  for v in $vms; do IFS=: read -r n st cr <<< "$v"; echo "  VM    ${n}  (${st})" >&2; done
-  for d in $dsk; do echo "  disk  ${d%%:*}  (${d##*:} GB; the data on it is lost)" >&2; done
+  echo -e "${BOLD}This is what would be deleted (${title}, project ${project}):${RESET}" >&2
+  for v in $vms; do IFS=: read -r n st cr <<< "$v"; echo "  VM    ${n%@*}  (zone ${n#*@}, ${st})" >&2; done
+  for d in $dsk; do n="${d%:*}"; echo "  disk  ${n%@*}  (zone ${n#*@}, ${d##*:} GB; the data on it is lost)" >&2; done
   for d in $rules; do echo "  firewall rule  ${d}  (belongs to this lab only)" >&2; done
   if [[ "$DRY_RUN" == true ]]; then
     warn "Preview only (dry-run). Nothing was deleted."
     exit 0
   fi
-  expected="DELETE ${project}/${zone}"
-  echo -e "${BOLD}${RED}  This permanently deletes everything listed above.${RESET}" >&2
+  expected="DELETE ${project}/${zones}"
+  echo -e "${BOLD}${RED}  This permanently deletes everything listed above (zones: ${zones//,/, }).${RESET}" >&2
   read -rp "$(echo -e "${CYAN}?${RESET} Type '${expected}' to confirm (anything else cancels): ")" confirm ||
     die "Input ended; clean-up cancelled. Nothing was deleted."
   [[ "$confirm" == "$expected" ]] || { log "Confirmation did not match; nothing was deleted."; exit 0; }
+  local -a done_list=() left=()
+  local -A vm_left=()
   for v in $vms; do
-    n="${v%%:*}"
-    log "Deleting VM ${n}..."
-    gcloud compute instances delete "$n" --project="$project" --zone="$zone" --quiet && ok "VM ${n} deleted."
+    n="${v%%:*}"; z="${n#*@}"; n="${n%@*}"
+    log "Deleting VM ${n} (${z})..."
+    gcloud compute instances delete "$n" --project="$project" --zone="$z" --quiet || true
+    if gcp_gone instances "$n" "$z" "$project"; then done_list+=("VM ${n} (${z})"); ok "VM ${n} deleted."
+    else left+=("VM ${n} (${z}): still exists"); vm_left[$n]=1; err "VM ${n} was NOT deleted."; fi
   done
   for d in $dsk; do
-    n="${d%%:*}"
-    # Boot disks carry the VM's name and are removed together with the VM.
-    if ! gcloud compute disks describe "$n" --project="$project" --zone="$zone" >/dev/null 2>&1; then
-      log "Disk ${n} is already gone (deleted with its VM)."; continue
-    fi
-    log "Deleting disk ${n}..."
-    gcloud compute disks delete "$n" --project="$project" --zone="$zone" --quiet && ok "Disk ${n} deleted."
+    n="${d%:*}"; z="${n#*@}"; n="${n%@*}"
+    # A disk of a VM that is still there is in use: left alone.
+    local owner="" k
+    for k in "${!vm_left[@]}"; do [[ "$n" == "$k" || "$n" == "${k}-"* ]] && owner="$k"; done
+    if [[ -n "$owner" ]]; then left+=("disk ${n} (${z}): not tried, VM ${owner} still exists"); continue; fi
+    if gcp_gone disks "$n" "$z" "$project"; then done_list+=("disk ${n} (${z}, deleted with its VM)"); continue; fi
+    log "Deleting disk ${n} (${z})..."
+    gcloud compute disks delete "$n" --project="$project" --zone="$z" --quiet || true
+    if gcp_gone disks "$n" "$z" "$project"; then done_list+=("disk ${n} (${z})"); ok "Disk ${n} deleted."
+    else left+=("disk ${n} (${z}): still exists"); err "Disk ${n} was NOT deleted."; fi
   done
   for d in $rules; do
-    gcloud compute firewall-rules delete "$d" --project="$project" --quiet && ok "Firewall rule ${d} deleted."
+    gcloud compute firewall-rules delete "$d" --project="$project" --quiet || true
+    if gcp_gone firewall-rules "$d" "" "$project"; then done_list+=("firewall rule ${d}"); ok "Firewall rule ${d} deleted."
+    else left+=("firewall rule ${d}: still exists"); err "Firewall rule ${d} was NOT deleted."; fi
   done
-  ok "Clean-up of ${title} in ${project}/${zone} finished."
+  {
+    echo ""
+    echo "  Deleted:"; if (( ${#done_list[@]} )); then printf '    - %s\n' "${done_list[@]}"; else echo "    (nothing)"; fi
+    echo "  NOT deleted:"; if (( ${#left[@]} )); then printf '    - %s\n' "${left[@]}"; else echo "    (nothing)"; fi
+  } >&2
+  if (( ${#left[@]} )); then
+    die_with_steps "Clean-up of ${title} is incomplete: ${#left[@]} resource(s) were NOT deleted (listed above; the gcloud message is above each)." \
+      "Fix the cause (permission, a VM still running, a disk still attached), then run the clean-up again; the remaining resources are listed again (orphaned ones as their own entry):|./install.sh"
+  fi
+  ok "Clean-up of ${title} in project ${project} finished; everything listed was deleted."
   exit 0
 }
 
