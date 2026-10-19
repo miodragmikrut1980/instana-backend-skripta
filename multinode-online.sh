@@ -133,4 +133,5 @@ main_three_node() {
   print_final_report "$ip"
   phase_done 12 "Cluster health and local access instructions completed."
   progress_summary
+  print_final_summary
 }

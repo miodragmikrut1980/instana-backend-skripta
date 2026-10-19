@@ -208,6 +208,6 @@ progress_fail_current() {
 progress_summary() {
   progress_checklist
   progress_bar complete
+  # The total time is part of the result that follows (print_final_summary).
   progress_emit "${GREEN}${BOLD}All required phases completed.${RESET}"
-  progress_emit "  Total time: this run $(run_elapsed) (started $RUN_STARTED_AT); all phases together $(fmt_duration "$(phases_total_seconds)")."
 }

@@ -2616,10 +2616,15 @@ configure_kubectl_user_access() {
 # =============================================================================
 # SECTION 10 — FINAL REPORT
 # =============================================================================
+# print_final_report IP — inside phase 12: the local access instructions and
+# the saved report. The result box itself (print_final_summary) comes after
+# the phase summary, so it is the last thing on the screen.
+FINAL_UI_IP=""
 print_final_report() {
   local external_ip="$1"
   print_local_access "$external_ip"
   [[ -n "${CONFIRMED_UI_IP:-}" ]] && external_ip="$CONFIRMED_UI_IP"
+  FINAL_UI_IP="$external_ip"
   # The same report is written to REPORT_FILE so it survives the end of a
   # screen session and can be re-read later (./install.sh --report).
   {
@@ -2640,6 +2645,12 @@ print_final_report() {
     echo "  Destroy: ./install.sh --destroy"
   } > "$REPORT_FILE" 2>/dev/null || true
   [[ "$DRY_RUN" != true ]] || rm -f "$REPORT_FILE"
+}
+
+# print_final_summary — the result, printed once and last: after the phase
+# checklist and the progress bar.
+print_final_summary() {
+  local external_ip="$FINAL_UI_IP"
   if [[ "$DRY_RUN" == true ]]; then
     # A simulation has no IP, no versions on a VM and no report to keep.
     echo ""
@@ -2759,6 +2770,7 @@ main_single_node() {
   print_final_report "${ext_ip:-DRY-RUN}"
   phase_done 12 "Health checks and access instructions completed."
   progress_summary
+  print_final_summary
 }
 
 # =============================================================================

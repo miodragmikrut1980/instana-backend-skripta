@@ -624,3 +624,16 @@ and every answer was lost.
 - Tests: test-dry-run.sh (key facts before the details, creates line, no
   CONFIRMATION REQUIRED), test-ssh-login-flow.sh (changes line, hosts line),
   test-nav-back.sh (block rows, unsafe line, E scope).
+
+2026-10-19 — UX v3: the result is printed last and once (C4)
+- The result box ("Dry-run complete — nothing was created or changed", or
+  "Installation Complete!" with the UI URL, IP and /etc/hosts lines) now comes
+  after the phase 12 summary, the checklist and the progress bar: it is the
+  last thing on the screen. Before, it was printed first and then scrolled
+  away behind the checklist.
+- "Total time" appears once, in the result box (the phase summary no longer
+  repeats it).
+- The local access instructions and the saved report (.install-report.txt)
+  stay inside phase 12 as before.
+- Tests: test-dry-run.sh (result after "All required phases completed", once,
+  last line; Total time once); mutants killed.

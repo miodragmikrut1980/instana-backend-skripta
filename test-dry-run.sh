@@ -60,6 +60,12 @@ run_case() {
     # The key facts come first, before the details.
     k=$(grep -n '^  UI        https://' output.txt | head -1 | cut -d: -f1); d=$(grep -n '── Details ──' output.txt | head -1 | cut -d: -f1)
     [[ -n "$k" && -n "$d" && "$k" -lt "$d" ]] || { echo "FAIL: $name: key facts must come before the details" >&2; exit 1; }
+    # The result is the last thing on the screen, once; the total time once.
+    r=$(grep -n 'Dry-run complete — nothing was created or changed' output.txt | cut -d: -f1)
+    a=$(grep -n 'All required phases completed' output.txt | tail -1 | cut -d: -f1)
+    [[ "$(wc -l <<< "$r")" == 1 && -n "$a" && "$r" -gt "$a" ]] || { echo "FAIL: $name: the result must come once, after the checklist" >&2; exit 1; }
+    [[ "$(grep -c 'Total time' output.txt)" == 1 ]] || { echo "FAIL: $name: Total time must appear once" >&2; exit 1; }
+    grep -v '^[[:space:]]*$' output.txt | tail -1 | grep -q 'Run it for real' || { echo "FAIL: $name: something is printed after the result: $(tail -3 output.txt)" >&2; exit 1; }
     if grep -q 'CONFIRMATION REQUIRED' output.txt; then echo "FAIL: $name: the long confirmation text is back" >&2; exit 1; fi
     grep -q 'sudo kubectl get nodes' output.txt
     grep -q 'sudo kubectl get pods -A' output.txt
