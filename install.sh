@@ -1997,6 +1997,21 @@ print_final_report() {
     echo "  Destroy: ./install.sh --destroy"
   } > "$REPORT_FILE" 2>/dev/null || true
   [[ "$DRY_RUN" != true ]] || rm -f "$REPORT_FILE"
+  if [[ "$DRY_RUN" == true ]]; then
+    # A simulation has no IP, no versions on a VM and no report to keep.
+    echo ""
+    echo -e "${BOLD}${GREEN}════════════════════════════════════════════════════════════════${RESET}"
+    echo -e "${BOLD}${GREEN}  Dry-run complete — nothing was created or changed${RESET}"
+    echo -e "${BOLD}${GREEN}════════════════════════════════════════════════════════════════${RESET}"
+    echo ""
+    echo -e "  ${BOLD}Instana UI URL (after a real run):${RESET}  https://${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}"
+    echo -e "  ${BOLD}Total time:${RESET}      this run $(run_elapsed) (started ${RUN_STARTED_AT})"
+    echo "  A real installation ends with the external IP, the /etc/hosts entries to copy and"
+    echo "  the Kubernetes checks on the backend VM (sudo kubectl get nodes; sudo kubectl get pods -A)."
+    echo -e "  Run it for real: ${CYAN}./install.sh${RESET}   Log of this simulation: ${LOG_FILE}"
+    echo ""
+    return 0
+  fi
   echo ""
   echo -e "${BOLD}${GREEN}════════════════════════════════════════════════════════════════${RESET}"
   echo -e "${BOLD}${GREEN}  Installation Complete!${RESET}"

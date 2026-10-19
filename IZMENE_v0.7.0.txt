@@ -196,3 +196,23 @@ creates, deletes, or reboots a host without confirmation.
   together with --config is refused. Before phase 1 the recorded provider
   wins over INSTANA_PROVIDER, and --export-config always writes the
   recorded provider. The host list is not shown when gcloud has no project.
+
+2026-10-19 — Bug fixes from the UX review
+- Existing hosts, data disks: roles are asked largest first (three-node
+  node 1: analytics, metrics, data), and only disks that still leave a
+  disk for every remaining role are offered; when a host cannot hold all
+  its roles at all, the run stops before the first pick, listing the disks
+  found and the sizes needed. Before, picking a large disk for "data" could
+  make "analytics" impossible and lose every answer.
+- Existing hosts, public IP: a private host address (RFC 1918, 100.64/10)
+  is no longer offered as the public IP. On Google Cloud the instance's
+  external IP is looked up (read-only, optional); otherwise the address is
+  asked at the end with a note that /etc/hosts lines with a private address
+  work only inside that network. Single-node derives this from the address.
+- destroy (preview) no longer asks for the DELETE phrase (also GCP).
+- A stop says "--resume" only when something was already created; before
+  that it says nothing was created and to run ./install.sh again (also GCP).
+- A dry-run ends with "Dry-run complete — nothing was created or changed"
+  instead of "Installation Complete!" with "DRY-RUN" as IP and /etc/hosts
+  lines (also GCP; the rest of the GCP dry-run output is unchanged).
+- Disk prompts say "the Instana <role> directory" (no more "data data").

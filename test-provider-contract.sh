@@ -94,5 +94,18 @@ cp -R "$(dirname "$0")"/*.sh "$(dirname "$0")"/providers "$TEST_DIR/"
   ufw=$(configure_ufw_single_node vm z p 2>&1)
   [[ "$ufw" == *"ufw allow 22/tcp"* && "$ufw" != *2222* ]] || { echo "FAIL: GCP UFW SSH port: $ufw" >&2; exit 1; }
 )
+# A stop says --resume only when something was created.
+(
+  cd "$TEST_DIR"; rm -f .install-state.json
+  set --; source ./install.sh
+  DRY_RUN=false PROGRESS_CURRENT=1
+  msg=$(progress_fail_current "test stop" 2>&1)
+  [[ "$msg" == *"Nothing was created yet. Correct the reported problem and run ./install.sh again."* && "$msg" != *--resume* ]] || { echo "FAIL: stop hint before anything was created: $msg" >&2; exit 1; }
+  echo '{"provider":"gcp","vm_lab":"created"}' > .install-state.json
+  msg=$(progress_fail_current "test stop" 2>&1)
+  [[ "$msg" == *"continue where it stopped: ./install.sh --resume"* ]] || { echo "FAIL: stop hint after resources: $msg" >&2; exit 1; }
+  rm -f .install-state.json
+)
+echo 'PASS: the stop hint names --resume only when something was created'
 echo 'PASS: the confirmed plan records the provider in the state file; ACTIVE_PROVIDER from the environment is ignored'
 

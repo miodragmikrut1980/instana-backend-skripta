@@ -197,7 +197,11 @@ progress_fail_current() {
     phase_detail fail "Phase ${PROGRESS_CURRENT} stopped: ${message}"
     progress_emit "  Stopped after $(run_elapsed) in this run (started $RUN_STARTED_AT)."
     progress_bar stopped
-    progress_emit "  Correct the reported problem and rerun with --resume when supported."
+    if [[ "${DRY_RUN:-false}" == true ]] || ! declare -F deployment_has_resources >/dev/null || ! deployment_has_resources 2>/dev/null; then
+      progress_emit "  Nothing was created yet. Correct the reported problem and run ./install.sh again."
+    else
+      progress_emit "  Correct the reported problem and continue where it stopped: ./install.sh --resume"
+    fi
   fi
 }
 

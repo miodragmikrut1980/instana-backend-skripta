@@ -132,3 +132,11 @@ grep -q 'sudo /usr/local/bin/k3s-uninstall.sh' "$d/output.txt"
 if [[ -e "$d/.install-state.json" ]]; then echo "FAIL: ssh state kept" >&2; exit 1; fi
 echo 'PASS: provider ssh: destroy forgets the local state only, no ssh or gcloud call'
 
+# 9. A preview never asks for the destructive phrase (no input at all).
+run_destroy preview_no_input "$FULL_STATE" '' --dry-run
+d="$TEST_ROOT/preview_no_input"
+grep -q 'Preview finished: 6 resource(s) would be deleted' "$d/output.txt"
+if grep -q "Type 'DELETE" "$d/output.txt"; then echo "FAIL: preview asked for the delete phrase" >&2; exit 1; fi
+if grep -q ' delete ' "$d/gcloud.log"; then echo "FAIL: preview deleted" >&2; exit 1; fi
+echo 'PASS: destroy preview runs without the DELETE phrase'
+

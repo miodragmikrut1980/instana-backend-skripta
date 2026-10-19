@@ -57,7 +57,8 @@ run_case() {
     grep -q 'Enter N, or press Enter without typing anything, to cancel without starting' output.txt
     grep -q 'sudo kubectl get nodes' output.txt
     grep -q 'sudo kubectl get pods -A' output.txt
-    grep -q 'Ready-to-copy /etc/hosts entries' output.txt
+    grep -q 'Dry-run complete — nothing was created or changed' output.txt
+    if grep -q 'Installation Complete!\|External IP:.*DRY-RUN\|^DRY-RUN ' output.txt; then echo "FAIL: $name: dry-run shows a completed installation or a fake IP" >&2; exit 1; fi
     if grep -q "download-secret" output.txt; then echo "FAIL: test-dry-run.sh:62: unexpected match" >&2; exit 1; fi
     if grep -q "agent-secret" output.txt; then echo "FAIL: test-dry-run.sh:63: unexpected match" >&2; exit 1; fi
     if [[ "$name" == single_airgapped_to_online ]]; then

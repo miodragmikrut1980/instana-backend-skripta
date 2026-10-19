@@ -91,9 +91,12 @@ echo "  State file: ${STATE_FILE}"
 echo "  Log file:   ${LOG_FILE}"
 echo ""
 
-expected="DELETE ${DESTROY_SCOPE}/${DESTROY_LOCATION}"
-read -rp "$(echo -e "${RED}?${RESET} Type '${expected}' to confirm deletion: ")" confirm
-[[ "$confirm" == "$expected" ]] || { log "Aborted."; exit 0; }
+# A preview deletes nothing, so it never asks for the destructive phrase.
+if [[ "$DRY_RUN" != true ]]; then
+  expected="DELETE ${DESTROY_SCOPE}/${DESTROY_LOCATION}"
+  read -rp "$(echo -e "${RED}?${RESET} Type '${expected}' to confirm deletion: ")" confirm
+  [[ "$confirm" == "$expected" ]] || { log "Aborted."; exit 0; }
+fi
 
 echo ""
 
