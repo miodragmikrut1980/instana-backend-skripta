@@ -12,7 +12,7 @@ mkdir -p "$TEST_ROOT/bin"
 printf '#!/usr/bin/env bash\ncase "$*" in *"auth list"*) echo t@example.com ;; esac\nexit 0\n' > "$TEST_ROOT/bin/gcloud"
 printf '#!/usr/bin/env bash\necho 203.0.113.10\n' > "$TEST_ROOT/bin/curl"
 # A fake screen records how it was started and does not start anything.
-printf '#!/usr/bin/env bash\n[[ "$1" == -ls ]] && exit 1\necho "SCREEN-ARGS: $*" >> "%s/screen.log"\nexit 0\n' "$TEST_ROOT" > "$TEST_ROOT/bin/screen"
+printf '#!/usr/bin/env bash\nif [[ "$1" == -ls ]]; then [[ -f "%s/sessions" ]] && printf "\\t12345.instana-101532\\t(Detached)\\n"; exit 1; fi\necho "SCREEN-ARGS: $*" >> "%s/screen.log"\nexit 0\n' "$TEST_ROOT" "$TEST_ROOT" > "$TEST_ROOT/bin/screen"
 chmod +x "$TEST_ROOT/bin"/*
 fail() { echo "FAIL: $*" >&2; [[ -f "${OUT:-}" ]] && tail -30 "$OUT" >&2; exit 1; }
 
@@ -82,5 +82,36 @@ if grep -q '"GCP_PROJECT":' "$OUT"; then fail "raw JSON shown"; fi
 if grep -qE "^  TLS_CRT_PATH" "$OUT"; then fail "empty values must be left out"; fi
 grep -q "are never saved; type them again" "$OUT" || fail "hint before the keys on resume"
 echo "PASS: resume shows a readable table and explains why the keys are asked"
+
+# 4. A still-running installer is offered BEFORE the start menu (a dropped
+#    operator lands back in the live install).
+touch "$TEST_ROOT/sessions"; rm -f "$TEST_ROOT/screen.log"
+pty_run reattach 2 2
+rm -f "$TEST_ROOT/sessions"
+r=$(grep -n "An installer session is still running in screen" "$OUT" | head -1 | cut -d: -f1)
+m=$(grep -n "What do you want to do?" "$OUT" | head -1 | cut -d: -f1)
+[[ -n "$r" && -n "$m" && "$r" -lt "$m" ]] || fail "the running session must be offered before the menu"
+[[ "$(grep -c "An installer session is still running" "$OUT")" == 1 ]] || fail "the running session must be offered once"
+echo "PASS: a running installer is offered before the start menu"
+
+# 5. destroy refuses while an installation from this folder holds the lock.
+CASE="$TEST_ROOT/lock"; mkdir -p "$CASE"; cp -R "$SRC"/*.sh "$SRC/providers" "$CASE/"
+( cd "$CASE"; flock .install.lock sleep 15 ) & lockpid=$!
+sleep 1
+( cd "$CASE"; PATH="$TEST_ROOT/bin:$PATH" bash ./install.sh --destroy < /dev/null ) > "$CASE/out.txt" 2>&1 && { kill $lockpid; fail "destroy must refuse while the lock is held"; }
+kill $lockpid 2>/dev/null || true
+OUT="$CASE/out.txt"
+grep -q "An installation from this folder is running right now" "$OUT" || fail "destroy lock message"
+grep -q "Nothing was deleted." "$OUT" || fail "destroy lock: nothing deleted"
+echo "PASS: destroy refuses while an installation holds the folder lock"
+
+# 6. A cancel or N at the plan inside screen is reported as such, not "Completed".
+CASE="$TEST_ROOT/marker"; mkdir -p "$CASE"; cp -R "$SRC"/*.sh "$SRC/providers" "$CASE/"
+( cd "$CASE"; set --; INSTANA_EXIT_MARKER="$CASE/m.exit" bash -c 'source ./install.sh; operator_cancel' ) > /dev/null 2>&1 || true
+grep -q "cancelled by the operator — nothing was created or changed" "$CASE/m.exit.stopped" || fail "the cancel marker must be written"
+( cd "$CASE"; set --; bash -c 'source ./install.sh; echo "REASON=[$(screen_stop_reason "'"$CASE"'/m.exit")]"' ) > "$CASE/r.txt" 2>&1
+grep -q "REASON=\[installation cancelled by the operator" "$CASE/r.txt" || { cat "$CASE/r.txt" >&2; fail "the outer terminal must read the stop reason"; }
+[[ ! -f "$CASE/m.exit.stopped" ]] || fail "the marker must be removed after reading"
+echo "PASS: a cancel inside screen is reported as cancelled, not completed"
 
 echo "All start-flow tests passed."

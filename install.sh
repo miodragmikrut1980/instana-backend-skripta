@@ -221,6 +221,11 @@ fi
 # operator never has to remember a second script.
 run_destroy() {
   local -a args=()
+  # Never while an installation from this folder is running (it holds the lock).
+  exec 9>"${SCRIPT_DIR}/.install.lock"
+  flock -n 9 || die_with_steps "An installation from this folder is running right now (it holds .install.lock); removing its resources now would break it. Nothing was deleted." \
+    "Go to that installation (it usually runs in screen) and let it finish or stop it:|screen -ls; screen -d -r <name>" \
+    "Then run the clean-up again:|./install.sh --destroy"
   [[ "$DRY_RUN" == true ]] && args+=(--dry-run)
   if [[ -f "$STATE_FILE" ]] && ! state_is_only_progress; then
     bash "${SCRIPT_DIR}/destroy.sh" "${args[@]}"
@@ -509,7 +514,23 @@ operator_cancel() {
   ERROR_REPORTED=true
   local op="${OPERATION_NAME:-installation}"
   log "${op^} cancelled by the operator. Nothing was created or changed."
+  mark_stopped "${op} cancelled by the operator — nothing was created or changed"
   exit 0
+}
+
+# mark_stopped TEXT — inside screen, tells the outer terminal that this run
+# ended without installing (cancelled, not started, parameters saved), so it
+# does not report "Completed".
+mark_stopped() {
+  [[ -z "${INSTANA_EXIT_MARKER:-}" ]] || printf '%s\n' "$1" > "${INSTANA_EXIT_MARKER}.stopped" 2>/dev/null || true
+}
+
+# The outer terminal's line for a finished screen session: the stop reason
+# written by the inner run, or empty when it really completed.
+screen_stop_reason() {
+  local f="${1}.stopped" r=""
+  [[ -f "$f" ]] && { r=$(head -1 "$f"); rm -f "$f"; }
+  printf '%s' "$r"
 }
 
 confirm_cancel() {
@@ -1572,11 +1593,11 @@ show_plan() {
     case "$(prompt_plan_decision)" in
       yes) ;;
       edit) PLAN_DECISION=edit; return 0 ;;
-      save) save_plan_to_file; log "Installation was not started; the parameters were saved for later."; exit 0 ;;
-      *) log "Installation was not started; no action was approved from this plan."; exit 0 ;;
+      save) save_plan_to_file; log "Installation was not started; the parameters were saved for later."; mark_stopped "not started — the parameters were saved to a file"; exit 0 ;;
+      *) log "Installation was not started; no action was approved from this plan."; mark_stopped "not started (N at the plan) — nothing was created"; exit 0 ;;
     esac
   else
-    prompt_yes_no "Start now? Type Y to continue or N to cancel" N || { log "Installation was not started; no action was approved from this plan."; exit 0; }
+    prompt_yes_no "Start now? Type Y to continue or N to cancel" N || { log "Installation was not started; no action was approved from this plan."; mark_stopped "not started (N at the plan) — nothing was created"; exit 0; }
   fi
   # Y typed in a terminal at this plan approves the changes it lists on
   # existing hosts and the network connections it lists (one confirmation).
@@ -2710,7 +2731,7 @@ ensure_detachable_session() {
   [[ "$DRY_RUN" != true ]] || return 0             # a dry-run changes nothing a lost connection could break
   [[ -z "${STY:-}" && -z "${TMUX:-}" ]] || return 0   # already inside screen/tmux
   [[ "${INSTANA_NO_SCREEN:-}" != 1 ]] || return 0
-  offer_reattach_running_installer
+  [[ "${REATTACH_OFFERED:-0}" == 1 ]] || offer_reattach_running_installer
   echo "" >&2
   warn "You are not inside a screen/tmux session."
   hint "Why this matters: this installer runs 30-40 min for single-node online (longer for three-node and air-gapped) and drives 'stanctl up' on the Instana VM through an SSH" \
@@ -2741,6 +2762,13 @@ ensure_detachable_session() {
       INSTANA_EXIT_MARKER="$marker" screen -c "$rcfile" -S "$name" bash -c 'exec bash "$0" "$@"' "${SCRIPT_DIR}/install.sh" "$@" || rc=$?
       rm -f "$rcfile"
       local inner_rc; inner_rc=$(cat "$marker" 2>/dev/null || echo unknown); rm -f "$marker"
+      local stop_reason; stop_reason=$(screen_stop_reason "$marker")
+      if [[ "$inner_rc" == 0 && -n "$stop_reason" ]]; then
+        rm -f "$logf"
+        echo "" >&2
+        log "The installer inside screen session ${name} ended: ${stop_reason}."
+        exit 0
+      fi
       if [[ "$inner_rc" == 0 ]]; then
         rm -f "$logf"
         local run_log; run_log=$(ls -t "$SCRIPT_DIR"/install-*.log 2>/dev/null | head -1 || true)
@@ -2832,6 +2860,10 @@ main() {
   [[ -z "$INPUT_CONFIG" ]] || input_prepare_cli_file
   # The menu first: the screen offer only matters for a run that installs
   # (install / resume), not for a dry-run, a report or a clean-up.
+  # A dropped operator lands back in the running installation first.
+  if [[ -t 0 && -t 1 && -z "${STY:-}" && -z "${TMUX:-}" && "${INSTANA_NO_SCREEN:-}" != 1 ]]; then
+    offer_reattach_running_installer; REATTACH_OFFERED=1
+  fi
   if [[ $# -eq 0 && -t 0 ]]; then
     start_menu
     case "${START_CHOICE:-}" in

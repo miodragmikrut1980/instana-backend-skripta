@@ -518,3 +518,14 @@ and every answer was lost.
   refused with the reason (asked in a terminal, listed without one).
 - Tests: test-nav-back.sh 26 (symbolic link, certificate names and key
   pairing), test-config-file.sh (KUBE_USER_ACCESS); mutants killed.
+
+2026-10-19 — UX v2: lows (reattach first, destroy lock, screen outcome)
+- A still-running installer session in screen is offered before the start
+  menu, so an operator whose connection dropped lands back in the live
+  installation first (offered once).
+- destroy / clean-up refuses while an installation from this folder holds
+  .install.lock (removing its resources would break it); nothing is deleted.
+- Inside screen, a cancel, N at the plan or "save to a file" leaves a stop
+  marker; the outer terminal then says "ended: cancelled / not started"
+  instead of "Completed".
+- Tests: test-start-flow.sh 4-6.
