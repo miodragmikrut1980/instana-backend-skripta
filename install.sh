@@ -377,8 +377,9 @@ prompt() {
     default="$(jq -r --arg k "$var_name" '.parameters[$k] // empty' "$CONFIG_FILE")"
     [[ -n "$default" ]] || default="${3:-}"
   fi
-  # In the question wizard an answer given before (then "<" back) is the default.
-  [[ "${NAV_ON:-0}" != 1 || -z "${!var_name:-}" ]] || default="${!var_name}"
+  # In the question wizard an answer given before is the Enter default, also
+  # inside blocks where "<" is not offered (WIZ_ACTIVE: the whole wizard).
+  [[ "${WIZ_ACTIVE:-0}" != 1 || -z "${!var_name:-}" ]] || default="${!var_name}"
   # Changing one value from the plan: its current value is the default.
   [[ -n "${EDIT_KEY:-}" && "$var_name" == "$EDIT_KEY" && -n "${EDIT_DEFAULT:-}" ]] && default="$EDIT_DEFAULT"
   local value back=""
@@ -603,7 +604,7 @@ use_provider_default_name() {
 # it are cleared (wiz_dependents) and asked again. Heavy steps (connecting to
 # hosts, package, versions) are not repeated by moving forward again unless
 # something they depend on changed; there is no "<" inside them.
-NAV_ON=0; NAV_BACK=0; NAV_ASKED=0; WIZ_EXIT=done
+NAV_ON=0; NAV_BACK=0; NAV_ASKED=0; WIZ_EXIT=done; WIZ_ACTIVE=0
 declare -A WIZ_DONE=()
 WIZ_STEPS=(wiz_topology wiz_mode wiz_type wiz_ubuntu wiz_location wiz_cidr
   wiz_vm_name wiz_node0_name wiz_node1_name wiz_node2_name wiz_size wiz_host_params
@@ -650,7 +651,8 @@ wiz_dependents() {
       echo INSTALL_TYPE VM_NAME NODE0_NAME NODE1_NAME NODE2_NAME SIZE SIZE_CHOICE VM_CPUS VM_RAM_GB done:host_params
       if [[ "$(provider_name)" == ssh ]]; then echo VM_HOST NODE0_HOST NODE1_HOST NODE2_HOST SSH_VIA_PRIVATE done:location; fi ;;
     wiz_type) echo SIZE SIZE_CHOICE VM_CPUS VM_RAM_GB done:host_params ;;
-    wiz_mode) echo AIRGAP_ARCHIVE done:airgap done:versions ;;
+    wiz_mode) echo AIRGAP_ARCHIVE AIRGAP_INSPECTED BACKEND_VERSION STANCTL_CLI_VERSION STANCTL_APT_VERSION \
+                   REQUESTED_BACKEND_VERSION REQUESTED_STANCTL_APT_VERSION done:airgap done:versions ;;
     wiz_location)
       echo done:host_params
       [[ "$(provider_name)" != ssh ]] || echo VM_NAME NODE0_NAME NODE1_NAME NODE2_NAME ;;
@@ -683,7 +685,7 @@ wiz_clear_dependents() {
 wiz_run() {
   local -a steps=("$@") stack=()
   local i=0 before step revisit=-1
-  WIZ_EXIT=done
+  WIZ_EXIT=done; WIZ_ACTIVE=1
   while (( i < ${#steps[@]} )); do
     step="${steps[i]}"
     before=$(wiz_snapshot "$step")
@@ -694,7 +696,7 @@ wiz_run() {
     "$step"
     NAV_ON=0; WIZ_REVISIT=""
     if (( NAV_BACK )); then
-      if (( ${#stack[@]} == 0 )); then WIZ_EXIT=back; return 0; fi
+      if (( ${#stack[@]} == 0 )); then WIZ_EXIT=back; WIZ_ACTIVE=0; NAV_ON=0; NAV_BACK=0; return 0; fi
       i="${stack[-1]}"; unset 'stack[-1]'
       revisit=$i
       continue
@@ -705,6 +707,7 @@ wiz_run() {
     (( NAV_ASKED == 0 )) || stack+=("$i")
     (( ++i ))
   done
+  WIZ_ACTIVE=0; NAV_ON=0; NAV_BACK=0
 }
 
 wiz_topology() {
@@ -758,6 +761,7 @@ wiz_location() {
   local NAV_ON=0
   provider_collect_location_params
   WIZ_DONE[location]=1
+  NAV_ASKED=0   # a block without "<": going back passes over it (E at the plan changes its values)
 }
 
 wiz_cidr() {
@@ -803,6 +807,7 @@ wiz_host_params() {
   local NAV_ON=0
   provider_collect_host_params
   WIZ_DONE[host_params]=1
+  NAV_ASKED=0
 }
 
 # FQDN
@@ -840,7 +845,8 @@ wiz_admin_password() {
   use_imported_secret ADMIN_PASSWORD && return 0
   echo ""
   log "Instana admin password (will not be stored in any file or log)"
-  hint "Password you choose now for the first UI user admin@instana.local. Typing shows • per character."
+  hint "Password you choose now for the first UI user admin@instana.local. Typing shows • per character." \
+       "A password that is only '<' is not possible here ('<' alone goes back); '<' inside a password is fine."
   prompt_secret_required "ADMIN_PASSWORD" "Instana admin password" "Admin password"
 }
 
@@ -871,6 +877,7 @@ wiz_airgap() {
   local NAV_ON=0
   obtain_airgapped_archive
   WIZ_DONE[airgap]=1
+  NAV_ASKED=0
 }
 
 wiz_versions() {
@@ -878,6 +885,7 @@ wiz_versions() {
   local NAV_ON=0
   select_versions_upfront
   WIZ_DONE[versions]=1
+  NAV_ASKED=0
 }
 
 # TLS certificate

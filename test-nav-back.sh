@@ -21,6 +21,11 @@ esac
 GCLOUD
 printf '#!/usr/bin/env bash\necho 203.0.113.10\n' > "$TEST_ROOT/bin/curl"
 chmod +x "$TEST_ROOT/bin/gcloud" "$TEST_ROOT/bin/curl"
+mkdir -p "$TEST_ROOT/pkg/airgapped/config" "$TEST_ROOT/pkg/airgapped/buildmeta"
+printf '#!/bin/sh\necho stanctl version 1.10.9\n' > "$TEST_ROOT/pkg/airgapped/stanctl"
+printf 'instana-version: 3.285.123-0\n' > "$TEST_ROOT/pkg/airgapped/config/instana.yaml"
+printf 'version: 1.10.9\n' > "$TEST_ROOT/pkg/airgapped/buildmeta/buildmeta.yaml"
+tar -czf "$TEST_ROOT/instana-airgapped.tar.gz" -C "$TEST_ROOT/pkg" airgapped
 
 fail() { echo "FAIL: $*" >&2; [[ -f "${OUT:-}" ]] && tail -40 "$OUT" >&2; exit 1; }
 has() { grep -qF -- "$1" "$OUT" || fail "expected text not found: $1"; }
@@ -33,6 +38,8 @@ run() {
   CASE="$TEST_ROOT/$name"; mkdir -p "$CASE"
   cp -R "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR/providers" "$SCRIPT_DIR/examples" "$CASE/"
   chmod 600 "$CASE"/examples/*.json
+  jq 'del(.parameters.GCP_ZONE, .parameters.BASE_DOMAIN)' "$CASE/examples/single-gcp-online-full.json" > "$CASE/nozone.json"
+  chmod 600 "$CASE/nozone.json"
   OUT="$CASE/out.txt"; RC=0
   ( cd "$CASE" && PATH="$TEST_ROOT/bin:$PATH" bash ./install.sh --dry-run "$@" <<< "$input" ) > "$OUT.raw" 2>&1 || RC=$?
   sed 's/\x1b\[[0-9;]*m//g' "$OUT.raw" > "$OUT"
@@ -143,5 +150,50 @@ has "Ubuntu version:                ubuntu-2204-lts"
 has "Machine type:                  n2-standard-32"
 has "also the Ubuntu version and the machine size"
 echo "PASS: Ubuntu version and machine size are changed with E at the plan"
+
+# 13. Going back into the location block keeps the earlier answers (no
+#     fallback to detected defaults): Enter everywhere, plan unchanged.
+run block_keep $'1\n1\n1\n1\nc\n1\nmy-proj-123\nc\n2\neurope-west6-b\nc\n3\nnet1\nsub1\n\nmy-vm\n<\n<\n\n\n'"$TAIL"
+done_ok
+has "GCP Project:                   my-proj-123"
+has "Zone:                          europe-west6-b"
+has "VM name:                       my-vm"
+echo "PASS: back into the location block keeps project, zone and network"
+
+# 14. Custom machine size: changing it again from the plan offers the earlier
+#     custom CPU/RAM as Enter defaults (a block without "<").
+z=$(printf '%s\n' TOPOLOGY INSTALL_MODE INSTALL_TYPE UBUNTU_VERSION GCP_PROJECT GCP_REGION GCP_ZONE GCP_NETWORK GCP_SUBNET SSH_SOURCE_CIDR VM_NAME SIZE | grep -n '^SIZE$' | cut -d: -f1)
+run size_keep $'1\n1\n1\n1\n\ninstana-backend\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\ne\n'"$z"$'\n3\n32\n128\ne\n'"$z"$'\n3\n\n\ny'
+done_ok
+has "Machine type:                  n2-standard-32"
+echo "PASS: the earlier custom CPU/RAM are the defaults when the size is changed again"
+
+# 15. "<" passes over a block without "<" (air-gapped package) to the previous
+#     question; the block is not run again.
+AIR=$'1\n1\n2\n1\n\ninstana-backend\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n<\n\n1\ny'
+run air_pass "$AIR"
+done_ok
+[[ "$(count '? How do you want to provide the air-gapped package?')" == 1 ]] || fail "the package block must not run again"
+has "import backend 3.285.123-0"
+echo "PASS: < passes over a block without <, which is not repeated"
+
+# 16. A changed answer clears what depends on it: air-gapped → back to the
+#     connectivity question → online drops the package and its versions (no
+#     stale backend version from the package), the version step runs again.
+BK=$'<\n<\n<\n<\n<\n<\n<\n<\n<\n<\n<\n'   # TLS → sales → agent → download → admin → unit → tenant → domain → VM name → location → type → mode
+run mode_change $'1\n1\n2\n1\n\ninstana-backend\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n'"$BK"$'1\n\n\n\n\n\n\n\n\n\n\n1\ny'
+done_ok
+has "Connectivity mode:             online"
+hasnt "import backend 3.285.123-0"
+hasnt "Backend version:               3.285.123-0"
+grep -q -- "--instana-version 'DRY-RUN-COMPATIBLE-SELECTION'" "$OUT" || fail "versions must be chosen again for online"
+echo "PASS: a changed answer clears its dependents (package, versions) and they run again"
+
+# 17. Inside a block without "<" (a run from a file: single location questions)
+#     the earlier answer is still the Enter default after going back to it.
+run file_keep $'2\nnozone.json\neurope-west6-c\n<\n\ninstana.example.com\ny'
+done_ok
+has "Zone:                          europe-west6-c"
+echo "PASS: going back into a block keeps the answer typed there"
 
 echo "All back-navigation tests passed."

@@ -75,5 +75,15 @@ out=$(run $'\n2\n' eval 'prompt_choice "Mode:" online air-gapped' 2>err.txt)
 grep -q 'Invalid selection: type a number from 1 to 2.' err.txt
 echo "PASS: pick lists: Enter = default when one is given, otherwise re-asked"
 
+# "<" is "back" only inside the question wizard; afterwards (phase-time
+# prompts) it is an ordinary answer: checked, refused, asked again.
+out=$(run $'a.example.com\n<\nn\nb.example.com\n' eval 'wiz_t1() { prompt_required A "A" "" validate_fqdn; }
+  wiz_run wiz_t1; echo "AFTER NAV_ON=$NAV_ON WIZ_ACTIVE=$WIZ_ACTIVE A=$A"
+  prompt_required B "B" "" validate_fqdn; echo "RESULT=$B NAV_BACK=$NAV_BACK"' 2>err.txt)
+grep -q 'AFTER NAV_ON=0 WIZ_ACTIVE=0 A=a.example.com' <<< "$out" || { echo "FAIL: wizard state leaked: $out" >&2; exit 1; }
+grep -q 'Invalid FQDN: <' <<< "$out" || { echo "FAIL: < after the wizard was not checked as a value" >&2; exit 1; }
+grep -q 'RESULT=b.example.com NAV_BACK=0' <<< "$out" || { echo "FAIL: < after the wizard acted as back: $out" >&2; exit 1; }
+echo "PASS: < is back only inside the question wizard"
+
 echo "All input re-ask tests passed."
 

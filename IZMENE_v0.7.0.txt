@@ -277,3 +277,21 @@ by cancelling the whole run.
   missing or being changed).
 - Tests: test-dry-run.sh inputs (location = one Enter; no Ubuntu/size
   answers), test-nav-back.sh: block, VM name taken, E for Ubuntu and size.
+
+2026-10-19 — UX v2: review fixes for "<" (back)
+- Going back into a block of questions keeps the answers typed there: the
+  earlier answer is the Enter default during the whole question wizard
+  (before, blocks without "<" fell back to the detected defaults).
+- Blocks without "<" (existing hosts from a file, data disks, air-gapped
+  package, version lists) are passed over on the way back instead of
+  catching every "<"; they run again only when an answer they depend on
+  changed. E at the plan changes their values. The parameter-source menu
+  hint says so.
+- A changed connectivity answer also drops the backend/stanctl versions
+  taken from a package, so they are chosen again.
+- "<" is "back" only inside the question wizard; afterwards it is an
+  ordinary answer (checked and asked again). The admin password hint says
+  that a password of only "<" is not possible.
+- Tests: test-nav-back.sh (block keeps values, passing over the package
+  block, changed connectivity, file-mode defaults), test-input-reask.sh
+  (no "back" after the wizard).

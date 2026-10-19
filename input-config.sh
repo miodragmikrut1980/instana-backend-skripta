@@ -724,7 +724,8 @@ choose_parameter_source() {
     echo "" >&2
     hint "Type the answers now, or import a file prepared with config-generator.html: values from the file are" \
          "checked like typed answers, and only the missing or invalid ones are asked." \
-         "In every question, < goes back to the previous one."
+         "In every question, < goes back to the previous one; blocks without '<' (hosts, disks, package, versions)" \
+         "are passed over on the way back, and E at the plan changes their values."
     choice=$(prompt_choice "How do you want to provide the deployment parameters?" "${options[@]}") ||
       die_with_steps "Input ended before the way to provide the parameters was chosen; the installation was not started and nothing was created." \
         "Run the installer in a terminal and answer the menu (1 = type the answers, 2 = import a file):|./install.sh" \
