@@ -1357,13 +1357,13 @@ ssh_network_report() {
   node0=$(prov_ssh_hosts | head -1)
   ip=$(prov_ssh_resolve_ipv4 "$node0")
   project=$(prov_ssh_gce_project)
-  [[ -n "$ip" && -n "$project" ]] || { echo "(not checked here: ${node0} is not a VM of a gcloud project on this machine)"; return 0; }
+  [[ -n "$ip" && -n "$project" ]] || { echo "(these rules are not checked automatically from here; ask the network or cloud administrator)"; return 0; }
   out=$(timeout 20 gcloud compute instances list --project="$project" --filter="networkInterfaces[0].networkIP=${ip}" \
     --format='value(name,zone.basename(),networkInterfaces[0].network.basename(),tags.items.list())' 2>/dev/null | head -1 || true)
   local zone
   read -r name zone net tags <<< "$out"
   [[ "$name" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ && "$net" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
-    { echo "(not checked here: ${node0} is not a VM of gcloud project ${project})"; return 0; }
+    { echo "(not checked: ${node0} is not a VM of the Google Cloud project ${project} on this machine)"; return 0; }
   local rules
   rules=$(timeout 20 gcloud compute firewall-rules list --project="$project" \
     --filter="network~/${net}\$ AND direction=INGRESS AND disabled=false" --format=json 2>/dev/null || echo '[]')
