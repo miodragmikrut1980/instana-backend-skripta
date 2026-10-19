@@ -252,12 +252,13 @@ prov_ssh_resolve_ipv4() {
   if [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then echo "$1"; else getent ahostsv4 "$1" 2>/dev/null | awk 'NR==1{print $1}'; fi
 }
 
-# RFC 1918 and carrier-grade NAT (100.64.0.0/10) addresses.
+# Not reachable from the internet: RFC 1918, carrier-grade NAT (100.64/10),
+# loopback (127/8) and link-local (169.254/16).
 prov_ssh_is_private() {
   local a b
   [[ "$1" =~ ^([0-9]+)\.([0-9]+)\. ]] || return 1
   a=${BASH_REMATCH[1]} b=${BASH_REMATCH[2]}
-  (( a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168) || (a == 100 && b >= 64 && b <= 127) ))
+  (( a == 10 || a == 127 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168) || (a == 100 && b >= 64 && b <= 127) || (a == 169 && b == 254) ))
 }
 
 # External IP of the Google Cloud instance whose internal IP is IP, in the
@@ -657,7 +658,9 @@ prov_ssh_collect_host_params() {
     [[ -n "$roles" ]] || continue
     host=$(prov_ssh_host_for "$node")
     for r in $roles; do need+="${need:+ }$(prov_ssh_role_min_gb "$r")"; done
-    if ! prov_ssh_disks_fit "$need" "$(prov_ssh_free_disk_bytes "$host" "" "")"; then
+    # All usable disks of the host count: the current choices (plan "E" runs
+    # the questions again with them still set) are this host's own.
+    if ! prov_ssh_disks_fit "$need" "$(prov_ssh_free_disk_bytes "$host" "" "" all)"; then
       host_stop "$host" "its unused whole disks ($(prov_ssh_disk_summary "$host")) cannot hold one dedicated disk each for $(for r in $roles; do printf '%s %s GB, ' "${r,,}" "$(prov_ssh_role_min_gb "$r")"; done | sed 's/, $//')." \
         "IBM requires a dedicated disk per Instana data directory, each at least the size listed; the installer never uses the system disk, a mounted or partitioned disk, or one disk for two roles." \
         "$(prov_ssh_continue_cmd)" \
@@ -687,15 +690,16 @@ prov_ssh_disks_fit() {
 }
 
 # Sizes (bytes) of the usable disks of HOST that no other role holds, without
-# EXCLUDE_DEV; SELF_KEY's own value does not count as taken.
+# EXCLUDE_DEV; SELF_KEY's own value does not count as taken. With "all" as the
+# fourth argument no chosen disk counts as taken.
 prov_ssh_free_disk_bytes() {
-  local host="$1" self_key="$2" exclude="$3" line h dev bytes parts mounts fstype model stable k taken out=""
+  local host="$1" self_key="$2" exclude="$3" ignore="${4:-}" line h dev bytes parts mounts fstype model stable k taken out=""
   for line in "${SSH_FACT_DISKS[@]}"; do
     IFS='|' read -r h dev bytes parts mounts fstype model stable <<< "$line"
     [[ "$h" == "$host" && -n "$stable" && "$parts" == 1 && -z "$mounts" && "$dev" != "$exclude" ]] || continue
     case "$fstype" in LVM2_member|linux_raid_member|crypto_LUKS|zfs_member) continue ;; esac
     taken=false
-    for k in $(prov_ssh_disk_keys); do
+    [[ "$ignore" == all ]] || for k in $(prov_ssh_disk_keys); do
       [[ "$k" != "$self_key" && -n "${!k:-}" ]] || continue
       [[ "$(prov_ssh_disk_dev "$host" "${!k}")" == "$dev" ]] && taken=true
     done
@@ -722,17 +726,15 @@ prov_ssh_roles_for() {
 # already chosen for another role. Prints "path|GB|model|dev".
 prov_ssh_disk_candidates() {
   local host="$1" role="$2" self_key="$3" line h dev bytes parts mounts fstype model stable min k taken
-  local rest_need="" r node seen=false
+  local rest_need="" r node
   min=$(prov_ssh_role_min_gb "$role")
-  # Roles of the same node still to be chosen after this one.
+  # Every other role of this host that has no disk yet, whatever the order
+  # (an input file or plan "E" may fill roles in any order).
   for node in $(prov_ssh_nodes); do
     [[ "$(prov_ssh_host_for "$node")" == "$host" ]] || continue
     for r in $(prov_ssh_roles_for "$node"); do
-      if [[ "$seen" == true ]]; then
-        k=$(prov_ssh_disk_key_for "$node" "$r")
-        [[ -n "${!k:-}" ]] || rest_need+="${rest_need:+ }$(prov_ssh_role_min_gb "$r")"
-      fi
-      [[ "$r" == "$role" ]] && seen=true
+      k=$(prov_ssh_disk_key_for "$node" "$r")
+      [[ "$k" == "$self_key" || -n "${!k:-}" ]] || rest_need+="${rest_need:+ }$(prov_ssh_role_min_gb "$r")"
     done
   done
   for line in "${SSH_FACT_DISKS[@]}"; do

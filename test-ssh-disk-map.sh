@@ -218,3 +218,34 @@ if plain | grep -q '^? Disk for'; then echo "FAIL: a pick was asked before the s
 echo 'PASS: without any complete assignment the run stops before the first pick'
 plain | grep -vq 'data data' && ! plain | grep -q 'data data'
 
+# Plan "E" (change e.g. BASE_DOMAIN) runs the questions again with every disk
+# still chosen: a host whose disks exactly cover the roles must not stop.
+host_facts h1
+( init
+  prov_ssh_collect_host_params < <(printf '1\n1\n1\n1\n') > "$OUT" 2>&1
+  first="$DISK_DEV_ANALYTICS $DISK_DEV_METRICS $DISK_DEV_OBJECTS $DISK_DEV_DATA"
+  PARAMS_SOURCE=import EDIT_KEY=BASE_DOMAIN QUIET_OK=true
+  IMPORTED=([DISK_DEV_ANALYTICS]="$DISK_DEV_ANALYTICS" [DISK_DEV_METRICS]="$DISK_DEV_METRICS" [DISK_DEV_OBJECTS]="$DISK_DEV_OBJECTS" [DISK_DEV_DATA]="$DISK_DEV_DATA")
+  prov_ssh_collect_host_params < /dev/null > "$OUT" 2>&1
+  test "$DISK_DEV_ANALYTICS $DISK_DEV_METRICS $DISK_DEV_OBJECTS $DISK_DEV_DATA" = "$first"
+  # The same with the values only set (no input file): still no false stop.
+  PARAMS_SOURCE=manual EDIT_KEY=""
+  prov_ssh_collect_host_params < <(printf '1\n1\n1\n1\n') > "$OUT" 2>&1 )
+echo 'PASS: plan "E" with every disk already chosen does not stop a host whose disks exactly fit'
+
+# The feasibility filter does not depend on the order (an input file or plan
+# "E" can leave a smaller role to be chosen first): with 1300/1050/600 GB and
+# analytics and metrics still open, "data" is offered only the 600 GB disk.
+three_disks "DISK=/dev/sdb|1300000000000|1|||Big" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdb|/dev/sdb" \
+            "DISK=/dev/sdc|1050000000000|1|||Mid" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdc|/dev/sdc" \
+            "DISK=/dev/sdd|600000000000|1|||Small" "LINK=/dev/disk/by-id/scsi-0Disk_h1_sdd|/dev/sdd"
+( three_init
+  mapfile -t c < <(prov_ssh_disk_candidates h1 DATA DISK_DEV_NODE1_DATA)
+  test "${#c[@]}" = 1
+  [[ "${c[0]}" == *"/dev/sdd" ]]
+  # With metrics already on the 1050 GB disk, analytics still needs the 1300 GB one.
+  DISK_DEV_NODE1_METRICS=/dev/disk/by-id/scsi-0Disk_h1_sdc
+  mapfile -t c < <(prov_ssh_disk_candidates h1 DATA DISK_DEV_NODE1_DATA)
+  test "${#c[@]}" = 1
+  [[ "${c[0]}" == *"/dev/sdd" ]] )
+echo 'PASS: asked in any order, a role is offered only disks that leave every other role one'
