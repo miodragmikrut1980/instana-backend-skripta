@@ -1123,7 +1123,7 @@ prov_ssh_text() {
       echo "Lowercase letters, digits and hyphens; the host's own name is offered." ;;
     node_names_hint) echo "Names for the three hosts inside the installer (state file, messages); the hosts are not renamed." ;;
     three_node_size_note) echo "Three-node: each host needs at least the small profile (12 vCPUs / 48 GB, documented minimum); checked on the hosts." ;;
-    start_line) echo "Enter Y and press Enter to START installing Instana on the host(s) listed above; Y also approves the changes on the hosts and confirms the network connections listed." ;;
+    start_line) echo "Y approves the changes on the host(s) listed above and confirms the network connections listed." ;;
     resume_mismatch) echo "Host, user or port differs from the saved state of this deployment. No changes made." ;;
     ip_confirm_line)
       echo "Confirm public IPv4 addresses. Enter accepts the address offered."
@@ -1344,6 +1344,22 @@ prov_ssh_validate_config() {
 }
 
 # ── Plan ─────────────────────────────────────────────────────────────────────
+# plan_key_lines head|change — the top of the plan: which hosts; then what is
+# changed on them (Y at the plan approves it).
+prov_ssh_plan_key_lines() {
+  local host list="" disks=0 node role
+  if [[ "$1" == head ]]; then
+    plan_fact "Where" "existing host(s), nothing is created or deleted"
+    while IFS= read -r host; do
+      list+="${list:+, }${host} ($(prov_ssh_fact "$host" CPUS) vCPU / $(( ${SSH_FACT["${host}|MEM_KB"]:-0} / 1000000 )) GB)"
+    done < <(prov_ssh_hosts)
+    plan_fact "Hosts" "$list"
+    return 0
+  fi
+  for node in $(prov_ssh_nodes); do for role in $(prov_ssh_roles_for "$node"); do (( ++disks )); done; done
+  plan_warn "Changes on the host(s): formats ${disks} blank data disk(s), kernel settings + a REBOOT of each host, UFW firewall on — Y approves (list below)"
+}
+
 prov_ssh_plan_target_lines() {
   printf "  %-30s %s\n" "Install on:"        "existing host(s), nothing is created or deleted"
   printf "  %-30s %s\n" "SSH login:"         "${SSH_USER} on port ${SSH_PORT}, key ${SSH_KEY_PATH}"

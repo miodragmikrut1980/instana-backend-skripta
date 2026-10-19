@@ -105,8 +105,11 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
      Ubuntu verzija i velicina masine se ne pitaju (24.04, minimum za tip);
      menja ih E na planu, kao i "kubectl without sudo" (podrazumevano no).
    - Ime VM-a se proverava odmah (da li vec postoji u zoni).
-   - Plan je grupisan: Where / What / Access / Resources. Y = start,
-     E = promeni vrednost, S = sacuvaj u fajl, N ili Enter = odustani.
+   - Plan: na vrhu 5 kljucnih redova (Where, VM/Hosts, Instana verzija, UI,
+     zuti red sta se pravi i placa, ili sta se menja na hostovima), ispod
+     "Details" (Where / What / Access / Resources). Jedan red izbora:
+     y = start, e = promeni vrednost, s = sacuvaj u fajl, N ili Enter = odustani
+     ("?" = objasnjenje).
    - Na kraju instalacije se nista ne pita: /etc/hosts linije koriste javnu
      IP node 0 kad je poznata.
    - Ponuda za screen dolazi posle menija i samo za install/resume.

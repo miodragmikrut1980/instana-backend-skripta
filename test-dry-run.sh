@@ -56,8 +56,11 @@ run_case() {
     grep -q '\[PHASE 12/12\]' output.txt
     grep -q 'Installation checklist' output.txt
     grep -q '100% complete' output.txt
-    grep -q 'Enter Y and press Enter to run the dry-run simulation' output.txt
-    grep -q 'Enter N, or press Enter without typing anything, to cancel without starting' output.txt
+    grep -q 'y = run the simulation · e = change a value.* · s = save to a file (no keys) · N or Enter = cancel' output.txt
+    # The key facts come first, before the details.
+    k=$(grep -n '^  UI        https://' output.txt | head -1 | cut -d: -f1); d=$(grep -n '── Details ──' output.txt | head -1 | cut -d: -f1)
+    [[ -n "$k" && -n "$d" && "$k" -lt "$d" ]] || { echo "FAIL: $name: key facts must come before the details" >&2; exit 1; }
+    if grep -q 'CONFIRMATION REQUIRED' output.txt; then echo "FAIL: $name: the long confirmation text is back" >&2; exit 1; fi
     grep -q 'sudo kubectl get nodes' output.txt
     grep -q 'sudo kubectl get pods -A' output.txt
     grep -q 'Dry-run complete — nothing was created or changed' output.txt
@@ -101,7 +104,14 @@ run_case() {
       grep -q 'analytics disk:              /dev/disk/by-id/scsi-0Disk_10.0.0.12_sdd → /mnt/instana/stanctl/analytics' output.txt
       test "$(grep -c '\[INFO\].*Formatting and mounting' output.txt)" -eq 4
     fi
+    if [[ "$name" == single_online ]]; then
+      grep -q '^  Where     test-project / ' output.txt || grep -q '^  Where     ' output.txt
+      grep -q '^  VM        instana-backend  ' output.txt
+      grep -q 'Creates: 1 VM + 4 disks (1200 GB pd-ssd), firewall rules if missing — billed until removed (./install.sh → Clean up a lab)' output.txt
+      grep -q 'Installation Plan: single-node demo, online — Google Cloud' output.txt
+    fi
     if [[ "$name" == multi_online ]]; then
+      grep -q 'Creates: 3 VMs + 4 disks (3700 GB pd-ssd) + firewall rules' output.txt
       test "$(grep -c '\[INFO\].*Creating VM:' output.txt)" -eq 3
       test "$(grep -c '\[INFO\].*Creating disk ' output.txt)" -eq 4
       test "$(grep -c '\[INFO\].*Formatting and mounting' output.txt)" -eq 4

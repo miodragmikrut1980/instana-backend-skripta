@@ -654,7 +654,7 @@ prompt_yes_no() {
 prompt_plan_decision() {
   local answer
   while true; do
-    read_answer answer "$(echo -e "${CYAN}?${RESET} ${BOLD}Start now? Y = start, E = edit a value, S = save to a file, N = cancel [y/e/s/N] (Enter = no):${RESET} ")" || { echo no; return 0; }
+    read_answer answer "$(echo -e "${CYAN}?${RESET} ${BOLD}$([[ "$DRY_RUN" == true ]] && echo "Run the dry-run?" || echo "Start now?") [y/e/s/N]${RESET} ${DIM}? = more${RESET}: ")" || { echo no; return 0; }
     case "${answer,,}" in
       y|yes) echo yes; return 0 ;;
       e|edit) echo edit; return 0 ;;
@@ -1742,12 +1742,38 @@ show_hw_requirements_and_pick_machine_type() {
 # =============================================================================
 # SECTION 5 — INSTALLATION PLAN / CONFIRMATION
 # =============================================================================
+# plan_fact NAME VALUE [MORE] — one key line at the top of the plan.
+plan_fact() {
+  printf '  %-9s %b\n' "$1" "${BOLD}${2}${RESET}${3:+  ${DIM}${3}${RESET}}"
+}
+# plan_warn TEXT — the key line about what is created or changed.
+plan_warn() { printf '  %b\n' "${YELLOW}${1}${RESET}"; }
+
+# The backend version as the top of the plan shows it.
+plan_version_text() {
+  if [[ -n "${BACKEND_VERSION:-}" ]]; then echo "backend ${BACKEND_VERSION} (stanctl ${STANCTL_APT_VERSION:-?})"
+  elif [[ "$INSTALL_MODE" == online && "$DRY_RUN" == true ]]; then echo "version chosen before Start in a real run"
+  elif [[ "$INSTALL_MODE" == online ]]; then echo "version chosen on the Instana host in phase 10"
+  else echo "the version in the air-gapped package"; fi
+}
+
 show_plan() {
+  local where_label tls_short
+  where_label=$([[ "$(provider_name)" == ssh ]] && echo "existing hosts (SSH)" || echo "Google Cloud")
+  tls_short=$([[ "$TLS_MODE" == "provide custom certificate files" ]] && echo "your certificate" || echo "self-signed TLS")
   echo ""
   echo -e "${BOLD}════════════════════════════════════════════════════════════════${RESET}"
-  echo -e "${BOLD}  Installation Plan${RESET}"
+  echo -e "${BOLD}  Installation Plan: ${TOPOLOGY} ${INSTALL_TYPE}, ${INSTALL_MODE} — ${where_label}${RESET}"
   echo -e "${BOLD}════════════════════════════════════════════════════════════════${RESET}"
+  # Key facts first (where, which machines, version, UI, what is created or
+  # changed), the details below.
+  provider_plan_key_lines head
+  plan_fact "Instana" "$(plan_version_text)"
+  plan_fact "UI" "https://${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}" "${tls_short}, after DNS or /etc/hosts"
+  provider_plan_key_lines change
+  [[ "$DRY_RUN" != true ]] || echo -e "  ${YELLOW}DRY-RUN MODE: No resources will be created.${RESET}"
   echo ""
+  echo -e "  ${DIM}── Details ─────────────────────────────────────────────────────${RESET}"
   # Grouped: where it goes, what is installed, how it is reached, what is
   # created or changed.
   echo -e "  ${BOLD}Where${RESET}"
@@ -1778,24 +1804,16 @@ show_plan() {
   echo -e "  ${BOLD}Resources${RESET}"
   provider_plan_resource_lines
 
-  if [[ "$DRY_RUN" == true ]]; then
-    echo ""
-    echo -e "  ${YELLOW}DRY-RUN MODE: No resources will be created.${RESET}"
-  fi
-
   echo ""
-  echo -e "  ${BOLD}${YELLOW}CONFIRMATION REQUIRED${RESET}"
-  if [[ "$DRY_RUN" == true ]]; then
-    echo "  Enter Y and press Enter to run the dry-run simulation."
-  else
-    echo "  $(provider_text_or start_line "Enter Y and press Enter to START creating GCP resources and installing Instana.")"
-  fi
+  local own; own=$(provider_text start_line)
+  [[ "$DRY_RUN" == true || -z "$own" ]] || echo -e "  ${YELLOW}${own}${RESET}"
   if [[ "${PLAN_EDITABLE:-false}" == true ]]; then
-    echo "  Enter E to change one of the values above first$(provider_uses_param SIZE && echo ' (also the Ubuntu version and the machine size)'), or S to save"
-    echo "  these parameters to a JSON file (without keys) for a later run, and stop."
+    echo -e "  ${DIM}y = $([[ "$DRY_RUN" == true ]] && echo "run the simulation" || echo start) · e = change a value$(provider_uses_param SIZE && echo ' (also Ubuntu and machine size)' || true) · s = save to a file (no keys) · N or Enter = cancel${RESET}"
+    HINT_MORE=("y: $([[ "$DRY_RUN" == true ]] && echo "run the dry-run simulation (nothing is created)" || echo "start: create the resources listed above and install Instana")." \
+      "e: change one of the values above first$(provider_uses_param SIZE && echo ' (also the Ubuntu version and the machine size)' || true)." \
+      "s: save these parameters to a JSON file (without keys) for a later run, and stop." \
+      "N, or Enter without typing anything: cancel without starting.")
   fi
-  echo "  Enter N, or press Enter without typing anything, to cancel without starting."
-  echo ""
   PLAN_DECISION=start
   if [[ "${PLAN_EDITABLE:-false}" == true ]]; then
     case "$(prompt_plan_decision)" in

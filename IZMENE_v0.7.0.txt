@@ -605,3 +605,22 @@ and every answer was lost.
   into the folder first; test-dry-run.sh / test-ssh-login-flow.sh inputs no
   longer answer the menu; test-answer-keys.sh: Backspace as ^? or ^H, also
   typed together with the arrow; mutants killed.
+
+2026-10-19 — UX v3: GCP "detected" block and the top of the plan
+- GCP location block: the four values stand out, where each came from is
+  dimmed; no "Use detected:" heading, one hint line ("?" explains Enter / c
+  and SSH from). A failed IP detection is one yellow line "detection failed —
+  0.0.0.0/0 allows SSH from the whole internet" with the hint to press c.
+- Plan title names topology, type, mode and target ("Installation Plan:
+  single-node demo, online — Google Cloud"). The top shows the key facts:
+  Where, VM(s) or Hosts, Instana version, UI URL, and one yellow line with
+  what is created and that it is billed until removed (GCP), or what is
+  changed on the hosts (existing hosts: blank data disks formatted, kernel
+  settings + reboot, UFW). The full groups follow under "Details".
+- The long CONFIRMATION REQUIRED text is one dimmed line "y = start · e =
+  change a value · s = save to a file (no keys) · N or Enter = cancel"; "?"
+  gives the longer explanation. Existing hosts keep the line that Y approves
+  the host changes and confirms the network connections.
+- Tests: test-dry-run.sh (key facts before the details, creates line, no
+  CONFIRMATION REQUIRED), test-ssh-login-flow.sh (changes line, hosts line),
+  test-nav-back.sh (block rows, unsafe line, E scope).

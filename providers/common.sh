@@ -41,6 +41,7 @@ text
 phase_text
 ssh_port
 plan_target_lines
+plan_key_lines
 plan_resource_lines
 record_target
 confirm_host_changes

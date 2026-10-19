@@ -149,12 +149,12 @@ echo "PASS: < at the file path goes back to the menu"
 #     to the block; "<" at the block goes back to the previous question.
 run block_change $'1\n1\n1\n1\nc\n2\neurope-west6-b\n\ninstana-backend\n'"$TAIL"
 done_ok
-has "Use detected:"
+has "Where the VM(s) are created, detected from this machine and gcloud."
 has "Zone:                          europe-west6-b"
-has "(your answer)"
+has "(your answer; region europe-west6)"
 run block_back $'1\n1\n1\n1\nc\n<\n<\n\n\ninstana-backend\n'"$TAIL"
 done_ok
-[[ "$(count 'Use detected:')" == 3 ]] || fail "block must be shown 3 times (start, after < in the change menu, after going back)"
+[[ "$(count 'Where the VM(s) are created, detected from this machine')" == 3 ]] || fail "block must be shown 3 times (start, after < in the change menu, after going back)"
 [[ "$(count '? Select installation type:')" == 2 ]] || fail "< at the block must go back to the install type"
 has "Zone:                          us-central1-a"
 hasnt "? Select Ubuntu version"
@@ -175,7 +175,7 @@ run plan_edit $'1\n1\n1\n1\n\ninstana-backend\ninstana.example.com\ntenant0\nuni
 done_ok
 has "Ubuntu version:                ubuntu-2204-lts"
 has "Machine type:                  n2-standard-32"
-has "also the Ubuntu version and the machine size"
+has "e = change a value (also Ubuntu and machine size)"
 echo "PASS: Ubuntu version and machine size are changed with E at the plan"
 
 # 13. Going back into the location block keeps the earlier answers (no
@@ -229,9 +229,9 @@ export META=1
 run net_detect $'1\n1\n1\n1\nc\n1\nother-proj\nc\n2\nus-central1-a\n\ninstana-backend\n'"$TAIL"
 unset META
 done_ok
-grep -qE "Network +mynet / subnet mysub +\(this machine's network\)" "$OUT" || fail "this machine's network must be offered first"
-grep -q "Network   default / subnet default .*(every project has 'default')" "$OUT" || fail "network must be re-derived after another project"
-[[ "$(grep -c "mynet / subnet mysub" "$OUT")" == 1 ]] || fail "this machine's network shown for another project"
+grep -qE "Network +mynet / mysub +\(this machine's network; network / subnet\)" "$OUT" || fail "this machine's network must be offered first"
+grep -q "Network   default / default .*(every project has 'default'; network / subnet)" "$OUT" || fail "network must be re-derived after another project"
+[[ "$(grep -c "mynet / mysub" "$OUT")" == 1 ]] || fail "this machine's network shown for another project"
 echo "PASS: this machine's network is offered only in its own project and region"
 
 # 19. Public IP not detected: 0.0.0.0/0 is labelled and not accepted with Enter.
@@ -241,6 +241,8 @@ unset IPIFY_FAIL
 done_ok
 has "detection failed — 0.0.0.0/0 allows SSH from the whole internet"
 has "this machine's public IP could not be detected, and 0.0.0.0/0 would open SSH to the whole internet"
+has "SSH from  detection failed — 0.0.0.0/0 allows SSH from the whole internet"
+has "press c to enter your IP (curl ifconfig.me shows it)"
 has "curl ifconfig.me"
 has "SSH source CIDR:               198.51.100.7/32"
 echo "PASS: a failed IP detection never opens SSH to the internet with one Enter"

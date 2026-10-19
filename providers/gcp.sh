@@ -29,6 +29,27 @@ prov_gcp_plan_target_lines() {
   printf "  %-30s %s\n" "Network / subnet:"  "${GCP_NETWORK:-default} / ${GCP_SUBNET:-default}"
 }
 
+# plan_key_lines head|change — the top of the plan: where and which VM(s);
+# then what is created (and that it costs money until it is removed).
+prov_gcp_plan_key_lines() {
+  local gb
+  if [[ "$1" == head ]]; then
+    plan_fact "Where" "${GCP_PROJECT} / ${GCP_ZONE}"
+    if [[ "$TOPOLOGY" == three-node ]]; then
+      plan_fact "VMs" "${NODE0_NAME}, ${NODE1_NAME}, ${NODE2_NAME}" "3 × n2-standard-16, ${UBUNTU_VERSION:-ubuntu}"
+    else
+      plan_fact "VM" "$VM_NAME" "${MACHINE_TYPE:-?}, ${UBUNTU_VERSION:-ubuntu}"
+    fi
+    return 0
+  fi
+  if [[ "$TOPOLOGY" == three-node ]]; then
+    plan_warn "Creates: 3 VMs + 4 disks (3700 GB pd-ssd) + firewall rules — billed until removed (./install.sh → Clean up a lab)"
+  else
+    if [[ "$INSTALL_TYPE" == production ]]; then gb=3700; else gb=1200; fi
+    plan_warn "Creates: 1 VM + 4 disks (${gb} GB pd-ssd), firewall rules if missing — billed until removed (./install.sh → Clean up a lab)"
+  fi
+}
+
 # Plan block: the VM(s) and the data disks that will be created.
 prov_gcp_plan_resource_lines() {
   if [[ "$TOPOLOGY" == three-node ]]; then
@@ -277,14 +298,19 @@ gcp_location_block() {
   NAV_ASKED=1
   while true; do
     echo "" >&2
-    hint "Where the VM(s) are created and who may open SSH to them. Detected from this machine and gcloud;" \
-         "Enter accepts all four, c changes one of them."
+    hint "Where the VM(s) are created, detected from this machine and gcloud." \
+         "Enter accepts all four values, c changes one of them." \
+         "SSH from = the public IP that may open SSH to the VM(s); /32 = only this one address."
     {
-      echo "  Use detected:"
-      printf '    %-9s %-40s (%s)\n' "Project" "$GCP_PROJECT" "$GCP_SRC_PROJECT"
-      printf '    %-9s %-40s (%s)\n' "Zone" "${GCP_ZONE}  [region ${GCP_REGION}]" "$GCP_SRC_ZONE"
-      printf '    %-9s %-40s (%s)\n' "Network" "${GCP_NETWORK} / subnet ${GCP_SUBNET}" "$GCP_SRC_NET"
-      printf '    %-9s %-40s (%s)\n' "SSH from" "$SSH_SOURCE_CIDR" "$GCP_SRC_CIDR"
+      gcp_detected_row "Project" "$GCP_PROJECT" "$GCP_SRC_PROJECT"
+      gcp_detected_row "Zone" "$GCP_ZONE" "${GCP_SRC_ZONE}; region ${GCP_REGION}"
+      gcp_detected_row "Network" "${GCP_NETWORK} / ${GCP_SUBNET}" "${GCP_SRC_NET}; network / subnet"
+      if [[ "$GCP_SRC_CIDR" == "$GCP_CIDR_UNSAFE" ]]; then
+        printf '    %-9s %b\n' "SSH from" "${YELLOW}${GCP_CIDR_UNSAFE}${RESET}"
+        printf '    %-9s %b\n' "" "${DIM}press c to enter your IP (curl ifconfig.me shows it)${RESET}"
+      else
+        gcp_detected_row "SSH from" "$SSH_SOURCE_CIDR" "$GCP_SRC_CIDR"
+      fi
     } >&2
     if [[ -n "$local_zone" && "${local_zone%-*}" != "$GCP_REGION" && "${INSTALL_MODE:-}" == air-gapped ]]; then
       warn "Air-gapped: the package (tens of GB) is copied from ${local_zone%-*} to ${GCP_REGION}; a cross-region copy is several times slower."
@@ -333,6 +359,13 @@ gcp_location_block() {
       *) echo "  Please press Enter to use these values, c to change one, or go back (left arrow, or < and Enter)." >&2 ;;
     esac
   done
+}
+
+# gcp_detected_row NAME VALUE SOURCE — one line of the "detected" block: the
+# value stands out, where it came from is dimmed.
+gcp_detected_row() {
+  local v; printf -v v '%-32s' "$2"
+  printf '    %-9s %b %b\n' "$1" "${BOLD}${v}${RESET}" "${DIM}(${3})${RESET}"
 }
 
 gcp_location_per_key() {
