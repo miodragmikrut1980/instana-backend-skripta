@@ -184,3 +184,9 @@ creates, deletes, or reboots a host without confirmation.
   causes: running the installer as a different Linux user than the key
   owner, and GCP OS Login (enable-oslogin=TRUE) ignoring metadata keys.
 - GCP dry-run output is unchanged.
+- Host address: on a Google Cloud control machine with gcloud, the running
+  VMs of the project are offered as a numbered list (name, zone, internal
+  IP; this machine and hosts already chosen left out, its own zone first),
+  plus "enter another address". A saved address is the default instead;
+  without gcloud, or if listing fails, the address is typed (never a stop).
+  The SSH user defaults to "ubuntu" (Ubuntu cloud images).

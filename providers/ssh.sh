@@ -443,20 +443,20 @@ prov_ssh_collect_location_params() {
     imported_usable NODE0_HOST NODE1_HOST NODE2_HOST ||
       hint "Addresses of the three existing hosts (IPv4 or DNS name reachable from this machine)." \
            "Node 0 runs the backend and stanctl, node 1 the data stores (three big disks), node 2 the rest."
-    use_imported NODE0_HOST || prompt_required NODE0_HOST "Node 0 host (backend)" "" validate_ssh_host NODE0_HOST
-    use_imported NODE1_HOST || prompt_required NODE1_HOST "Node 1 host (data store)" "" validate_ssh_host NODE1_HOST
-    use_imported NODE2_HOST || prompt_required NODE2_HOST "Node 2 host (other)" "" validate_ssh_host NODE2_HOST
+    prov_ssh_ask_host NODE0_HOST "Node 0 host (backend)"
+    prov_ssh_ask_host NODE1_HOST "Node 1 host (data store)"
+    prov_ssh_ask_host NODE2_HOST "Node 2 host (other)"
   else
-    use_imported VM_HOST || {
+    imported_usable VM_HOST ||
       hint "Address of the existing Ubuntu host (IPv4 or DNS name reachable from this machine)." \
            "The installer checks it before anything is changed; it never deletes or recreates the host."
-      prompt_required VM_HOST "Host address" "" validate_ssh_host VM_HOST
-    }
+    prov_ssh_ask_host VM_HOST "Host address"
   fi
   imported_usable SSH_USER SSH_KEY_PATH SSH_PORT ||
     hint "How this machine logs in: a user with passwordless sudo on the host(s), the private key file and the SSH port." \
          "The key never leaves this machine; only its path is saved."
-  use_imported SSH_USER || prompt_required SSH_USER "SSH user" "${USER:-ubuntu}" validate_ssh_user
+  # Ubuntu cloud images (GCP, AWS, ...) log in as "ubuntu"; a saved value comes first.
+  use_imported SSH_USER || prompt_required SSH_USER "SSH user" "ubuntu" validate_ssh_user
   use_imported SSH_KEY_PATH || prompt_required SSH_KEY_PATH "SSH private key path" "$(prov_ssh_default_key)" validate_ssh_key
   SSH_KEY_PATH=$(prov_ssh_expand_path "$SSH_KEY_PATH")
   use_imported SSH_PORT || prompt_required SSH_PORT "SSH port" "22" validate_ssh_port
@@ -491,6 +491,62 @@ prov_ssh_name_from_host() {
   local n
   n=$(prov_ssh_fact "$1" HOSTNAME | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n-' '-' | sed -e 's/^[^a-z]*//' -e 's/-*$//' | cut -c1-63)
   printf '%s\n' "${n:-$2}"
+}
+
+# prov_ssh_ask_host KEY LABEL — from the input file, else a saved value as the
+# default, else (on a Google Cloud control machine with gcloud) a numbered list
+# of the running VMs of the project, else a free answer.
+prov_ssh_ask_host() {
+  local key="$1" label="$2" saved="" choice c ip name zone project
+  use_imported "$key" && return 0
+  [[ "$CONFIG_LOADED" == true && -f "${CONFIG_FILE:-}" ]] && saved=$(jq -r --arg k "$key" '.parameters[$k] // empty' "$CONFIG_FILE" 2>/dev/null || true)
+  [[ "$key" == "${EDIT_KEY:-}" && -n "${EDIT_DEFAULT:-}" ]] && saved="$EDIT_DEFAULT"
+  if [[ -z "$saved" ]]; then
+    local -a found=() options=()
+    project=$(prov_ssh_gce_project)
+    [[ -z "$project" ]] || mapfile -t found < <(prov_ssh_gce_instances "$project")
+    if (( ${#found[@]} > 0 )); then
+      for c in "${found[@]}"; do IFS='|' read -r name zone ip <<< "$c"; options+=("${name}  (${zone}, ${ip})"); done
+      hint "Running VMs in Google Cloud project ${project} (listed with gcloud from this machine; this machine and hosts already chosen are left out)." \
+           "Pick one to use its internal IP, or choose 'enter another address' for any other host."
+      choice=$(prompt_choice "${label}:" "${options[@]}" "enter another address") || choice=""
+      if [[ -n "$choice" && "$choice" != "enter another address" ]]; then
+        ip="${choice##*, }"; ip="${ip%)}"
+        if prov_ssh_validate_param "$key" "$ip" >/dev/null 2>&1; then
+          printf -v "$key" '%s' "$ip"
+          ok "${key} = ${ip} (${choice%%  (*})"
+          return 0
+        fi
+      fi
+    fi
+  fi
+  prompt_required "$key" "$label" "" validate_ssh_host "$key"
+}
+
+# Running VMs of the current gcloud project, as "name|zone|internal IP", the
+# zone of this machine first. A convenience only: no gcloud, no login, an
+# error or a timeout simply gives an empty list (the address is typed).
+prov_ssh_gce_project() {
+  command -v gcloud >/dev/null 2>&1 || return 0
+  local project
+  project=$(timeout 10 gcloud config get-value project 2>/dev/null || true)
+  [[ -n "$project" && "$project" != "(unset)" ]] || project="instana-support-test-account"
+  [[ ! "$project" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || printf '%s\n' "$project"
+}
+prov_ssh_gce_instances() {
+  local project="$1" here self out name zone ip used k
+  here=$(! declare -F detect_local_gce_zone >/dev/null || detect_local_gce_zone)
+  self=$(hostname -s 2>/dev/null || true)
+  out=$(timeout 20 gcloud compute instances list --project="$project" --filter=status=RUNNING \
+    --format='value(name,zone.basename(),networkInterfaces[0].networkIP)' 2>/dev/null) || return 0
+  used=" "
+  for k in VM_HOST NODE0_HOST NODE1_HOST NODE2_HOST; do used+="${!k:-} "; done
+  while read -r name zone ip _; do
+    [[ "$name" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ && "$zone" =~ ^[a-z]+-[a-z]+[0-9]+-[a-z]$ ]] || continue
+    prov_ssh_host_valid "$ip" && [[ "$ip" =~ ^[0-9.]+$ ]] || continue
+    [[ "$name" != "$self" && "$used" != *" $ip "* ]] || continue
+    printf '%s|%s|%s|%s\n' "$([[ "$zone" == "$here" ]] && echo 0 || echo 1)" "$name" "$zone" "$ip"
+  done <<< "$out" | sort -t'|' -k1,1 -k2,2 | cut -d'|' -f2-
 }
 
 prov_ssh_default_key() {

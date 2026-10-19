@@ -92,6 +92,11 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
    SSH kljuc sa lozinkom (passphrase) mora biti u ssh-agent-u:
      eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519
    (skripta u terminalu jednom pokrene ssh-add; lozinku nikad ne cita/cuva).
+   Na upravljackoj VM u Google Cloud-u (gcloud prijavljen) skripta za adresu
+   hosta ponudi listu pokrenutih VM-ova projekta (ime, zona, interna IP;
+   ova masina i vec izabrani hostovi izostavljeni); "enter another address"
+   za bilo koji drugi host. Bez gcloud-a se adresa kuca. SSH korisnik je
+   podrazumevano ubuntu.
    Tok: pitanja (hostovi, korisnik, kljuc, port; imena = imena hostova) ->
    skripta procita hostove (samo citanje) -> izbor diskova (nude se samo
    neiskorisceni diskovi dovoljne velicine, pamti se /dev/disk/by-id/...) ->
