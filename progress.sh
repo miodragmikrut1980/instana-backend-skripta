@@ -40,7 +40,7 @@ phases_total_seconds() {
   echo "$t"
 }
 
-progress_emit() { echo -e "$*" | tee -a "$LOG_FILE"; }
+progress_emit() { echo -e "$*" | log_tee; }
 
 progress_bar() {
   local state="${1:-running}" percent width=30 filled empty

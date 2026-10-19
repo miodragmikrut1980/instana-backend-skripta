@@ -44,9 +44,16 @@ readonly INSTANA_APT_REPO="deb [signed-by=/usr/share/keyrings/instana-archive-ke
 readonly INSTANA_KEYRING_URL="https://artifact-public.instana.io/artifactory/api/security/keypair/public/repositories/rel-debian-public-virtual"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
-readonly DIM='\033[2m'
+# Only on a terminal and only when NO_COLOR is not set (https://no-color.org):
+# piped or redirected output, and every log file, stay plain text.
+if [[ -t 1 && -t 2 && -z "${NO_COLOR:-}" && "${TERM:-}" != dumb ]]; then
+  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+  CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'; DIM='\033[2m'
+  USE_COLOR=1
+else
+  RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; RESET=''; DIM=''
+  USE_COLOR=0
+fi
 
 # ── State ─────────────────────────────────────────────────────────────────────
 DRY_RUN=false
@@ -61,10 +68,21 @@ STANCTL_CLI_VERSION=""
 BACKEND_VERSION=""
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-log()  { echo -e "${CYAN}[INFO]${RESET}  $*" | tee -a "$LOG_FILE"; }
-ok()   { echo -e "${GREEN}[OK]${RESET}    $*" | tee -a "$LOG_FILE"; }
-warn() { echo -e "${YELLOW}[WARN]${RESET}  $*" | tee -a "$LOG_FILE"; }
-err()  { echo -e "${RED}[ERROR]${RESET} $*" | tee -a "$LOG_FILE"; }
+# log_tee — like tee -a LOG_FILE, but the log file never gets colour codes.
+log_tee() {
+  if [[ "${USE_COLOR:-0}" != 1 ]]; then tee -a "$LOG_FILE"; return; fi
+  local line plain re=$'\e''\[[0-9;]*m'
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    printf '%s\n' "$line"
+    plain="$line"
+    while [[ "$plain" =~ $re ]]; do plain="${plain/"${BASH_REMATCH[0]}"/}"; done
+    printf '%s\n' "$plain" >> "$LOG_FILE"
+  done
+}
+log()  { echo -e "${CYAN}[INFO]${RESET}  $*" | log_tee; }
+ok()   { echo -e "${GREEN}[OK]${RESET}    $*" | log_tee; }
+warn() { echo -e "${YELLOW}[WARN]${RESET}  $*" | log_tee; }
+err()  { echo -e "${RED}[ERROR]${RESET} $*" | log_tee; }
 ERROR_REPORTED=false
 die()  { ERROR_REPORTED=true; err "$*"; declare -F progress_fail_current >/dev/null && progress_fail_current "$*"; exit 1; }
 
@@ -94,7 +112,7 @@ on_exit_report() {
     echo -e "  ${YELLOW}│${RESET} ${BOLD}3.${RESET} If it fails again at the same step, keep the log for troubleshooting: ${CYAN}${LOG_FILE}${RESET}"
     echo -e "  ${BOLD}${YELLOW}└─────────────────────────────────────────────────────────────${RESET}"
     echo ""
-  } | tee -a "$LOG_FILE" >&2
+  } | log_tee >&2
   declare -F progress_fail_current >/dev/null && progress_fail_current "exit ${rc}: ${LAST_FAILED_STEP:-$cmd}"
   return 0
 }
@@ -124,15 +142,13 @@ die_with_steps() {
     done
     echo -e "  ${BOLD}${YELLOW}└─────────────────────────────────────────────────────────────${RESET}"
     echo ""
-  } | tee -a "$LOG_FILE" >&2
+  } | log_tee >&2
   declare -F progress_fail_current >/dev/null && progress_fail_current "$msg"
   exit 1
 }
 run()  {
   if [[ "$DRY_RUN" == true ]]; then
-    printf "${YELLOW}[DRY-RUN]${RESET} " | tee -a "$LOG_FILE"
-    printf '%q ' "$@" | tee -a "$LOG_FILE"
-    printf '\n' | tee -a "$LOG_FILE"
+    { printf "${YELLOW}[DRY-RUN]${RESET} "; printf '%q ' "$@"; printf '\n'; } | log_tee
   else
     printf '>> ' >> "$LOG_FILE"
     printf '%q ' "$@" >> "$LOG_FILE"

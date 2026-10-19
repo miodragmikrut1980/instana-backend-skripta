@@ -538,3 +538,10 @@ and every answer was lost.
   them (n = look up a VM by name).
 - Tests: a VM with only one of the four installer disks is not listed; a
   failed disk delete is reported NOT deleted; mutants killed.
+
+2026-10-19 — UX v3: colours only on a terminal, plain logs
+- Colours and bold are used only when the output is a terminal and NO_COLOR
+  is not set (also not with TERM=dumb); piped or redirected output is plain.
+- Log files (install-*.log, destroy-*.log) never contain colour codes, also
+  when the screen shows colours; a dry-run command line is logged on one line.
+- Tests: test-plain-output.sh (pipe, terminal + log, NO_COLOR); mutants killed.

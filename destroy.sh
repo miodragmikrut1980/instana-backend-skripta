@@ -16,21 +16,34 @@ readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly STATE_FILE="${SCRIPT_DIR}/.install-state.json"
 readonly LOG_FILE="${SCRIPT_DIR}/destroy-$(date +%Y%m%d-%H%M%S).log"
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+# Colours only on a terminal without NO_COLOR; the log file stays plain text.
+if [[ -t 1 && -t 2 && -z "${NO_COLOR:-}" && "${TERM:-}" != dumb ]]; then
+  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+  CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'; USE_COLOR=1
+else
+  RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; RESET=''; USE_COLOR=0
+fi
+log_tee() {
+  if [[ "$USE_COLOR" != 1 ]]; then tee -a "$LOG_FILE"; return; fi
+  local line plain re=$'\e''\[[0-9;]*m'
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    printf '%s\n' "$line"
+    plain="$line"
+    while [[ "$plain" =~ $re ]]; do plain="${plain/"${BASH_REMATCH[0]}"/}"; done
+    printf '%s\n' "$plain" >> "$LOG_FILE"
+  done
+}
 
 DRY_RUN=false
 
-log()  { echo -e "${CYAN}[INFO]${RESET}  $*" | tee -a "$LOG_FILE"; }
-ok()   { echo -e "${GREEN}[OK]${RESET}    $*" | tee -a "$LOG_FILE"; }
-warn() { echo -e "${YELLOW}[WARN]${RESET}  $*" | tee -a "$LOG_FILE"; }
-err()  { echo -e "${RED}[ERROR]${RESET} $*" | tee -a "$LOG_FILE"; }
+log()  { echo -e "${CYAN}[INFO]${RESET}  $*" | log_tee; }
+ok()   { echo -e "${GREEN}[OK]${RESET}    $*" | log_tee; }
+warn() { echo -e "${YELLOW}[WARN]${RESET}  $*" | log_tee; }
+err()  { echo -e "${RED}[ERROR]${RESET} $*" | log_tee; }
 die()  { err "$*"; exit 1; }
 run()  {
   if [[ "$DRY_RUN" == true ]]; then
-    printf "${YELLOW}[DRY-RUN]${RESET} " | tee -a "$LOG_FILE"
-    printf '%q ' "$@" | tee -a "$LOG_FILE"
-    printf '\n' | tee -a "$LOG_FILE"
+    { printf "${YELLOW}[DRY-RUN]${RESET} "; printf '%q ' "$@"; printf '\n'; } | log_tee
   else
     printf '>> ' >> "$LOG_FILE"
     printf '%q ' "$@" >> "$LOG_FILE"

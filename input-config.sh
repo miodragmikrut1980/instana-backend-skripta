@@ -629,7 +629,7 @@ input_show_summary() {
     done
     echo "  ${n_ok} values taken from the file; ${n_ask} will be asked below."
     echo ""
-  } | tee -a "$LOG_FILE" >&2
+  } | log_tee >&2
 }
 
 # Without a terminal nothing can be asked: stop before the first question and
