@@ -60,6 +60,7 @@ run() {
   CASE="$TEST_ROOT/$name"; mkdir -p "$CASE"
   cp -R "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR/providers" "$SCRIPT_DIR/examples" "$CASE/"
   chmod 600 "$CASE"/examples/*.json
+  [[ -z "${CERTDIR:-}" ]] || cp "$TEST_ROOT/lab.crt" "$TEST_ROOT/lab.key" "$CASE/"
   jq 'del(.parameters.GCP_ZONE, .parameters.BASE_DOMAIN)' "$CASE/examples/single-gcp-online-full.json" > "$CASE/nozone.json"
   chmod 600 "$CASE/nozone.json"
   OUT="$CASE/out.txt"; RC=0
@@ -255,5 +256,28 @@ done_ok
 [[ "$(count "this machine's public IP could not be detected")" == 2 ]] || fail "Enter must be refused again after going back"
 has "SSH source CIDR:               198.51.100.7/32"
 echo "PASS: the unsafe placeholder is never relabelled or accepted after going back"
+
+# 22. A certificate in the installer folder that covers the domain is
+#     offered (Enter uses it, its paths are the defaults).
+if command -v openssl >/dev/null && openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=instana.example.com \
+     -addext "subjectAltName=DNS:instana.example.com,DNS:*.instana.example.com" \
+     -keyout "$TEST_ROOT/lab.key" -out "$TEST_ROOT/lab.crt" >/dev/null 2>&1; then
+  CERTDIR=1 run tls_found $'1\n1\n1\n1\n\ninstana-backend\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n\n\n\ny'
+  done_ok
+  has "Found a certificate for instana.example.com in this folder:"
+  has "TLS:                           provide custom certificate files"
+  echo "PASS: a certificate for the domain in the folder is offered"
+else
+  echo "SKIP: openssl cannot create a test certificate here"
+fi
+
+# 23. The newest instana-airgapped*.tar.gz is the default package.
+( cd "$TEST_ROOT"; mkdir -p newest/home newest/run; cp instana-airgapped.tar.gz newest/home/instana-airgapped-old.tar.gz
+  touch -t 202601010000 newest/home/instana-airgapped-old.tar.gz
+  cp instana-airgapped.tar.gz newest/home/instana-airgapped-new.tar.gz
+  cp -R "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR/providers" newest/run/
+  cd newest/run; set --; HOME="$TEST_ROOT/newest/home" bash -c 'source ./install.sh; default_airgapped_archive' ) > "$TEST_ROOT/newest.txt" 2>&1
+grep -q "instana-airgapped-new.tar.gz" "$TEST_ROOT/newest.txt" || { cat "$TEST_ROOT/newest.txt" >&2; fail "the newest package must be the default"; }
+echo "PASS: the newest air-gapped package is the default"
 
 echo "All back-navigation tests passed."

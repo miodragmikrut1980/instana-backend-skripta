@@ -322,4 +322,26 @@ done_ok
 has "SSH login:                     ubuntu on port 22,"
 echo "PASS: host:port does not stick after the hosts are picked again"
 
+# 24. Lab domain: for an online existing-host lab whose public IP is known
+#     before Start, instana.<ip>.sslip.io is suggested (Enter takes it); never
+#     for air-gapped.
+cat > "$FAKE_ROOT/bin/gcloud" <<'FAKE'
+#!/usr/bin/env bash
+case "$*" in
+  *"config get-value project"*) echo test-project ;;
+  *"instances list"*"networkIP=10.0.0.5"*"natIP"*) echo 34.65.106.11 ;;
+  *"instances list"*"status=RUNNING"*) echo "ssh-test-1 europe-west6-b 10.0.0.5 34.65.106.11 n2-standard-16" ;;
+esac
+exit 0
+FAKE
+chmod +x "$FAKE_ROOT/bin/gcloud"
+run sslip $'1\n1\n\n1\n1\n\n\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\ny'
+done_ok
+has "Suggested: a free wildcard name for the host's public IP"
+has "Base domain:                   instana.34-65-106-11.sslip.io"
+run sslip_air $'1\n1\n\n2\n1\n\ninstana.example.com\n'
+hasnt "sslip.io"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_ROOT/bin/gcloud"
+echo "PASS: sslip.io is suggested only for an online existing-host lab with a known public IP"
+
 echo "All existing-host login flow tests passed."

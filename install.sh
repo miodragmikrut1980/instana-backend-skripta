@@ -883,9 +883,31 @@ wiz_domain() {
   log "  otlp-grpc.<base_domain>"
   log "  <unit>-<tenant>.<base_domain>"
   echo ""
-  hint "Domain under which Instana will be reached, e.g. instana.example.com. You must own it and be able to add DNS records;" \
-       "for a lab you can instead put the entries printed at the end into /etc/hosts on your computer."
-  prompt_required "BASE_DOMAIN" "Base domain (e.g. instana.example.com)" "" validate_fqdn
+  local suggest=""
+  suggest=$(lab_domain_suggestion)
+  if [[ -n "$suggest" ]]; then
+    hint "Domain under which Instana will be reached. Suggested: a free wildcard name for the host's public IP" \
+         "(${suggest#instana.}: sslip.io resolves every sub-name to that IP, no DNS setup needed)." \
+         "Use your own domain (you must be able to add DNS records) for anything that is not a short-lived lab."
+  else
+    hint "Domain under which Instana will be reached, e.g. instana.example.com. You must own it and be able to add DNS records;" \
+         "for a lab you can instead put the entries printed at the end into /etc/hosts on your computer."
+  fi
+  prompt_required "BASE_DOMAIN" "Base domain (e.g. instana.example.com)" "$suggest" validate_fqdn
+}
+
+# lab_domain_suggestion — instana.<a-b-c-d>.sslip.io for an existing-host lab
+# whose public IP is known before Start; nothing for air-gapped installations
+# (or GCP, where the IP exists only after phase 3).
+lab_domain_suggestion() {
+  [[ "$(provider_name)" == ssh && "${INSTALL_MODE:-}" == online ]] || return 0
+  local host ip
+  host=$(prov_ssh_hosts 2>/dev/null | head -1)
+  [[ -n "$host" ]] || return 0
+  ip=$(prov_ssh_get_ip "$host" "" "" public 2>/dev/null || true)
+  [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] && ! prov_ssh_is_private "$ip" || return 0
+  [[ "$ip" != 127.* && "$ip" != 169.254.* ]] || return 0
+  printf 'instana.%s.sslip.io\n' "${ip//./-}"
 }
 
 # Tenant / unit names
@@ -950,8 +972,33 @@ wiz_versions() {
 }
 
 # TLS certificate
+# A certificate in the installer folder or the current folder whose names
+# cover the base domain, with its key next to it: "crt key", or nothing.
+find_tls_cert_for_domain() {
+  command -v openssl >/dev/null 2>&1 && [[ -n "${BASE_DOMAIN:-}" ]] || return 0
+  local crt key base names
+  for crt in "$SCRIPT_DIR"/*.crt "$SCRIPT_DIR"/fullchain*.pem "$PWD"/*.crt "$PWD"/fullchain*.pem; do
+    [[ -f "$crt" && ! -L "$crt" ]] || continue
+    names=$(openssl x509 -in "$crt" -noout -ext subjectAltName 2>/dev/null | tr ',' '\n' | sed -n 's/.*DNS:\([^ ]*\).*/\1/p' || true)
+    grep -qxF -- "$BASE_DOMAIN" <<< "$names" || grep -qxF -- "*.${BASE_DOMAIN}" <<< "$names" || continue
+    base="${crt%.*}"
+    for key in "${base}.key" "${crt%/*}/privkey.pem" "${base/fullchain/privkey}.pem"; do
+      [[ -f "$key" && ! -L "$key" ]] && { printf '%s %s\n' "$crt" "$key"; return 0; }
+    done
+  done
+  return 0
+}
+
 wiz_tls() {
   use_imported TLS_MODE && return 0
+  local found; found=$(find_tls_cert_for_domain)
+  if [[ -n "$found" ]]; then
+    TLS_FOUND_CRT="${found%% *}"; TLS_FOUND_KEY="${found#* }"
+    hint "Found a certificate for ${BASE_DOMAIN} in this folder: ${TLS_FOUND_CRT} (key ${TLS_FOUND_KEY}); Enter uses it." \
+         "Self-signed is generated automatically instead (the browser warns; fine for a lab)."
+    ASK_DEFAULT="provide custom certificate files" ask_choice TLS_MODE "TLS certificate:" "auto-generate (self-signed)" "provide custom certificate files"
+    return 0
+  fi
   hint "HTTPS certificate for the UI. Self-signed is generated automatically (browser will warn; fine for a lab)." \
        "Custom = you provide a certificate and key file for the domain (needed for production)."
   ASK_DEFAULT="auto-generate (self-signed)" ask_choice TLS_MODE "TLS certificate:" "auto-generate (self-signed)" "provide custom certificate files"
@@ -960,13 +1007,13 @@ wiz_tls_crt() {
   [[ "$TLS_MODE" == "provide custom certificate files" ]] || return 0
   use_imported TLS_CRT_PATH && return 0
   hint "The certificate (PEM) for the base domain, as a file on this machine."
-  prompt_required "TLS_CRT_PATH" "Full path to TLS certificate file (.crt)" "" validate_file_exists "TLS certificate file"
+  prompt_required "TLS_CRT_PATH" "Full path to TLS certificate file (.crt)" "${TLS_FOUND_CRT:-}" validate_file_exists "TLS certificate file"
 }
 wiz_tls_key() {
   [[ "$TLS_MODE" == "provide custom certificate files" ]] || return 0
   use_imported TLS_KEY_PATH && return 0
   hint "The private key (PEM) of that certificate, as a file on this machine."
-  prompt_required "TLS_KEY_PATH" "Full path to TLS key file (.key)" "" validate_file_exists "TLS key file"
+  prompt_required "TLS_KEY_PATH" "Full path to TLS key file (.key)" "${TLS_FOUND_KEY:-}" validate_file_exists "TLS key file"
 }
 
 # collect_parameters — the questions. "<" at the first question asked:
@@ -1083,8 +1130,9 @@ obtain_airgapped_archive() {
   explain_airgapped_package
   while true; do
     default=$(default_airgapped_archive)
-    [[ -z "$default" ]] || log "Found an archive: ${default}"
-    choice=$(prompt_choice "How do you want to provide the air-gapped package?" \
+    [[ -z "$default" ]] || log "Found an archive: ${default} ($(( $(stat -c %s "$default" 2>/dev/null || stat -f %z "$default" 2>/dev/null || echo 0) / 1000000000 )) GB, $(date -r "$default" +%Y-%m-%d 2>/dev/null || echo "?")); Enter uses it."
+    hint "Use an existing package, create one here, or switch to an online installation."
+    choice=$(PROMPT_CHOICE_DEFAULT="$([[ -n "$default" ]] && echo "use an existing instana-airgapped.tar.gz on this machine")" prompt_choice "How do you want to provide the air-gapped package?" \
       "use an existing instana-airgapped.tar.gz on this machine" \
       "create the package now on this machine (needs internet, sudo and about 40 GB free)" \
       "switch to an ONLINE installation instead (the Instana VM downloads everything itself)" \
@@ -1343,14 +1391,13 @@ build_airgapped_package_locally() {
 # Default for the air-gapped archive prompt: the only instana-airgapped.tar.gz
 # found in the current directory, the script folder or the home directory.
 default_airgapped_archive() {
-  local candidate
-  for candidate in "$PWD/instana-airgapped.tar.gz" "$SCRIPT_DIR/instana-airgapped.tar.gz" \
-                   "$HOME/instana-airgapped.tar.gz" "$HOME/instana-airgap/instana-airgapped.tar.gz"; do
-    if [[ -f "$candidate" ]]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
+  # The newest instana-airgapped*.tar.gz in the usual places (current folder,
+  # installer folder, home, ~/instana-airgap, /var/tmp).
+  local f
+  f=$(ls -t "$PWD"/instana-airgapped*.tar.gz "$SCRIPT_DIR"/instana-airgapped*.tar.gz \
+        "$HOME"/instana-airgapped*.tar.gz "$HOME"/instana-airgap/instana-airgapped*.tar.gz \
+        /var/tmp/instana-airgapped*.tar.gz 2>/dev/null | head -1 || true)
+  [[ -z "$f" || ! -f "$f" || -L "$f" ]] || printf '%s\n' "$f"
   return 0
 }
 
