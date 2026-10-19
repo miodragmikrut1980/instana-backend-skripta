@@ -412,4 +412,13 @@ RC=0; ( cd "$CASE" && bash plan.sh ) > "$CASE/out.raw" 2>&1 || RC=$?
 if grep -q "AFTER-PLAN" "$CASE/out.raw"; then fail "the run continued after save_state failed"; fi
 echo "PASS: a failing state write at the plan stops the run"
 
+# KUBE_USER_ACCESS from a file: only yes/no; anything else is refused with the reason.
+new_case kube_bad
+jq '.parameters.KUBE_USER_ACCESS = "maybe"' "$CASE/examples/single-gcp-online-full.json" > "$CASE/kube.json"; chmod 600 "$CASE/kube.json"
+run_installer "" --config kube.json --dry-run
+[[ "$RC" != 0 ]] || fail "an invalid KUBE_USER_ACCESS must stop without a terminal"
+has "- KUBE_USER_ACCESS: 'maybe' cannot be used: KUBE_USER_ACCESS 'maybe' is not one of: 'no', 'yes'."
+has 'Example: "KUBE_USER_ACCESS": "no" (default) or "yes".'
+echo "PASS: KUBE_USER_ACCESS other than yes/no is refused with the reason"
+
 echo "All input-file tests passed."

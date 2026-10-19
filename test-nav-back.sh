@@ -303,4 +303,22 @@ grep -q "could not be detected; type it" "$TEST_ROOT/ip.txt" || fail "unknown IP
 if grep -q "n1\|n2" <(grep "Public IPv4 of" "$TEST_ROOT/ip.txt"); then fail "only node 0 is asked"; fi
 echo "PASS: only node 0's public IP is used; a detected one is not asked"
 
+# 26. Offered files are only own regular files: a symbolic link to a package is
+#     never the default; a certificate needs the domain and *.domain, and the
+#     key must belong to it.
+( cd "$TEST_ROOT"; rm -rf link && mkdir -p link/home link/run && ln -s "$TEST_ROOT/instana-airgapped.tar.gz" link/home/instana-airgapped.tar.gz
+  cp -R "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR/providers" link/run/; cd link/run; set --
+  HOME="$TEST_ROOT/link/home" bash -c 'source ./install.sh; echo "DEFAULT=[$(default_airgapped_archive)]"' ) > "$TEST_ROOT/link.txt" 2>&1
+grep -q "DEFAULT=\[\]" "$TEST_ROOT/link.txt" || { cat "$TEST_ROOT/link.txt" >&2; fail "a symbolic link must not be offered as the package"; }
+if command -v openssl >/dev/null; then
+  CD="$TEST_ROOT/certs"; mkdir -p "$CD"; cp -R "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR/providers" "$CD/"
+  openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=a -addext "subjectAltName=DNS:instana.example.com" -keyout "$CD/only.key" -out "$CD/only.crt" >/dev/null 2>&1
+  openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=b -addext "subjectAltName=DNS:instana.example.com,DNS:*.instana.example.com" -keyout "$CD/other.key" -out "$CD/wrongkey.crt" >/dev/null 2>&1
+  openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=c -addext "subjectAltName=DNS:instana.example.com,DNS:*.instana.example.com" -keyout "$CD/wrongkey.key" -out "$CD/unused.crt" >/dev/null 2>&1
+  rm -f "$CD/unused.crt"
+  ( cd "$CD"; set --; bash -c 'source ./install.sh; BASE_DOMAIN=instana.example.com; echo "FOUND=[$(find_tls_cert_for_domain)]"' ) > "$TEST_ROOT/cert.txt" 2>&1
+  grep -q "FOUND=\[\]" "$TEST_ROOT/cert.txt" || { cat "$TEST_ROOT/cert.txt" >&2; fail "a cert without *.domain, or with a key of another cert, must not be offered"; }
+fi
+echo "PASS: only own regular files are offered; a certificate needs domain and *.domain and its own key"
+
 echo "All back-navigation tests passed."

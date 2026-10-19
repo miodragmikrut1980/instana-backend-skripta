@@ -982,14 +982,21 @@ wiz_versions() {
 # cover the base domain, with its key next to it: "crt key", or nothing.
 find_tls_cert_for_domain() {
   command -v openssl >/dev/null 2>&1 && [[ -n "${BASE_DOMAIN:-}" ]] || return 0
-  local crt key base names
+  # Offered only: own regular files (no links), a certificate whose names
+  # cover the domain AND its sub-names (*.domain: UI, acceptors), and the key
+  # that belongs to it (same public key).
+  local crt key base names cpub kpub
   for crt in "$SCRIPT_DIR"/*.crt "$SCRIPT_DIR"/fullchain*.pem "$PWD"/*.crt "$PWD"/fullchain*.pem; do
-    [[ -f "$crt" && ! -L "$crt" ]] || continue
+    [[ -f "$crt" && ! -L "$crt" && -O "$crt" ]] || continue
     names=$(openssl x509 -in "$crt" -noout -ext subjectAltName 2>/dev/null | tr ',' '\n' | sed -n 's/.*DNS:\([^ ]*\).*/\1/p' || true)
-    grep -qxF -- "$BASE_DOMAIN" <<< "$names" || grep -qxF -- "*.${BASE_DOMAIN}" <<< "$names" || continue
+    grep -qxF -- "$BASE_DOMAIN" <<< "$names" && grep -qxF -- "*.${BASE_DOMAIN}" <<< "$names" || continue
+    cpub=$(openssl x509 -in "$crt" -noout -pubkey 2>/dev/null || true)
+    [[ -n "$cpub" ]] || continue
     base="${crt%.*}"
     for key in "${base}.key" "${crt%/*}/privkey.pem" "${base/fullchain/privkey}.pem"; do
-      [[ -f "$key" && ! -L "$key" ]] && { printf '%s %s\n' "$crt" "$key"; return 0; }
+      [[ -f "$key" && ! -L "$key" && -O "$key" ]] || continue
+      kpub=$(openssl pkey -in "$key" -pubout 2>/dev/null || true)
+      [[ -n "$kpub" && "$kpub" == "$cpub" ]] && { printf '%s %s\n' "$crt" "$key"; return 0; }
     done
   done
   return 0
@@ -1413,11 +1420,15 @@ build_airgapped_package_locally() {
 default_airgapped_archive() {
   # The newest instana-airgapped*.tar.gz in the usual places (current folder,
   # installer folder, home, ~/instana-airgap, /var/tmp).
+  # Only regular files owned by this user are offered: the package's stanctl
+  # runs as root on the Instana VM, so a file someone else could plant (e.g.
+  # in /var/tmp) or a symbolic link is never a default.
   local f
-  f=$(ls -t "$PWD"/instana-airgapped*.tar.gz "$SCRIPT_DIR"/instana-airgapped*.tar.gz \
+  while IFS= read -r f; do
+    [[ -n "$f" && -f "$f" && ! -L "$f" && -O "$f" ]] && { printf '%s\n' "$f"; return 0; }
+  done < <(ls -t "$PWD"/instana-airgapped*.tar.gz "$SCRIPT_DIR"/instana-airgapped*.tar.gz \
         "$HOME"/instana-airgapped*.tar.gz "$HOME"/instana-airgap/instana-airgapped*.tar.gz \
-        /var/tmp/instana-airgapped*.tar.gz 2>/dev/null | head -1 || true)
-  [[ -z "$f" || ! -f "$f" || -L "$f" ]] || printf '%s\n' "$f"
+        /var/tmp/instana-airgapped*.tar.gz 2>/dev/null || true)
   return 0
 }
 

@@ -504,3 +504,17 @@ and every answer was lost.
   organization or network firewall policies are not checked.
 - Tests: test-ssh-login-flow.sh 25-26; mutants for the environment, the deny
   rule and the list error are killed.
+
+2026-10-19 — UX v2: review fix E6 and lows (offered files, certificate, kubectl key)
+- An air-gapped package is offered as the default only when it is a
+  regular file owned by the operator (no symbolic link; the package's
+  stanctl runs as root on the Instana VM, so a file planted by someone else,
+  e.g. in /var/tmp, is never a default).
+- A certificate in the folder is offered only when it and its key are the
+  operator's own regular files, its names cover both the base domain and
+  *.<base domain> (the UI and acceptors are sub-names), and the key belongs
+  to it (same public key).
+- KUBE_USER_ACCESS from a file accepts only yes or no; anything else is
+  refused with the reason (asked in a terminal, listed without one).
+- Tests: test-nav-back.sh 26 (symbolic link, certificate names and key
+  pairing), test-config-file.sh (KUBE_USER_ACCESS); mutants killed.
