@@ -490,3 +490,17 @@ and every answer was lost.
   are never listed.
 - test-cleanup-list.sh rewritten (multi-zone lab, orphaned resources, a
   borrowed disk, partial failure); mutants for each rule are killed.
+
+2026-10-19 — UX v2: review fixes E4-E5 (network consent, firewall check)
+- NETWORK_RULES_CONFIRMED is no longer accepted from an input file (ignored
+  with a log line saying why) or from the environment; the network
+  connections are confirmed only by Y at the plan, typed in a terminal. The
+  stop without a terminal says so instead of suggesting the file key.
+  examples/three-ssh-full.json no longer carries it.
+- The read-only firewall check no longer makes wrong claims: rules that
+  cannot be read (permission, API) are "not verifiable" (no "missing", no
+  create command); any matching deny rule makes the port "blocked or not
+  verifiable (deny rule <name>)"; "allowed" only without one. It says that
+  organization or network firewall policies are not checked.
+- Tests: test-ssh-login-flow.sh 25-26; mutants for the environment, the deny
+  rule and the list error are killed.

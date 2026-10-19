@@ -27,7 +27,7 @@ readonly INPUT_EXTRA_KEYS="PROVIDER SIZE AIRGAP_SOURCE AIRGAP_OUTPUT_DIR STANCTL
 # Derived by the installer; accepted in a file but never taken from it.
 readonly INPUT_DERIVED_KEYS="MACHINE_TYPE NODE_CPUS NODE_RAM_GB"
 # Keys of the existing-hosts provider (ssh), besides DISK_DEV_*.
-readonly INPUT_SSH_KEYS="SSH_USER SSH_KEY_PATH SSH_PORT SSH_VIA_PRIVATE VM_HOST NODE0_HOST NODE1_HOST NODE2_HOST NETWORK_RULES_CONFIRMED"
+readonly INPUT_SSH_KEYS="SSH_USER SSH_KEY_PATH SSH_PORT SSH_VIA_PRIVATE VM_HOST NODE0_HOST NODE1_HOST NODE2_HOST"
 # Keys only the gcp provider uses (ignored, with the reason, for ssh).
 readonly INPUT_GCP_ONLY_KEYS="UBUNTU_VERSION GCP_PROJECT GCP_REGION GCP_ZONE GCP_NETWORK GCP_SUBNET SSH_SOURCE_CIDR SIZE VM_CPUS VM_RAM_GB"
 
@@ -91,7 +91,7 @@ input_example() {
     SSH_USER) echo '"ubuntu"' ;;
     SSH_KEY_PATH) echo '"~/.ssh/id_ed25519"' ;;
     SSH_PORT) echo '"22"' ;;
-    SSH_VIA_PRIVATE|NETWORK_RULES_CONFIRMED) echo '"true" or "false"' ;;
+    SSH_VIA_PRIVATE) echo '"true" or "false"' ;;
     DISK_DEV_*) echo '"/dev/disk/by-id/scsi-0Google_PersistentDisk_data" (see: ls -l /dev/disk/by-id on the host)' ;;
     AIRGAP_SOURCE) echo '"existing" or "build"' ;;
     AIRGAP_ARCHIVE) echo '"/home/<user>/instana-airgap/instana-airgapped.tar.gz"' ;;
@@ -119,7 +119,6 @@ input_purpose() {
     VM_HOST|NODE0_HOST|NODE1_HOST|NODE2_HOST) echo "the existing host to install on" ;;
     SSH_USER|SSH_KEY_PATH|SSH_PORT) echo "logging in to the host(s) over SSH" ;;
     SSH_VIA_PRIVATE) echo "whether the host addresses are private" ;;
-    NETWORK_RULES_CONFIRMED) echo "confirming the network rules around the hosts" ;;
     DISK_DEV_*) echo "the dedicated data disk for one Instana data directory" ;;
     SIZE|VM_CPUS|VM_RAM_GB) echo "the machine size" ;;
     KUBE_USER_ACCESS) echo "kubectl without sudo for the SSH user on the Instana host" ;;
@@ -200,7 +199,7 @@ input_check() {
     STANCTL_VERSION|BACKEND_VERSION)
       [[ "$v" =~ ^[0-9][0-9A-Za-z.+~:_-]*$ ]] ||
         { err "${key} '${v}' does not look like a version number, e.g. 3.323.470-0."; return 1; } ;;
-    VM_HOST|NODE0_HOST|NODE1_HOST|NODE2_HOST|SSH_USER|SSH_KEY_PATH|SSH_PORT|SSH_VIA_PRIVATE|NETWORK_RULES_CONFIRMED|DISK_DEV_*)
+    VM_HOST|NODE0_HOST|NODE1_HOST|NODE2_HOST|SSH_USER|SSH_KEY_PATH|SSH_PORT|SSH_VIA_PRIVATE|DISK_DEV_*)
       provider_validate_param "$key" "$v" ;;
     DOWNLOAD_KEY) validate_secret "$v" "Download key" ;;
     AGENT_KEY) validate_secret "$v" "Agent key" ;;
@@ -446,6 +445,12 @@ input_drop_unknown_keys() {
   read -r -a _extra <<< "$INPUT_EXTRA_KEYS $PROVIDER_COMMON_KEYS $(provider_param_keys)"
   known+=("${_extra[@]}")
   for key in "${!IMPORTED[@]}"; do
+    # Approvals are never taken from a file: the network rules are confirmed
+    # by Y at the plan, typed in a terminal.
+    if [[ "$key" == NETWORK_RULES_CONFIRMED ]]; then
+      log "NETWORK_RULES_CONFIRMED in $(input_source_label) is ignored: the network connections are confirmed with Y at the plan, in a terminal (never from a file)."
+      unset 'IMPORTED[$key]'; continue
+    fi
     if [[ "$(provider_name)" == ssh && " $INPUT_GCP_ONLY_KEYS " == *" $key "* ]]; then
       [[ -z "${IMPORTED[$key]}" ]] || log "${key} ignored: used only with PROVIDER 'gcp' (new VMs in Google Cloud), not with existing hosts."
       unset 'IMPORTED[$key]'; continue
@@ -525,7 +530,6 @@ input_ssh_applicable_keys() {
       [[ -z "${IMPORTED[$k]:-}" ]] || echo "$k"
     done
   fi
-  [[ -z "${IMPORTED[NETWORK_RULES_CONFIRMED]:-}" ]] || echo NETWORK_RULES_CONFIRMED
 }
 
 input_valid_or_empty() {

@@ -22,8 +22,7 @@
     "DISK_DEV_NODE0_OBJECTS": "/dev/disk/by-id/scsi-0TEST_NODE0_objects",
     "DISK_DEV_NODE1_DATA": "/dev/disk/by-id/scsi-0TEST_NODE1_data",
     "DISK_DEV_NODE1_METRICS": "/dev/disk/by-id/scsi-0TEST_NODE1_metrics",
-    "DISK_DEV_NODE1_ANALYTICS": "/dev/disk/by-id/scsi-0TEST_NODE1_analytics",
-    "NETWORK_RULES_CONFIRMED": "true"
+    "DISK_DEV_NODE1_ANALYTICS": "/dev/disk/by-id/scsi-0TEST_NODE1_analytics"
   },
   "secrets": {
     "DOWNLOAD_KEY": "test-download-key-0000",

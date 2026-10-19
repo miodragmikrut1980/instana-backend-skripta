@@ -344,4 +344,56 @@ hasnt "sslip.io"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_ROOT/bin/gcloud"
 echo "PASS: sslip.io is suggested only for an online existing-host lab with a known public IP"
 
+# 25. Firewall check makes no wrong claims: a matching deny rule is reported
+#     as blocked, and rules that cannot be read are "not verifiable" (never
+#     "missing" with a create command).
+cat > "$FAKE_ROOT/bin/gcloud" <<'FAKE'
+#!/usr/bin/env bash
+case "$*" in
+  *"config get-value project"*) echo test-project ;;
+  *"instances list"*"networkIP=10.0.0.5"*"natIP"*) echo 34.65.106.11 ;;
+  *"instances list"*"networkIP=10.0.0.5"*) echo "ssh-test-1 europe-west6-b default" ;;
+  *"instances list"*"status=RUNNING"*) echo "ssh-test-1 europe-west6-b 10.0.0.5 34.65.106.11 n2-standard-16" ;;
+  *"firewall-rules list"*)
+    [[ "${FWCASE:-}" == noaccess ]] && { echo "ERROR: (gcloud.compute.firewall-rules.list) Required 'compute.firewalls.list' permission" >&2; exit 1; }
+    echo '[{"name":"allow-all-web","priority":1000,"allowed":[{"IPProtocol":"tcp","ports":["443","8443","80"]}],"sourceRanges":["0.0.0.0/0"]},
+           {"name":"deny-https","priority":100,"denied":[{"IPProtocol":"tcp","ports":["443"]}],"sourceRanges":["0.0.0.0/0"]}]' ;;
+esac
+exit 0
+FAKE
+chmod +x "$FAKE_ROOT/bin/gcloud"
+run fw_deny $'1\n1\n\n1\n1\n\n'"$TAIL"
+done_ok
+has "✗ blocked or not verifiable: TCP 443 (deny rule deny-https)"
+has "✓ allowed from anywhere: TCP 8443, 80"
+has "organization or network firewall policies are not"
+export FWCASE=noaccess
+run fw_noaccess $'1\n1\n\n1\n1\n\n'"$TAIL"
+unset FWCASE
+done_ok
+has "not verifiable (could not read them: ERROR: (gcloud.compute.firewall-rules.list) Required 'compute.firewalls.list' permission)"
+hasnt "✗ missing"; hasnt "firewall-rules create"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_ROOT/bin/gcloud"
+echo "PASS: the firewall check reports deny rules and unreadable rules honestly"
+
+# 26. The network rules are never confirmed by a file or the environment: the
+#     key is ignored with a reason, the variable starts empty, and without a
+#     terminal phase 5 stops with the terminal-only fix.
+( cd "$CASE"; set --; source ./install.sh; INSTANA_PROVIDER=ssh resolve_provider; PARAMS_SOURCE=import; INPUT_LABEL=f.json
+  IMPORTED=([NETWORK_RULES_CONFIRMED]=true [VM_HOST]=10.0.0.5); input_drop_unknown_keys
+  echo "LEFT=${IMPORTED[NETWORK_RULES_CONFIRMED]:-none}" ) > "$TEST_ROOT/nrc.txt" 2>&1
+grep -q "NETWORK_RULES_CONFIRMED in f.json is ignored: the network connections are confirmed with Y at the plan" "$TEST_ROOT/nrc.txt" || { cat "$TEST_ROOT/nrc.txt" >&2; fail "the file key must be ignored with a reason"; }
+grep -q "LEFT=none" "$TEST_ROOT/nrc.txt" || fail "the key must be dropped"
+NETWORK_RULES_CONFIRMED=true bash -c "cd '$CASE'; set --; source ./install.sh; echo \"ENV=[\$NETWORK_RULES_CONFIRMED]\"" > "$TEST_ROOT/nrc2.txt" 2>&1
+grep -q "ENV=\[\]" "$TEST_ROOT/nrc2.txt" || fail "the environment must not pre-confirm the network rules"
+port_file="$TEST_ROOT/port"; rm -f "$port_file"
+python3 -c "import socket,time,sys;s=socket.socket();s.bind(('127.0.0.1',0));s.listen(5);open(sys.argv[1],'w').write(str(s.getsockname()[1]));time.sleep(40)" "$port_file" &
+lp=$!; for _ in 1 2 3 4 5 6 7 8 9 10; do [[ -s "$port_file" ]] && break; sleep 0.3; done
+if ( cd "$CASE"; set --; source ./install.sh; INSTANA_PROVIDER=ssh resolve_provider; DRY_RUN=false TOPOLOGY=single-node VM_HOST=127.0.0.1 SSH_USER=ubuntu SSH_PORT="$(cat "$port_file")"
+     prov_ssh_ensure_firewall < /dev/null ) > "$TEST_ROOT/nrc3.txt" 2>&1; then kill $lp 2>/dev/null; fail "without a terminal the network rules must not be confirmed"; fi
+kill $lp 2>/dev/null || true
+grep -q "a file cannot" "$TEST_ROOT/nrc3.txt" || { cat "$TEST_ROOT/nrc3.txt" >&2; fail "the stop must name the terminal-only fix"; }
+if grep -q '"NETWORK_RULES_CONFIRMED": "true"' "$TEST_ROOT/nrc3.txt"; then fail "the stop must not suggest the file key"; fi
+echo "PASS: the network rules are confirmed only by Y at the plan in a terminal"
+
 echo "All existing-host login flow tests passed."

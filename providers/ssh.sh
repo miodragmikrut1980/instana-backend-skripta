@@ -11,6 +11,7 @@ declare -A SSH_FACT=()        # "<host>|KEY" -> value from prov_ssh_gather_facts
 declare -a SSH_FACT_DISKS=()  # "<host>|<dev>|<bytes>|<parts>|<mounts>|<fstype>|<model>|<stable path>"
 declare -a SSH_FACT_LINKS=()  # "<host>|<by-id or by-path link>|<device>"
 SSH_AGENT_CHECKED=""          # key path that passed the ssh-agent preflight
+NETWORK_RULES_CONFIRMED=""    # set only by Y at the plan (never from a file or the environment)
 
 prov_ssh_label() { echo "existing hosts"; }
 prov_ssh_required_tools() { echo "ssh scp ssh-add"; }
@@ -36,7 +37,7 @@ prov_ssh_disk_keys() {
 }
 
 prov_ssh_param_keys() {
-  echo "SSH_USER SSH_KEY_PATH SSH_PORT SSH_VIA_PRIVATE VM_HOST NODE0_HOST NODE1_HOST NODE2_HOST NETWORK_RULES_CONFIRMED" $(prov_ssh_disk_keys)
+  echo "SSH_USER SSH_KEY_PATH SSH_PORT SSH_VIA_PRIVATE VM_HOST NODE0_HOST NODE1_HOST NODE2_HOST" $(prov_ssh_disk_keys)
 }
 
 # Saved in .install-config.json next to the common parameters.
@@ -86,7 +87,7 @@ prov_ssh_validate_param() {
       [[ "$(head -c 40 "$p" 2>/dev/null)" == *"PRIVATE KEY"* ]] || { err "${p} is not a private SSH key (the file does not start with a PRIVATE KEY header; a .pub file is the public half)."; return 1; } ;;
     SSH_PORT)
       [[ "$v" =~ ^[0-9]{1,5}$ ]] && (( 10#$v >= 1 && 10#$v <= 65535 )) || { err "SSH_PORT '${v}' must be a number from 1 to 65535 (usually 22)."; return 1; } ;;
-    SSH_VIA_PRIVATE|NETWORK_RULES_CONFIRMED)
+    SSH_VIA_PRIVATE)
       [[ "$v" == true || "$v" == false ]] || { err "${key} '${v}' must be true or false."; return 1; } ;;
     DISK_DEV_*)
       [[ "$v" =~ ^/dev/disk/by-(id|path)/[A-Za-z0-9._:+@-]+$ ]] ||
@@ -1387,30 +1388,48 @@ ssh_network_report() {
   [[ "$name" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ && "$net" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
     { echo "(not checked: ${node0} is not a VM of the Google Cloud project ${project} on this machine)"; return 0; }
   local rules
-  rules=$(timeout 20 gcloud compute firewall-rules list --project="$project" \
-    --filter="network~/${net}\$ AND direction=INGRESS AND disabled=false" --format=json 2>/dev/null || echo '[]')
+  local rules errf rules_err="" blocked=""
+  errf=$(mktemp)
+  if ! rules=$(timeout 20 gcloud compute firewall-rules list --project="$project" \
+      --filter="network~/${net}\$ AND direction=INGRESS AND disabled=false" --format=json 2>"$errf"); then
+    rules_err=$(grep -v '^\s*$' "$errf" | head -1 | cut -c1-160); rm -f "$errf"
+    echo "gcloud firewall rules for ${name}: not verifiable (could not read them: ${rules_err:-gcloud failed})."
+    echo "  Check TCP 443, 8443 and 80 from anywhere to ${name} with the network or cloud administrator."
+    return 0
+  fi
+  rm -f "$errf"
   for port in 443 8443 80; do
-    case "$(jq -r --arg p "$port" --arg tags ",${tags}," '
-        def opens($p): (.allowed // []) | any(.IPProtocol == "all" or (.IPProtocol == "tcp" and ((.ports // ["0-65535"]) | any(
+    # allowed only when an allow rule from anywhere reaches the VM and no deny
+    # rule for the port applies to it (priorities are not ranked here: any
+    # matching deny makes the port "blocked or not verifiable").
+    local verdict
+    verdict=$(jq -r --arg p "$port" --arg tags ",${tags}," '
+        def hits($list; $p): ($list // []) | any(.IPProtocol == "all" or (.IPProtocol == "tcp" and ((.ports // ["0-65535"]) | any(
           . as $r | if test("-") then ($r | split("-") | (.[0]|tonumber) <= ($p|tonumber) and ($p|tonumber) <= (.[1]|tonumber)) else $r == $p end))));
-        [ .[] | select(opens($p)) | select((.sourceRanges // []) | index("0.0.0.0/0"))
-          | if (.targetServiceAccounts // []) | length > 0 then "unknown"
+        def targets_vm: if (.targetServiceAccounts // []) | length > 0 then "unknown"
             elif (.targetTags // []) | length == 0 then "yes"
-            elif any(.targetTags[]; . as $t | $tags | contains("," + $t + ",")) then "yes" else empty end ]
-        | if index("yes") then "yes" elif index("unknown") then "unknown" else "no" end' <<< "${rules:-[]}" 2>/dev/null || echo unknown)" in
+            elif any(.targetTags[]; . as $t | $tags | contains("," + $t + ",")) then "yes" else "no" end;
+        ([ .[] | select(hits(.denied; $p)) | targets_vm as $t | select($t != "no") | .name ]) as $deny
+        | ([ .[] | select(hits(.allowed; $p)) | select((.sourceRanges // []) | index("0.0.0.0/0")) | targets_vm ]) as $allow
+        | if ($deny | length) > 0 then "deny:" + ($deny | join(","))
+          elif ($allow | index("yes")) then "yes" elif ($allow | index("unknown")) then "unknown" else "no" end' <<< "${rules:-[]}" 2>/dev/null || echo unknown)
+    case "$verdict" in
       yes) allowed+="${allowed:+, }${port}" ;;
       no) missing+="${missing:+, }${port}" ;;
+      deny:*) blocked+="${blocked:+; }${port} (deny rule ${verdict#deny:})" ;;
       *) unknown+="${unknown:+, }${port}" ;;
     esac
   done
   echo "gcloud firewall rules for ${name} (network ${net}, read-only check):"
   [[ -z "$allowed" ]] || echo "  ✓ allowed from anywhere: TCP ${allowed}"
   [[ -z "$unknown" ]] || echo "  ? not verifiable (rules target service accounts): TCP ${unknown}"
+  [[ -z "$blocked" ]] || echo "  ✗ blocked or not verifiable: TCP ${blocked}"
   if [[ -n "$missing" ]]; then
     echo "  ✗ missing: TCP ${missing} — the UI and the agents cannot connect until they are allowed. To allow them (not done by the installer):"
     echo "      gcloud compute firewall-rules create instana-${name}-https --project=${project} --network=${net} \\"
     echo "        --allow=$(sed -E 's/ //g; s/([0-9]+)/tcp:\1/g' <<< "$missing") --source-ranges=0.0.0.0/0 --target-tags=instana-ui && gcloud compute instances add-tags ${name} --tags=instana-ui --zone=${zone} --project=${project}"
   fi
+  echo "  (only the VPC firewall rules of the network are checked; organization or network firewall policies are not)"
 }
 
 prov_ssh_host_changes() {
@@ -1656,17 +1675,16 @@ prov_ssh_ensure_firewall() {
   done < <(prov_ssh_hosts)
   warn "Ports 80, 443 and 8443$( [[ "${TOPOLOGY:-}" == three-node ]] && echo " and the node-to-node ports" ) can only be tested after Instana is running."
   [[ "$DRY_RUN" != true ]] || return 0
-  [[ "${NETWORK_RULES_CONFIRMED:-}" == true ]] || use_imported NETWORK_RULES_CONFIRMED || true
   # The plan listed these connections and Y at the plan (in a terminal) confirmed them.
   if [[ "${NETWORK_RULES_CONFIRMED:-}" != true && "$(get_state network_rules_confirmed)" == yes ]]; then NETWORK_RULES_CONFIRMED=true; fi
   if [[ "${NETWORK_RULES_CONFIRMED:-}" == true ]]; then
-    ok "Network rules confirmed (NETWORK_RULES_CONFIRMED=true)."
+    ok "Network rules confirmed (Y at the plan)."
     return 0
   fi
   if [[ ! -t 0 ]]; then
     die_with_steps "The network rules listed above are not confirmed, and there is no terminal to ask." \
       "*Why the installation stops: without them the cluster or the UI cannot work, and the installer cannot check them before Instana runs." \
-      "Make sure the rules exist, then confirm them in the input file (\"NETWORK_RULES_CONFIRMED\": \"true\") or run in a terminal:|$(prov_ssh_continue_cmd)"
+      "Make sure the rules exist, then run the installer in a terminal: the plan lists them and Y confirms them (a file cannot):|$(prov_ssh_continue_cmd)"
   fi
   prompt_yes_no "Are these network rules in place?" N ||
     die_with_steps "The network rules listed above are not confirmed." \
