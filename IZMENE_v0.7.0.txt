@@ -637,3 +637,23 @@ and every answer was lost.
   stay inside phase 12 as before.
 - Tests: test-dry-run.sh (result after "All required phases completed", once,
   last line; Total time once); mutants killed.
+
+2026-10-20 — UX v3: review follow-ups
+- GCP plan, "Creates" line: the pd-ssd boot disks are counted too (billed
+  like the data disks): single-node "1 VM + 5 disks (1300 GB pd-ssd incl.
+  100 GB boot)" (production 3800 GB), three-node "3 VMs + 7 disks (4510 GB
+  pd-ssd incl. 3 × 270 GB boot)".
+- Left arrow on an empty answer: the key after it is now read by the
+  installer itself (Enter = back, Backspace = remove the "<", another arrow
+  ignored, anything else continues the answer), not by readline. Typed at
+  human speed, arrow + Backspace + x gave "<x" in a review run; now it gives x.
+- Dry-run target: older saved answers without PROVIDER but with GCP_PROJECT
+  count as GCP (the question is not asked; "existing hosts" would not match
+  them).
+- Existing hosts: the final hint says --destroy only forgets the deployment
+  (local state only; the hosts are not changed), also in .install-report.txt.
+- Existing hosts, plan: the yellow changes line also names k3s and, for
+  three-node, the root SSH key between the nodes.
+- Tests: test-answer-keys.sh 5 (keys 0.4 s apart), test-dry-run.sh (boot
+  disks, three-node changes line), test-start-flow.sh (older saved GCP
+  answers, final hint per target).

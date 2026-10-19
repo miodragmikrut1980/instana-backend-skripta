@@ -4,7 +4,8 @@
 # An answer "RAW:<python bytes literal body>" is sent as is, without Enter,
 # e.g. RAW:\x1b[D for the left-arrow key, RAW:\x04 for Ctrl+D.
 # The raw transcript is written to DIR/pty.raw, the colour-free one to DIR/pty.txt.
-# PTY_ENV="NAME=value ..." adds environment variables.
+# PTY_ENV="NAME=value ..." adds environment variables; PTY_GAP is the pause
+# (seconds, default 0.8) before the next answer is sent.
 pty_install() {
   local dir="$1"; shift
   ( cd "$dir" && env -u STY -u TMUX TERM=xterm ${PTY_ENV:-} python3 - "${PTY_ARGS:-}" "$@" <<'PY'
@@ -25,7 +26,7 @@ while time.time() < end:
         if not b:
             break
         out += b; last = time.time()
-    elif answers and time.time() - last > 0.8:
+    elif answers and time.time() - last > float(os.environ.get("PTY_GAP", "0.8")):
         a = answers.pop(0)
         if a.startswith("RAW:"):
             data = ast.literal_eval("b'" + a[4:] + "'")

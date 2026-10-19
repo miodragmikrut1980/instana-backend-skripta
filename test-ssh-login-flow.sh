@@ -220,7 +220,7 @@ has "--allow=tcp:8443,tcp:80"
 # (a real run's start line; a dry-run shows its own)
 ( cd "$CASE"; set --; source ./install.sh; INSTANA_PROVIDER=ssh resolve_provider; provider_text start_line ) |
   grep -q "Y approves the changes on the host(s) listed above and confirms the network connections listed" || fail "start line"
-has "Changes on the host(s): formats 4 blank data disk(s), kernel settings + a REBOOT of each host, UFW firewall on — Y approves (list below)"
+has "Changes on the host(s): formats 4 blank data disk(s), kernel settings + a REBOOT of each host, UFW firewall on, k3s installed — Y approves (list below)"
 has "Hosts     10.0.0.5 ("
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_ROOT/bin/gcloud"
 echo "PASS: the plan lists host changes and checks the firewall rules read-only"

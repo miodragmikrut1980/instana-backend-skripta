@@ -325,7 +325,8 @@ start_menu() {
 dry_run_target_needed() {
   [[ -t 0 && -z "${INSTANA_PROVIDER:-}" && -z "${INPUT_CONFIG:-}" ]] || return 1
   [[ ! -f "$STATE_FILE" ]] || [[ -z "$(jq -r '.provider // (if .gcp_project then "gcp" else empty end)' "$STATE_FILE" 2>/dev/null)" ]] || return 1
-  [[ ! -f "$CONFIG_FILE" ]] || [[ -z "$(jq -r '.parameters.PROVIDER // empty' "$CONFIG_FILE" 2>/dev/null)" ]] || return 1
+  # Saved answers decide too; older ones without PROVIDER but with GCP_PROJECT are GCP.
+  [[ ! -f "$CONFIG_FILE" ]] || [[ -z "$(jq -r '.parameters.PROVIDER // (if .parameters.GCP_PROJECT then "gcp" else empty end)' "$CONFIG_FILE" 2>/dev/null)" ]] || return 1
 }
 
 # ask_dry_run_target BACK — sets INSTANA_PROVIDER; returns 1 for "back"
@@ -507,14 +508,15 @@ show_more_help() {
 
 # read_answer VAR PROMPT [BACK] — reads one typed answer into VAR.
 # Returns 1 at the end of the input and, with BACK=1, 3 for "back": < and
-# Enter. On a terminal the left-arrow key on an empty answer writes the <
-# (Enter then goes back; Backspace takes it away), so "arrow, <, Enter" and
+# Enter. On a terminal the left-arrow key on an empty answer shows a <; the
+# next key is read here (Enter goes back, Backspace takes it away, anything
+# else continues the answer in readline), so "arrow, <, Enter" and
 # "arrow, Enter" both go back exactly one question. "?" and Enter shows the
 # longer help and asks again. On a terminal the answer is edited with
 # readline (arrows, Backspace, Tab completes paths). Escape sequences of
 # special keys never reach the answer.
 read_answer() {
-  local __var="$1" __p="$2" __back="${3:-0}" __v __first __rest __arrow __pre __backre='^[<]+$'
+  local __var="$1" __p="$2" __back="${3:-0}" __v __first __rest __arrow __pre __k __backre='^[<]+$'
   while true; do
     __v="" __arrow=0 __pre=""
     if [[ ! -t 0 ]]; then
@@ -524,7 +526,19 @@ read_answer() {
       IFS= read -rsn1 __first || { echo "" >&2; return 1; }
       if [[ "$__first" == $'\e' ]]; then
         __rest=$(read_key_rest)
-        [[ "$__rest" != "[D" && "$__rest" != "OD" ]] || __pre="<"     # other keys: ignored
+        if [[ "$__rest" != "[D" && "$__rest" != "OD" ]]; then printf '\r\033[K' >&2; continue; fi   # other keys: ignored
+        # Left arrow: "<" is shown; the next key decides (read here, not by
+        # readline, so Backspace works the same at any typing speed).
+        printf '<' >&2
+        while IFS= read -rsn1 __k || { echo "" >&2; return 1; }; do
+          case "$__k" in
+            "") echo "" >&2; return 3 ;;                                  # Enter: back
+            $'\x7f'|$'\b') break ;;                                        # Backspace: undo
+            $'\e') read_key_rest >/dev/null ;;                             # another special key: ignored
+            *) __pre="<${__k}"; break ;;
+          esac
+        done
+        if [[ -z "$__pre" ]]; then printf '\r\033[K' >&2; continue; fi
       elif [[ "$__first" != $'\x7f' && "$__first" != $'\b' ]]; then
         __pre="$__first"
       fi
@@ -2642,7 +2656,8 @@ print_final_report() {
       "$external_ip" "otlp-http.${BASE_DOMAIN}" \
       "$external_ip" "otlp-grpc.${BASE_DOMAIN}"
     echo "  Kubernetes checks on the VM: sudo kubectl get nodes; sudo kubectl get pods -A"
-    echo "  Destroy: ./install.sh --destroy"
+    if [[ "$(provider_name)" == ssh ]]; then echo "  Forget this deployment (local state only; the hosts are not changed): ./install.sh --destroy"
+    else echo "  Destroy: ./install.sh --destroy"; fi
   } > "$REPORT_FILE" 2>/dev/null || true
   [[ "$DRY_RUN" != true ]] || rm -f "$REPORT_FILE"
 }
@@ -2692,7 +2707,11 @@ print_final_summary() {
   echo "    sudo kubectl get nodes"
   echo "    sudo kubectl get pods -A"
   echo ""
-  echo -e "  To destroy all resources: ${CYAN}./install.sh --destroy${RESET}"
+  if [[ "$(provider_name)" == ssh ]]; then
+    echo -e "  To forget this deployment (local state only; the hosts are not changed): ${CYAN}./install.sh --destroy${RESET}"
+  else
+    echo -e "  To destroy all resources: ${CYAN}./install.sh --destroy${RESET}"
+  fi
   echo -e "  Show this report again:   ${CYAN}./install.sh --report${RESET}   (saved in ${REPORT_FILE})"
   echo ""
   # Inside a screen session the window closes when the installer ends and the

@@ -1357,7 +1357,9 @@ prov_ssh_plan_key_lines() {
     return 0
   fi
   for node in $(prov_ssh_nodes); do for role in $(prov_ssh_roles_for "$node"); do (( ++disks )); done; done
-  plan_warn "Changes on the host(s): formats ${disks} blank data disk(s), kernel settings + a REBOOT of each host, UFW firewall on — Y approves (list below)"
+  local extra=""
+  [[ "${TOPOLOGY:-}" != three-node ]] || extra=", root SSH key between the nodes"
+  plan_warn "Changes on the host(s): formats ${disks} blank data disk(s), kernel settings + a REBOOT of each host, UFW firewall on${extra}, k3s installed — Y approves (list below)"
 }
 
 prov_ssh_plan_target_lines() {

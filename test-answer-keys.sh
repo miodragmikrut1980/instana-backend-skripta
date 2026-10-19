@@ -76,4 +76,22 @@ grep -q 'RESULT\[abc\]' "$OUT" || fail "secret value: $(grep RESULT "$OUT" | cat
 grep -q "\[< Enter = back\]" "$OUT" || fail "a secret must say how to go back"
 echo "PASS: arrow keys inside a secret are ignored"
 
+# 5. Keys typed at human speed (one key every 0.4 s): Backspace after the
+#    arrow removes the "<"; arrow + Enter, arrow + < + Enter and a second
+#    arrow + Enter go back.
+newcase paced
+cat > "$CASE/drv.sh" <<'EOF'
+set --; source ./install.sh
+NAV_ON=1
+for i in 1 2 3 4 5; do rc=0; v=$(prompt X "Name" "def") || rc=$?; echo "RESULT[$v] rc=$rc"; done
+EOF
+PTY_GAP=0.4 PTY_SCRIPT=./drv.sh pty_install "$CASE" 'RAW:\x1b[D' 'RAW:\x7f' 'RAW:x' 'RAW:\n' \
+  'RAW:\x1b[D' 'RAW:\n' 'RAW:\x1b[D' 'RAW:<' 'RAW:\n' 'RAW:\x1b[D' 'RAW:\x1b[D' 'RAW:\n' \
+  'RAW:\x1b[D' 'RAW:\x08' 'RAW:y' 'RAW:\n'
+OUT="$CASE/pty.txt"
+mapfile -t res < <(grep -o 'RESULT\[[^]]*\] rc=[0-9]' "$OUT")
+expected=("RESULT[x] rc=0" "RESULT[] rc=3" "RESULT[] rc=3" "RESULT[] rc=3" "RESULT[y] rc=0")
+[[ "${res[*]}" == "${expected[*]}" ]] || fail "paced keys, got: ${res[*]}"
+echo "PASS: at human typing speed Backspace undoes the arrow and Enter after it goes back"
+
 echo "All answer-key tests passed."

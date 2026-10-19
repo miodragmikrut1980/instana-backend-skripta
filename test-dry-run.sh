@@ -106,6 +106,7 @@ run_case() {
       grep -q 'ssh .* -p 2222 -l ubuntu -- 10.0.0.5 ' "$SSH_LOG"
     fi
     if [[ "$name" == multi_airgapped_ssh ]]; then
+      grep -q 'UFW firewall on, root SSH key between the nodes, k3s installed — Y approves' output.txt
       grep -q 'objects disk:                /dev/disk/by-id/scsi-0Disk_10.0.0.11_sdc → /mnt/instana/stanctl/objects' output.txt
       grep -q 'analytics disk:              /dev/disk/by-id/scsi-0Disk_10.0.0.12_sdd → /mnt/instana/stanctl/analytics' output.txt
       test "$(grep -c '\[INFO\].*Formatting and mounting' output.txt)" -eq 4
@@ -113,11 +114,11 @@ run_case() {
     if [[ "$name" == single_online ]]; then
       grep -q '^  Where     test-project / ' output.txt || grep -q '^  Where     ' output.txt
       grep -q '^  VM        instana-backend  ' output.txt
-      grep -q 'Creates: 1 VM + 4 disks (1200 GB pd-ssd), firewall rules if missing — billed until removed (./install.sh → Clean up a lab)' output.txt
+      grep -q 'Creates: 1 VM + 5 disks (1300 GB pd-ssd incl. 100 GB boot), firewall rules if missing — billed until removed (./install.sh → Clean up a lab)' output.txt
       grep -q 'Installation Plan: single-node demo, online — Google Cloud' output.txt
     fi
     if [[ "$name" == multi_online ]]; then
-      grep -q 'Creates: 3 VMs + 4 disks (3700 GB pd-ssd) + firewall rules' output.txt
+      grep -q 'Creates: 3 VMs + 7 disks (4510 GB pd-ssd incl. 3 × 270 GB boot) + firewall rules' output.txt
       test "$(grep -c '\[INFO\].*Creating VM:' output.txt)" -eq 3
       test "$(grep -c '\[INFO\].*Creating disk ' output.txt)" -eq 4
       test "$(grep -c '\[INFO\].*Formatting and mounting' output.txt)" -eq 4

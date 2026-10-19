@@ -141,6 +141,13 @@ CASE="$TEST_ROOT/dryset"; mkdir -p "$CASE"; cp -R "$SRC"/*.sh "$SRC/providers" "
 PATH="$TEST_ROOT/bin:$PATH" PTY_ENV="INSTANA_PROVIDER=gcp" PTY_ARGS=--dry-run pty_install "$CASE"
 if grep -q "Dry-run for:" "$CASE/pty.txt"; then fail "the target must not be asked when INSTANA_PROVIDER is set"; fi
 grep -q "Dry-run mode — no GCP resources will be created" "$CASE/pty.txt" || fail "GCP dry-run banner"
+# Older saved answers without PROVIDER but with GCP values mean GCP: not asked.
+CASE="$TEST_ROOT/dryold"; mkdir -p "$CASE"; cp -R "$SRC"/*.sh "$SRC/providers" "$CASE/"
+jq -n '{schema_version:1, parameters:{GCP_PROJECT:"my-proj-123", GCP_ZONE:"europe-west6-b", TOPOLOGY:"single-node"}}' > "$CASE/.install-config.json"
+chmod 600 "$CASE/.install-config.json"
+PATH="$TEST_ROOT/bin:$PATH" PTY_ARGS=--dry-run pty_install "$CASE"
+if grep -q "Dry-run for:" "$CASE/pty.txt"; then fail "saved GCP answers without PROVIDER must not ask the target"; fi
+grep -q "Dry-run mode — no GCP resources will be created" "$CASE/pty.txt" || fail "saved GCP answers: GCP dry-run"
 echo "PASS: --dry-run asks the target in a terminal, not when it is already set"
 
 # 9. Enter at the running-session question reattaches.
@@ -150,5 +157,17 @@ rm -f "$TEST_ROOT/sessions"
 grep -q "Select \[1-2, Enter = 1\]" "$OUT" || fail "Enter = 1 at the running session"
 grep -q "SCREEN-ARGS: -d -r 12345.instana-101532" "$TEST_ROOT/screen.log" || fail "Enter must reattach"
 echo "PASS: Enter at the running-session question reattaches"
+
+# 10. The final hint for existing hosts says that --destroy only forgets.
+CASE="$TEST_ROOT/final"; mkdir -p "$CASE"; cp -R "$SRC"/*.sh "$SRC/providers" "$CASE/"
+for p in ssh gcp; do
+  ( cd "$CASE"; set --; source ./install.sh; INSTANA_PROVIDER=$p resolve_provider; DRY_RUN=false
+    UNIT_NAME=u TENANT_NAME=t BASE_DOMAIN=lab.example.com FINAL_UI_IP=203.0.113.5 RUN_STARTED_AT=now
+    print_final_summary < /dev/null ) > "$CASE/$p.txt" 2>&1 || true
+done
+grep -q "To forget this deployment (local state only; the hosts are not changed): ./install.sh --destroy" "$CASE/ssh.txt" || { cat "$CASE/ssh.txt" >&2; fail "ssh final hint"; }
+if grep -q "To destroy all resources" "$CASE/ssh.txt"; then fail "ssh: no resources are destroyed"; fi
+grep -q "To destroy all resources: ./install.sh --destroy" "$CASE/gcp.txt" || { cat "$CASE/gcp.txt" >&2; fail "gcp final hint"; }
+echo "PASS: the final hint says what --destroy does for each target"
 
 echo "All start-flow tests passed."

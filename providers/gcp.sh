@@ -42,11 +42,13 @@ prov_gcp_plan_key_lines() {
     fi
     return 0
   fi
+  # Data disks plus the pd-ssd boot disk of every VM (100 GB; 270 GB per node
+  # in the three-node lab), all billed while they exist.
   if [[ "$TOPOLOGY" == three-node ]]; then
-    plan_warn "Creates: 3 VMs + 4 disks (3700 GB pd-ssd) + firewall rules — billed until removed (./install.sh → Clean up a lab)"
+    plan_warn "Creates: 3 VMs + 7 disks (4510 GB pd-ssd incl. 3 × 270 GB boot) + firewall rules — billed until removed (./install.sh → Clean up a lab)"
   else
     if [[ "$INSTALL_TYPE" == production ]]; then gb=3700; else gb=1200; fi
-    plan_warn "Creates: 1 VM + 4 disks (${gb} GB pd-ssd), firewall rules if missing — billed until removed (./install.sh → Clean up a lab)"
+    plan_warn "Creates: 1 VM + 5 disks ($(( gb + ${BOOT_SIZE_GB:-100} )) GB pd-ssd incl. ${BOOT_SIZE_GB:-100} GB boot), firewall rules if missing — billed until removed (./install.sh → Clean up a lab)"
   fi
 }
 
