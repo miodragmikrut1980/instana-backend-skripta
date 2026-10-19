@@ -5,6 +5,7 @@
 #   <host>.err    stderr of a failing call
 #   <host>.zero   answer to the pre-format zero check (default ZEROCHECK:0:0)
 #   <host>.zerorc exit code of the pre-format zero check (the read fails)
+#   <host>.deny-user-<user>, deny-key-<key file name>  login refused (exit 255)
 # Every call is appended to $SSH_LOG (one line, arguments joined by spaces).
 ssh_fakes_setup() {
   FAKE_ROOT="$(mktemp -d)"
@@ -14,7 +15,17 @@ ssh_fakes_setup() {
   cat > "$FAKE_ROOT/bin/ssh" <<'FAKE'
 #!/usr/bin/env bash
 echo "ssh $*" >> "$SSH_LOG"
-host=""; prev=""; for a in "$@"; do [[ "$prev" == "--" && -z "$host" ]] && host="$a"; prev="$a"; done
+host=""; prev=""; user=""; key=""
+for a in "$@"; do
+  [[ "$prev" == "--" && -z "$host" ]] && host="$a"
+  [[ "$prev" == "-l" ]] && user="$a"
+  [[ "$prev" == "-i" ]] && key="${a##*/}"
+  prev="$a"
+done
+# Login refused for one user or one key: <host>.deny-user-<user>, deny-key-<key file name>.
+if [[ -f "$SCEN/$host.deny-user-$user" || -f "$SCEN/deny-key-$key" ]]; then
+  echo "${user}@${host}: Permission denied (publickey)." >&2; exit 255
+fi
 echo "$host" >> "$SCEN/known"   # accept-new: the host key is now known
 cmd="${!#}"
 rc=0; [[ -f "$SCEN/$host.rc" ]] && rc=$(cat "$SCEN/$host.rc")

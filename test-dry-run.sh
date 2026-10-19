@@ -35,6 +35,9 @@ source "$SCRIPT_DIR/test-ssh-lib.inc"
 ssh_fakes_setup
 trap 'rm -rf "$TEST_ROOT" "$FAKE_ROOT"' EXIT
 for h in 10.0.0.5 10.0.0.11 10.0.0.12 10.0.0.13; do host_facts "$h"; done
+# The login is found by trying the keys of this folder (not the real ~/.ssh).
+mkdir -p "$FAKE_ROOT/sshdir"; cp "$FAKE_KEY" "$FAKE_ROOT/sshdir/id_ed25519"
+export INSTANA_SSH_DIR="$FAKE_ROOT/sshdir"
 
 run_case() {
   local name="$1" input="$2" provider="${3:-}"
@@ -128,10 +131,11 @@ AIR_TO_ONLINE=$'1\n1\n2\n1\n\ninstana-backend\ninstana.example.com\ntenant0\nuni
 run_case single_airgapped_to_online "$AIR_TO_ONLINE"
 
 # Existing hosts: no Ubuntu image, SSH CIDR or size questions; one disk per data directory.
-SSH_SINGLE=$'1\n1\n1\n1\n10.0.0.5\nubuntu\n'"$FAKE_KEY"$'\n2222\nlab-host\n1\n1\n1\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\ny'
+# Hosts first (1 address = single-node, host:port), the detected login (Enter), mode, type.
+SSH_SINGLE=$'1\n10.0.0.5:2222\n\n1\n1\n1\n1\n1\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\ny'
 run_case single_online_ssh "$SSH_SINGLE" ssh
 
-SSH_AIR_MULTI=$'1\n2\n2\n10.0.0.11\n10.0.0.12\n10.0.0.13\nubuntu\n'"$FAKE_KEY"$'\n22\n1\nnode-a\nnode-b\nnode-c\n1\n1\n1\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n1\ny'
+SSH_AIR_MULTI=$'1\n10.0.0.11 10.0.0.12 10.0.0.13\n\n2\n1\n1\n1\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n1\ny'
 run_case multi_airgapped_ssh "$SSH_AIR_MULTI" ssh
 
 echo "All dry-run smoke tests passed."

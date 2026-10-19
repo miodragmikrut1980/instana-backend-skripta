@@ -295,3 +295,34 @@ by cancelling the whole run.
 - Tests: test-nav-back.sh (block keeps values, passing over the package
   block, changed connectivity, file-mode defaults), test-input-reask.sh
   (no "back" after the wizard).
+
+2026-10-19 — UX v2, step 4: existing hosts — hosts first, login found, retry
+Why: a wrong or unknown address, user or key used to stop the run in phase 1
+and every answer was lost.
+- Typed answers start with the host(s): a list of the running VMs of the
+  gcloud project (name, internal and external IP, zone, machine type; the
+  control machine is never listed) and of the Host entries in ~/.ssh/config,
+  or typed addresses (host:port for another SSH port). 1 host = single-node,
+  3 hosts = three-node (node 0 first); the topology is not asked.
+- The login is found by trying the local private keys (agent-loaded and
+  passphrase-free first; passphrase keys that are not in ssh-agent are
+  skipped and named) with the users ubuntu and the local login name, at most
+  6 tries of 5 s on the first host. "Use detected login" is confirmed with
+  Enter, c changes user/key/port, < goes back.
+- The read-only host checks (OS, CPU, RAM, sudo, Kubernetes, firewalld,
+  disks) run right after the login and are shown as a table.
+- Any failure (no answer, port closed, key refused, changed host key, a
+  failed check) is explained with an "ssh -v" command and offers: re-enter
+  the address / choose from the list / change the login / check again /
+  cancel — no stop, no lost answers.
+- Private or public addresses are derived from the address (also
+  three-node; no more "false/true" question). Node names are the hosts' own
+  names (made unique), not asked; E at the plan changes them.
+- The install type is suggested from CPU, RAM and the unused disks, with
+  the reason; production on a host that is too small is explained and
+  asked again.
+- Changing the hosts with "<" re-asks what depends on them (login check,
+  names, disks, type); facts read with the same login are reused.
+- Runs from a file keep the earlier per-value questions.
+- Tests: new test-ssh-login-flow.sh (10 cases); test-dry-run.sh existing-host
+  inputs (hosts first, login = Enter); the fake ssh can refuse a user or a key.

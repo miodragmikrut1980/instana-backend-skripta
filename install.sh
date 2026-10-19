@@ -434,7 +434,8 @@ prompt_choice() {
   local i=1
   for opt in "${options[@]}"; do
     echo "  $i) $opt" >&2
-    [[ -z "$def" || "$opt" != "$def" || "$def_i" != 0 ]] || def_i=$i
+    # The default matches an option exactly or its first word ("demo" → "demo (suggested)").
+    [[ -z "$def" || "$def_i" != 0 ]] || [[ "$opt" != "$def" && "$opt" != "$def "* ]] || def_i=$i
     (( i++ ))
   done
   local choice range="1-${#options[@]}"
@@ -606,7 +607,7 @@ use_provider_default_name() {
 # something they depend on changed; there is no "<" inside them.
 NAV_ON=0; NAV_BACK=0; NAV_ASKED=0; WIZ_EXIT=done; WIZ_ACTIVE=0
 declare -A WIZ_DONE=()
-WIZ_STEPS=(wiz_topology wiz_mode wiz_type wiz_ubuntu wiz_location wiz_cidr
+WIZ_STEPS=(wiz_ssh_hosts wiz_ssh_login wiz_topology wiz_mode wiz_type wiz_ubuntu wiz_location wiz_cidr
   wiz_vm_name wiz_node0_name wiz_node1_name wiz_node2_name wiz_size wiz_host_params
   wiz_domain wiz_tenant wiz_unit wiz_admin_password wiz_download_key wiz_agent_key
   wiz_sales_key wiz_airgap wiz_versions wiz_tls wiz_tls_crt wiz_tls_key)
@@ -632,6 +633,8 @@ ask_choice() {
 # Keys a step sets (compared before/after a revisit to find a changed answer).
 wiz_keys() {
   case "$1" in
+    wiz_ssh_hosts) echo TOPOLOGY VM_HOST NODE0_HOST NODE1_HOST NODE2_HOST ;;
+    wiz_ssh_login) echo SSH_USER SSH_KEY_PATH SSH_PORT ;;
     wiz_topology) echo TOPOLOGY ;;
     wiz_mode) echo INSTALL_MODE ;;
     wiz_type) echo INSTALL_TYPE ;;
@@ -647,6 +650,8 @@ wiz_keys() {
 wiz_dependents() {
   local v
   case "$1" in
+    wiz_ssh_hosts) echo INSTALL_TYPE VM_NAME NODE0_NAME NODE1_NAME NODE2_NAME SSH_VIA_PRIVATE done:host_params ;;
+    wiz_ssh_login) echo done:host_params ;;
     wiz_topology)
       echo INSTALL_TYPE VM_NAME NODE0_NAME NODE1_NAME NODE2_NAME SIZE SIZE_CHOICE VM_CPUS VM_RAM_GB done:host_params
       if [[ "$(provider_name)" == ssh ]]; then echo VM_HOST NODE0_HOST NODE1_HOST NODE2_HOST SSH_VIA_PRIVATE done:location; fi ;;
@@ -660,7 +665,7 @@ wiz_dependents() {
     wiz_download_key) echo done:versions done:airgap ;;
     wiz_tls) echo TLS_CRT_PATH TLS_KEY_PATH ;;
   esac
-  case "$1" in wiz_topology|wiz_type|wiz_location) for v in $(compgen -v DISK_DEV_ || true); do echo "$v"; done ;; esac
+  case "$1" in wiz_ssh_hosts|wiz_topology|wiz_type|wiz_location) for v in $(compgen -v DISK_DEV_ || true); do echo "$v"; done ;; esac
 }
 
 wiz_snapshot() {
@@ -712,6 +717,8 @@ wiz_run() {
 
 wiz_topology() {
   use_imported TOPOLOGY && return 0
+  # Existing hosts, typed answers: 1 host = single-node, 3 = three-node.
+  [[ "$(provider_name)" != ssh || "$PARAMS_SOURCE" == import || -z "${TOPOLOGY:-}" ]] || return 0
   local -a topo_hint
   mapfile -t topo_hint < <(provider_text_or topology_hint \
     "single-node: everything on one VM (labs, demos, small setups)." \
@@ -722,8 +729,11 @@ wiz_topology() {
 
 wiz_mode() {
   use_imported INSTALL_MODE && return 0
-  hint "online: the Instana VM downloads stanctl and images from the Instana repository itself (simplest)." \
-       "air-gapped: everything comes from one instana-airgapped.tar.gz package; you will be guided to obtain or build it."
+  local -a mode_hint
+  mapfile -t mode_hint < <(provider_text_or mode_hint \
+    "online: the Instana VM downloads stanctl and images from the Instana repository itself (simplest)." \
+    "air-gapped: everything comes from one instana-airgapped.tar.gz package; you will be guided to obtain or build it.")
+  hint "${mode_hint[@]}"
   ASK_DEFAULT=online ask_choice INSTALL_MODE "Select installation connectivity mode:" "online" "air-gapped"
 }
 
@@ -734,6 +744,19 @@ wiz_type() {
     return 0
   fi
   use_imported INSTALL_TYPE && return 0
+  local suggested=demo why=""
+  if [[ "$(provider_name)" == ssh && -n "${VM_HOST:-}" ]] && declare -F ssh_type_suggestion >/dev/null; then
+    read -r suggested why <<< "$(ssh_type_suggestion "$VM_HOST")"
+    hint "Suggested from the checks above: ${suggested}." "Why: ${why}"
+    while true; do
+      ASK_DEFAULT=$suggested ask_choice INSTALL_TYPE "Select installation type:" "demo$([[ $suggested == demo ]] && echo ' (suggested)')" "production$([[ $suggested == production ]] && echo ' (suggested)')"
+      INSTALL_TYPE="${INSTALL_TYPE%% *}"
+      (( NAV_BACK == 0 )) || return 0
+      [[ "$INSTALL_TYPE" == production && "$suggested" == demo ]] || return 0
+      warn "This host is too small for production (${why}); the installation would stop at the host checks. Choose demo, or < to pick another host."
+      INSTALL_TYPE=""
+    done
+  fi
   hint "demo: smaller disks/resources for evaluation. production: IBM-sized disks (larger, more expensive)."
   ASK_DEFAULT=demo ask_choice INSTALL_TYPE "Select installation type:" "demo" "production"
 }
@@ -757,6 +780,8 @@ wiz_ubuntu() {
 # and the SSH login). Asked as one block; "<" is not offered inside it yet.
 wiz_location() {
   if [[ "$(provider_name)" == gcp ]]; then provider_collect_location_params; return 0; fi
+  # Existing hosts, typed answers: done by wiz_ssh_hosts and wiz_ssh_login.
+  [[ "$PARAMS_SOURCE" == import ]] || return 0
   [[ -z "${WIZ_DONE[location]:-}" || "${WIZ_REVISIT:-}" == wiz_location ]] || return 0
   local NAV_ON=0
   provider_collect_location_params
@@ -777,6 +802,7 @@ wiz_cidr() {
 wiz_vm_name() {
   [[ "$TOPOLOGY" == "single-node" ]] || return 0
   use_imported VM_NAME || use_provider_default_name VM_NAME default_vm_name && return 0
+  wiz_host_name VM_NAME default_vm_name && return 0
   local -a name_hint
   mapfile -t name_hint < <(provider_text_or vm_name_hint \
     "Name of the new VM in GCP; the four data disks will be named <vm>-analytics/-metrics/-objects/-data." \
@@ -785,11 +811,31 @@ wiz_vm_name() {
   prompt_required "VM_NAME" "VM name" "$(provider_text_or default_vm_name instana-backend)" validate_new_vm_name VM_NAME
 }
 
+# Existing hosts, typed answers: the name is the host's own short name (made
+# unique among the nodes), not asked; the plan shows it, E changes it.
+wiz_host_name() {
+  local var="$1" name n=2 other dup
+  [[ "$(provider_name)" == ssh && "$PARAMS_SOURCE" != import && "${EDIT_KEY:-}" != "$var" ]] || return 1
+  [[ -z "${!var:-}" ]] || return 0
+  name=$(provider_text "$2")
+  validate_vm_name "$name" "$var" >/dev/null 2>&1 || return 1
+  local base="$name"
+  while true; do
+    dup=false
+    for other in NODE0_NAME NODE1_NAME; do [[ "$other" < "$var" && "${!other:-}" == "$name" ]] && dup=true; done
+    [[ "$dup" == true ]] || break
+    name="${base}-${n}"; (( ++n ))
+  done
+  printf -v "$var" '%s' "$name"
+  log "${var} = ${name} (the host's own name; E at the plan changes it)"
+}
+
 # wiz_node_name N LABEL — one of the three node names.
 wiz_node_name() {
   local n="$1" label="$2" var="NODE${1}_NAME"
   [[ "$TOPOLOGY" == "three-node" ]] || return 0
   use_imported "$var" || use_provider_default_name "$var" "default_node${n}_name" && return 0
+  wiz_host_name "$var" "default_node${n}_name" && return 0
   [[ "$n" != 0 ]] ||
     hint "$(provider_text_or node_names_hint "Names of the three new VMs. Node 0 runs the backend and stanctl, node 1 the data stores, node 2 the rest.")"
   prompt_required "$var" "$label" "$(provider_text_or "default_node${n}_name" "instana-${n}")" validate_node_name "$var"

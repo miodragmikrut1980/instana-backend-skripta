@@ -364,6 +364,14 @@ prov_ssh_gather_facts() {
   out=$(prov_ssh_ssh_probe "$host" "" "" 60 15 "$SSH_FACTS_SCRIPT" 2>"$errf") || rc=$?
   if (( rc != 0 )) || [[ "$out" != *"FACTS_END=1"* ]]; then
     local msg; msg=$(grep -v '^\s*$' "$errf" | head -3 | paste -sd' ' -); rm -f "$errf"
+    # In the questions a failure is offered for retry (SSH_SOFT=1), not a stop.
+    if [[ "${SSH_SOFT:-0}" == 1 ]]; then
+      if [[ "$msg" == *"IDENTIFICATION HAS CHANGED"* || "$msg" == *"Host key verification failed"* ]]; then
+        SSH_FAIL_REASON="its SSH host key differs from the one recorded in ${SSH_KNOWN_HOSTS_FILE} (another machine behind this address, or a reinstalled host). If it was reinstalled on purpose: ssh-keygen -R ${host} -f $(prov_ssh_q "$SSH_KNOWN_HOSTS_FILE")"
+      elif (( rc == 124 )); then SSH_FAIL_REASON="no answer within 60 seconds${msg:+ (${msg})}"
+      else SSH_FAIL_REASON="the read-only checks over SSH failed: ${msg:-exit code ${rc}}"; fi
+      return 1
+    fi
     if [[ "$msg" == *"IDENTIFICATION HAS CHANGED"* || "$msg" == *"Host key verification failed"* ]]; then
       host_stop "$host" "its SSH host key differs from the key recorded when the installer first connected (${SSH_KNOWN_HOSTS_FILE})." \
         "a changed host key means the address now leads to another machine, or the host was reinstalled; continuing could install on the wrong machine." \
@@ -399,6 +407,7 @@ prov_ssh_gather_facts() {
     esac
   done <<< "$out"
   SSH_FACT["${host}|GATHERED"]=1
+  SSH_FACT["${host}|LOGIN"]="${SSH_USER}|${SSH_KEY_PATH}|${SSH_PORT:-22}"
   local dev bytes parts mounts fstype model stable l target best
   while IFS='|' read -r dev bytes parts mounts fstype model; do
     [[ "$dev" =~ ^/dev/[A-Za-z0-9/_-]+$ && "$bytes" =~ ^[0-9]+$ && "$parts" =~ ^[0-9]+$ ]] || continue
@@ -435,7 +444,9 @@ prov_ssh_known_key() {
   # Nothing recorded yet is a normal answer (first contact), not an error.
   { ssh-keygen -l -F "$name" -f "$SSH_KNOWN_HOSTS_FILE" 2>/dev/null | grep -v '^#' | head -1; } || true
 }
-prov_ssh_ensure_facts() { [[ -n "${SSH_FACT["$1|GATHERED"]:-}" ]] || prov_ssh_gather_facts "$1"; }
+prov_ssh_ensure_facts() {
+  [[ -n "${SSH_FACT["$1|GATHERED"]:-}" && "${SSH_FACT["$1|LOGIN"]:-}" == "${SSH_USER}|${SSH_KEY_PATH}|${SSH_PORT:-22}" ]] || prov_ssh_gather_facts "$1"
+}
 
 # Ubuntu image name the rest of the installer and the plan use.
 prov_ssh_ubuntu_version() {
@@ -523,6 +534,384 @@ prov_ssh_collect_location_params() {
     ok "${host}: $(prov_ssh_fact "$host" OS_NAME), $(prov_ssh_fact "$host" CPUS) vCPUs, $(( $(prov_ssh_fact "$host" MEM_KB) / 1000000 )) GB RAM, hostname $(prov_ssh_fact "$host" HOSTNAME)."
   done < <(prov_ssh_hosts)
   UBUNTU_VERSION=$(prov_ssh_ubuntu_version "$(prov_ssh_hosts | head -1)")
+}
+
+# ── Typed answers (UX v2): hosts first, then the login, then early checks ────
+# Hosts are picked from a list (running VMs of the gcloud project, Host entries
+# of ~/.ssh/config) or typed; 1 host = single-node, 3 = three-node. The login
+# is found by trying the local keys and the usual users on the first host; the
+# read-only host checks run right after it. Every failure offers: re-enter the
+# address / choose from the list / change the login / cancel — never a stop.
+SSH_HOSTS_TYPE_FIRST=0   # "re-enter the address": skip the list once
+SSH_LOGIN_OK=""          # "hosts|user|key|port" of the last verified login
+
+ssh_dir() { printf '%s' "${INSTANA_SSH_DIR:-$HOME/.ssh}"; }
+
+ssh_current_hosts() {
+  if [[ "${TOPOLOGY:-}" == three-node ]]; then printf '%s %s %s' "${NODE0_HOST:-}" "${NODE1_HOST:-}" "${NODE2_HOST:-}"
+  else printf '%s' "${VM_HOST:-}"; fi
+}
+
+# "name|internal|external|zone|machine|source" lines of hosts to offer.
+ssh_host_candidates() {
+  local project line name zone ip nat mt used="" k cfg alias hn
+  for k in VM_HOST NODE0_HOST NODE1_HOST NODE2_HOST; do used+=" ${!k:-}"; done
+  project=$(prov_ssh_gce_project)
+  if [[ -n "$project" ]]; then
+    local here self mine out
+    here=$(! declare -F detect_local_gce_zone >/dev/null || detect_local_gce_zone)
+    self=$(hostname -s 2>/dev/null || true)
+    mine=" $(prov_ssh_local_ips | paste -sd' ' -) "
+    out=$(timeout 20 gcloud compute instances list --project="$project" --filter=status=RUNNING \
+      --format='value(name,zone.basename(),networkInterfaces[0].networkIP,networkInterfaces[0].accessConfigs[0].natIP,machineType.basename())' 2>/dev/null || true)
+    while read -r name zone ip nat mt _; do
+      [[ "$name" =~ ^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$ && "$zone" =~ ^[a-z]+-[a-z]+[0-9]+-[a-z]$ ]] || continue
+      [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] && prov_ssh_host_valid "$ip" || continue
+      [[ "$name" != "$self" && "$mine" != *" $ip "* && "$mine" != *" ${nat:-none} "* ]] || continue
+      [[ "$nat" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || nat="—"
+      [[ "$mt" =~ ^[a-z0-9-]+$ ]] || mt=""
+      printf '%s|%s|%s|%s|%s|%s|%s\n' "$([[ "$zone" == "$here" ]] && echo 0 || echo 1)" "$name" "$ip" "$nat" "$zone" "$mt" "gcloud"
+    done <<< "$out" | sort -t'|' -k1,1 -k2,2 | cut -d'|' -f2-
+  fi
+  cfg="$(ssh_dir)/config"
+  if [[ -f "$cfg" ]]; then
+    awk 'tolower($1)=="host"{for(i=2;i<=NF;i++) print $i}' "$cfg" 2>/dev/null | grep -v '[*?!]' | sort -u | while read -r alias; do
+      [[ "$alias" =~ ^[A-Za-z0-9._-]+$ ]] || continue
+      hn=$(ssh -G "$alias" 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+      prov_ssh_host_valid "${hn:-$alias}" || continue
+      printf '%s|%s|%s|%s|%s|%s\n' "$alias" "${hn:-$alias}" "" "" "" "~/.ssh/config"
+    done
+  fi
+}
+
+# ssh_set_hosts "H1 [H2 H3]" — topology, host keys and an optional :port.
+ssh_set_hosts() {
+  local -a hs; read -r -a hs <<< "$1"
+  local h port="" i
+  for i in "${!hs[@]}"; do
+    h="${hs[$i]}"
+    if [[ "$h" == *:* ]]; then port="${h##*:}"; hs[$i]="${h%:*}"; fi
+  done
+  if (( ${#hs[@]} == 1 )); then TOPOLOGY=single-node; VM_HOST="${hs[0]}"; NODE0_HOST="" NODE1_HOST="" NODE2_HOST=""
+  else TOPOLOGY=three-node; NODE0_HOST="${hs[0]}" NODE1_HOST="${hs[1]}" NODE2_HOST="${hs[2]}"; VM_HOST=""; fi
+  [[ -z "$port" ]] || SSH_PORT="$port"
+}
+
+# Validates a typed host list (1 or 3 distinct addresses, optional :port).
+ssh_validate_host_list() {
+  local -a hs; read -r -a hs <<< "$1"
+  local h seen=" "
+  if (( ${#hs[@]} != 1 && ${#hs[@]} != 3 )); then
+    err "${#hs[@]} addresses given; give 1 (single-node) or 3 (three-node), separated by spaces."; return 1
+  fi
+  for h in "${hs[@]}"; do
+    if [[ "$h" == *:* ]]; then
+      prov_ssh_validate_param SSH_PORT "${h##*:}" || return 1
+      h="${h%:*}"
+    fi
+    prov_ssh_host_valid "$h" || { err "'${h}' is not an IPv4 address or host name (e.g. 10.172.0.9 or instana-0.example.com)."; return 1; }
+    [[ "$seen" != *" $h "* ]] || { err "'${h}' is given twice; each node needs its own host."; return 1; }
+    seen+="$h "
+  done
+}
+
+wiz_ssh_hosts() {
+  [[ "$(provider_name)" == ssh && "$PARAMS_SOURCE" != import ]] || return 0
+  local -a cands; local c i=1 name ip nat zone mt src answer prev tok picked
+  prev=$(ssh_current_hosts | xargs)
+  [[ -n "$prev" || "${CONFIG_LOADED:-false}" != true ]] || prev=$(jq -r '[.parameters.VM_HOST // empty, .parameters.NODE0_HOST // empty, .parameters.NODE1_HOST // empty, .parameters.NODE2_HOST // empty] | map(select(. != "")) | join(" ")' "$CONFIG_FILE" 2>/dev/null || true)
+  mapfile -t cands < <(ssh_host_candidates)
+  NAV_ASKED=1
+  echo "" >&2
+  if (( ${#cands[@]} == 0 || SSH_HOSTS_TYPE_FIRST )); then
+    SSH_HOSTS_TYPE_FIRST=0
+    hint "The machine(s) Instana goes on: 1 address for single-node, 3 for three-node (node 0 first), separated by spaces." \
+         "IPv4 or a DNS name reachable from this machine; host:port for another SSH port."
+    SSH_HOSTS_INPUT="$prev"
+    prompt_required SSH_HOSTS_INPUT "Host address(es)" "$prev" ssh_validate_host_list
+    (( NAV_BACK )) && return 0
+    ssh_set_hosts "$SSH_HOSTS_INPUT"
+    return 0
+  fi
+  hint "The machine(s) Instana goes on: pick 1 host for single-node or 3 for three-node (node 0 = the first one)." \
+       "Listed: running VMs of the gcloud project $(prov_ssh_gce_project) and Host entries of ~/.ssh/config (this control machine is not listed)."
+  {
+    echo -e "${CYAN}?${RESET} Host(s)"
+    printf '       %-22s %-15s %-15s %-15s %s\n' name internal external zone machine
+    for c in "${cands[@]}"; do
+      IFS='|' read -r name ip nat zone mt src <<< "$c"
+      if [[ "$src" == gcloud ]]; then printf '  %2d)  %-22s %-15s %-15s %-15s %s\n' "$i" "$name" "$ip" "$nat" "$zone" "$mt"
+      else printf '  %2d)  %-22s (from ~/.ssh/config: %s)\n' "$i" "$name" "$ip"; fi
+      (( ++i ))
+    done
+    echo "   a)  enter another address"
+  } >&2
+  while true; do
+    read -rp "$(echo -e "${CYAN}  Select [numbers separated by spaces, a = type addresses${prev:+, Enter = ${prev}}, < = back]:${RESET} ")" answer ||
+      die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    [[ -n "$answer" || -z "$prev" ]] || { ssh_set_hosts "$prev"; return 0; }
+    case "$answer" in
+      "<") NAV_BACK=1; return 0 ;;
+      a|A) SSH_HOSTS_TYPE_FIRST=1; wiz_ssh_hosts; return 0 ;;
+    esac
+    picked=""
+    for tok in $answer; do
+      if [[ "$tok" =~ ^[0-9]+$ ]] && (( tok >= 1 && tok <= ${#cands[@]} )); then
+        IFS='|' read -r name ip nat zone mt src <<< "${cands[$((tok-1))]}"
+        if [[ "$src" == gcloud ]]; then picked+="${ip} "; else picked+="${name} "; fi
+      else picked="!"; break; fi
+    done
+    if [[ "$picked" != "!" ]] && ssh_validate_host_list "$picked" >&2; then
+      ssh_set_hosts "$picked"; ok "Host(s): ${picked% } → ${TOPOLOGY}"; return 0
+    fi
+    echo "  Type 1 number (single-node) or 3 numbers (three-node) from the list, a to type addresses, or < to go back." >&2
+  done
+}
+
+# Private keys that may log in: the saved/current one first, then the usual
+# names, then any other file with a PRIVATE KEY header ("path|agent|locked").
+ssh_key_candidates() {
+  local dir f fp agent seen=" " locked
+  dir=$(ssh_dir)
+  local -a order=()
+  [[ -z "${SSH_KEY_PATH:-}" ]] || order+=("$(prov_ssh_expand_path "$SSH_KEY_PATH")")
+  order+=("$dir/google_compute_engine" "$dir/id_ed25519" "$dir/id_ecdsa" "$dir/id_rsa")
+  for f in "$dir"/*; do order+=("$f"); done
+  agent=$(ssh-add -l 2>/dev/null || true)
+  for f in "${order[@]}"; do
+    [[ -f "$f" && -r "$f" && "$f" != *.pub && "$seen" != *" $f "* ]] || continue
+    [[ "$(head -c 40 "$f" 2>/dev/null)" == *"PRIVATE KEY"* ]] || continue
+    seen+="$f "
+    fp=$(ssh-keygen -lf "${f}.pub" 2>/dev/null | awk '{print $2}' || true)
+    locked=no; ssh-keygen -y -P '' -f "$f" >/dev/null 2>&1 || locked=yes
+    printf '%s|%s|%s\n' "$f" "$([[ -n "$fp" && "$agent" == *"$fp"* ]] && echo yes || echo no)" "$locked"
+  done
+}
+
+# ssh_try_login HOST USER KEY PORT — 0 when a non-interactive login works;
+# otherwise SSH_FAIL_KIND (refused|timeout|closed|hostkey|other) and SSH_FAIL_REASON.
+ssh_try_login() {
+  local host="$1" user="$2" key="$3" port="$4" errf rc=0 msg
+  errf=$(mktemp)
+  timeout 12 ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5 \
+    -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=${SSH_KNOWN_HOSTS_FILE}" \
+    -p "$port" -l "$user" -- "$host" true >/dev/null 2>"$errf" || rc=$?
+  msg=$(grep -v '^\s*$' "$errf" | head -2 | paste -sd' ' -); rm -f "$errf"
+  (( rc == 0 )) && return 0
+  case "$msg" in
+    *"IDENTIFICATION HAS CHANGED"*|*"Host key verification failed"*) SSH_FAIL_KIND=hostkey
+      SSH_FAIL_REASON="the SSH host key of ${host} differs from the one recorded in this folder (another machine behind this address, or a reinstalled host). If it was reinstalled on purpose: ssh-keygen -R ${host} -f $(prov_ssh_q "$SSH_KNOWN_HOSTS_FILE")" ;;
+    *"Permission denied"*) SSH_FAIL_KIND=refused; SSH_FAIL_REASON="${host} refused the key for ${user} (Permission denied)" ;;
+    *"Connection refused"*) SSH_FAIL_KIND=closed; SSH_FAIL_REASON="nothing listens on port ${port} of ${host} (Connection refused)" ;;
+    *"timed out"*|*"No route"*|*"unreachable"*|"") SSH_FAIL_KIND=timeout
+      SSH_FAIL_REASON="no answer from ${host} on port ${port} within 5 s${msg:+ (${msg})}"
+      (( rc == 124 )) || [[ -n "$msg" ]] || SSH_FAIL_KIND=other ;;
+    *) SSH_FAIL_KIND=other; SSH_FAIL_REASON="SSH to ${host} failed: ${msg}" ;;
+  esac
+  [[ "$SSH_FAIL_KIND" != other || -n "$msg" ]] || SSH_FAIL_REASON="SSH to ${host} failed (exit code ${rc})"
+  return 1
+}
+
+# Finds a working login on HOST: keys (agent-loaded and unlocked first) x users,
+# at most 6 tries; stops early when the host itself does not answer.
+ssh_probe_login() {
+  local host="$1" port="${SSH_PORT:-22}" line key agent locked user tries=0 shown
+  local -a users=() keys=()
+  for user in "${SSH_USER:-}" ubuntu "$(id -un 2>/dev/null)"; do
+    [[ -n "$user" && " ${users[*]} " != *" $user "* ]] && users+=("$user")
+  done
+  while IFS= read -r line; do keys+=("$line"); done < <(ssh_key_candidates | sort -t'|' -s -k2,2r)
+  if (( ${#keys[@]} == 0 )); then
+    SSH_FAIL_KIND=nokey; SSH_FAIL_REASON="no private SSH key was found in $(ssh_dir) (files with a PRIVATE KEY header)"; return 1
+  fi
+  log "Finding a login for ${host} (port ${port}; at most 6 tries, 5 s each)..."
+  for line in "${keys[@]}"; do
+    IFS='|' read -r key agent locked <<< "$line"
+    shown="${key/#$HOME/~}"
+    if [[ "$locked" == yes && "$agent" != yes ]]; then
+      echo "    ${shown}: passphrase-protected and not loaded in ssh-agent — skipped (c lets you choose it; ssh-add asks for the passphrase)" >&2
+      continue
+    fi
+    for user in "${users[@]}"; do
+      (( tries < 6 )) || break 2
+      (( ++tries ))
+      if ssh_try_login "$host" "$user" "$key" "$port"; then
+        echo "    ${user} @ ${shown}   OK (port ${port})" >&2
+        SSH_USER="$user"; SSH_KEY_PATH="$key"
+        return 0
+      fi
+      echo "    ${user} @ ${shown}   ${SSH_FAIL_KIND}" >&2
+      case "$SSH_FAIL_KIND" in timeout|closed|hostkey) return 1 ;; esac
+    done
+  done
+  [[ "${SSH_FAIL_KIND:-}" != refused ]] ||
+    SSH_FAIL_REASON="${host} refused every key tried for ${users[*]} (Permission denied). On Google Cloud, 'gcloud compute ssh <vm> --zone <zone>' once adds your key; or choose c and enter the user your keys belong to"
+  return 1
+}
+
+# Failure menu: prints back|retype|login|retry|cancel|eof (runs in a
+# subshell; the caller stops through ssh_menu_stop, in the main shell).
+ssh_failure_menu() {
+  local what="$1" host="$2" choice
+  local -a opts=("re-enter the address" "choose from the list of hosts" "change the login (user, key, port)" "check again (after fixing it)" "cancel the installation (nothing was changed)")
+  err "${what}" >&2
+  echo "    Check from here: $(printf 'ssh -v -p %s %s@%s' "${SSH_PORT:-22}" "${SSH_USER:-ubuntu}" "$host")" >&2
+  choice=$(PROMPT_CHOICE_DEFAULT="${opts[0]}" prompt_choice "What now?" "${opts[@]}") || { echo eof; return 0; }
+  case "$choice" in
+    "re-enter"*) echo retype ;;
+    choose*) echo back ;;
+    change*) echo login ;;
+    check*) echo retry ;;
+    *) echo cancel ;;
+  esac
+}
+
+# Stops for the two final answers of the failure menu; returns for the others.
+ssh_menu_stop() {
+  case "$1" in
+    cancel) die "Installation cancelled by the operator. Nothing was changed." ;;
+    eof) die "Input ended before the parameters were complete; installation cancelled. Nothing was created." ;;
+  esac
+}
+
+# Manual login: user, key and port (each with "<" back to the summary).
+ssh_ask_login() {
+  hint "How this machine logs in: a user with passwordless sudo on the host(s), its private key file here and the SSH port." \
+       "The key never leaves this machine; only its path is saved."
+  prompt_required SSH_USER "SSH user" "${SSH_USER:-ubuntu}" validate_ssh_user; (( NAV_BACK )) && return 0
+  prompt_required SSH_KEY_PATH "SSH private key path" "${SSH_KEY_PATH:-$(prov_ssh_default_key)}" validate_ssh_key; (( NAV_BACK )) && return 0
+  SSH_KEY_PATH=$(prov_ssh_expand_path "$SSH_KEY_PATH")
+  prompt_required SSH_PORT "SSH port" "${SSH_PORT:-22}" validate_ssh_port
+}
+
+# Read-only checks of HOST from its facts, as a table; returns 1 (with
+# SSH_FAIL_REASON) on the first blocking finding.
+ssh_early_checks() {
+  local host="$1" min_cpu=16 min_ram=64 cpus ram_gb os ok_mark="✓" bad=""
+  [[ "${TOPOLOGY:-}" != three-node ]] || { min_cpu=12; min_ram=48; }
+  cpus=$(prov_ssh_fact "$host" CPUS); ram_gb=$(( $(prov_ssh_fact "$host" MEM_KB) * 1024 / 1000000000 ))
+  os="$(prov_ssh_fact "$host" OS_NAME)"
+  {
+    echo "  ┌─ ${host} ($(prov_ssh_fact "$host" HOSTNAME))"
+    printf '  │ %-11s %-32s %s\n' OS "$os" "$([[ "$(prov_ssh_fact "$host" OS_ID)" == ubuntu && "$(prov_ssh_fact "$host" OS_VERSION)" =~ ^(22\.04|24\.04)$ ]] && echo "$ok_mark supported" || echo "✗ needs Ubuntu 22.04 or 24.04")"
+    printf '  │ %-11s %-32s %s\n' CPU "${cpus} vCPU, $(prov_ssh_fact "$host" ARCH)" "$([[ "$(prov_ssh_fact "$host" ARCH)" == x86_64 ]] && (( cpus >= min_cpu )) && echo "$ok_mark" || echo "✗ needs x86_64, at least ${min_cpu} vCPU")"
+    printf '  │ %-11s %-32s %s\n' RAM "${ram_gb} GB" "$( (( ram_gb * 100 >= min_ram * 95 )) && echo "$ok_mark" || echo "✗ needs at least ${min_ram} GB")"
+    printf '  │ %-11s %-32s %s\n' sudo "$([[ "$(prov_ssh_fact "$host" SUDO)" == ok ]] && echo passwordless || echo "asks for a password")" "$([[ "$(prov_ssh_fact "$host" SUDO)" == ok ]] && echo "$ok_mark" || echo "✗")"
+    printf '  │ %-11s %-32s %s\n' Kubernetes "$([[ "$(prov_ssh_fact "$host" K3S)" == yes ]] && echo "k3s already installed" || echo "none installed")" "$([[ "$(prov_ssh_fact "$host" K3S)" == yes ]] && echo "✗" || echo "$ok_mark")"
+    printf '  │ %-11s %-32s %s\n' firewalld "$([[ "$(prov_ssh_fact "$host" FIREWALLD)" == active ]] && echo active || echo "not active")" "$([[ "$(prov_ssh_fact "$host" FIREWALLD)" == active ]] && echo "✗" || echo "$ok_mark")"
+    printf '  │ %-11s %s\n' Disks "$(prov_ssh_disk_summary "$host")"
+    echo "  └──────────────────────────────────────────────────────────"
+  } >&2
+  if [[ "$(prov_ssh_fact "$host" OS_ID)" != ubuntu || ! "$(prov_ssh_fact "$host" OS_VERSION)" =~ ^(22\.04|24\.04)$ ]]; then
+    bad="${host} runs ${os}; Instana supports only Ubuntu 22.04 and 24.04 (use another host or reinstall it)"
+  elif [[ "$(prov_ssh_fact "$host" ARCH)" != x86_64 ]]; then bad="${host} is not an x86_64 machine; Instana needs x86_64 (use another host)"
+  elif (( cpus < min_cpu || ram_gb * 100 < min_ram * 95 )); then
+    bad="${host} is too small for Instana: ${cpus} vCPU / ${ram_gb} GB, needs at least ${min_cpu} vCPU / ${min_ram} GB ($([[ "${TOPOLOGY:-}" == three-node ]] && echo "three-node, per host" || echo "demo"))"
+  elif [[ "$(prov_ssh_fact "$host" SUDO)" != ok ]]; then
+    bad="${SSH_USER} cannot run sudo without a password on ${host}. As an administrator there: echo '${SSH_USER} ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/90-instana-installer"
+  elif [[ "$(prov_ssh_fact "$host" K3S)" == yes ]]; then
+    bad="Kubernetes (k3s) is already installed on ${host}; a new installation needs a host without a cluster (if it is no longer needed: sudo /usr/local/bin/k3s-uninstall.sh)"
+  elif [[ "$(prov_ssh_fact "$host" FIREWALLD)" == active ]]; then
+    bad="firewalld is active on ${host}; the installer uses UFW (if firewalld is not needed: sudo systemctl disable --now firewalld)"
+  fi
+  [[ -z "$bad" ]] && return 0
+  SSH_FAIL_REASON="$bad"; return 1
+}
+
+wiz_ssh_login() {
+  [[ "$(provider_name)" == ssh && "$PARAMS_SOURCE" != import ]] || return 0
+  local hosts first key_note answer action host known
+  hosts=$(ssh_current_hosts | xargs); first="${hosts%% *}"
+  SSH_PORT="${SSH_PORT:-22}"
+  # Moving forward again over an unchanged, verified login: nothing to ask.
+  if [[ "${WIZ_REVISIT:-}" != wiz_ssh_login && "$SSH_LOGIN_OK" == "${hosts}|${SSH_USER:-}|${SSH_KEY_PATH:-}|${SSH_PORT:-22}" ]]; then return 0; fi
+  NAV_ASKED=1
+  local need_probe=1
+  [[ "$SSH_LOGIN_OK" != "${hosts}|${SSH_USER:-}|${SSH_KEY_PATH:-}|${SSH_PORT:-22}" ]] || need_probe=0
+  while true; do
+    if (( need_probe )); then
+      if ! ssh_probe_login "$first"; then
+        action=$(ssh_failure_menu "Cannot log in to ${first}: ${SSH_FAIL_REASON}." "$first"); ssh_menu_stop "$action"
+        case "$action" in
+          back) NAV_BACK=1; return 0 ;;
+          retype) SSH_HOSTS_TYPE_FIRST=1; NAV_BACK=1; return 0 ;;
+          login) ssh_ask_login; if (( NAV_BACK )); then NAV_BACK=0; fi; SSH_LOGIN_OK=""; continue ;;
+          retry) continue ;;
+        esac
+      fi
+    fi
+    need_probe=1
+    key_note="no passphrase"
+    ssh-keygen -y -P '' -f "$SSH_KEY_PATH" >/dev/null 2>&1 || key_note="passphrase-protected"
+    {
+      echo "  Use detected login:"
+      printf '    %-6s %s\n' User "$SSH_USER" Key "${SSH_KEY_PATH/#$HOME/~}  (${key_note})" Port "${SSH_PORT:-22}"
+    } >&2
+    read -rp "$(echo -e "${CYAN}?${RESET} Enter = use this login, c = change user/key/port, < = back: ")" answer ||
+      die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    case "$answer" in
+      "<") NAV_BACK=1; return 0 ;;
+      c|C) ssh_ask_login; NAV_BACK=0
+           # A typed login is tried as given (passphrase keys: ssh-add first).
+           SSH_AGENT_CHECKED=""; prov_ssh_agent_preflight
+           if ssh_try_login "$first" "$SSH_USER" "$SSH_KEY_PATH" "${SSH_PORT:-22}"; then need_probe=0; continue; fi
+           action=$(ssh_failure_menu "Cannot log in to ${first} as ${SSH_USER}: ${SSH_FAIL_REASON}." "$first"); ssh_menu_stop "$action"
+           case "$action" in
+             back) NAV_BACK=1; return 0 ;;
+             retype) SSH_HOSTS_TYPE_FIRST=1; NAV_BACK=1; return 0 ;;
+             *) continue ;;
+           esac ;;
+      "") ;;
+      *) echo "  Please press Enter to use this login, c to change it, or < to go back." >&2; need_probe=0; continue ;;
+    esac
+    prov_ssh_agent_preflight
+    # The read-only facts and checks of every host, right away.
+    local failed=""
+    for host in $hosts; do
+      known=$(prov_ssh_known_key "$host")
+      # Facts already read with this login are reused (no new connection).
+      if [[ -z "${SSH_FACT["${host}|GATHERED"]:-}" || "${SSH_FACT["${host}|LOGIN"]:-}" != "${SSH_USER}|${SSH_KEY_PATH}|${SSH_PORT:-22}" ]]; then
+        log "Checking ${host} (read-only)..."
+        if ! SSH_SOFT=1 prov_ssh_gather_facts "$host"; then failed="$host"; break; fi
+      fi
+      if [[ -z "$known" ]]; then
+        warn "First connection to ${host}: its SSH host key is now trusted for this deployment: $(prov_ssh_known_key "$host" || true)."
+      fi
+      if ! ssh_early_checks "$host"; then failed="$host"; break; fi
+    done
+    if [[ -n "$failed" ]]; then
+      action=$(ssh_failure_menu "${SSH_FAIL_REASON}." "$failed"); ssh_menu_stop "$action"
+      case "$action" in
+        back) NAV_BACK=1; return 0 ;;
+        retype) SSH_HOSTS_TYPE_FIRST=1; NAV_BACK=1; return 0 ;;
+        login) ssh_ask_login; NAV_BACK=0; SSH_LOGIN_OK=""; continue ;;
+        retry) need_probe=0; unset "SSH_FACT[${failed}|GATHERED]"; continue ;;
+      esac
+    fi
+    # Private or public: from the addresses (RFC 1918 / 100.64/10).
+    SSH_VIA_PRIVATE=false
+    ! prov_ssh_is_private "$(prov_ssh_resolve_ipv4 "$first")" || SSH_VIA_PRIVATE=true
+    UBUNTU_VERSION=$(prov_ssh_ubuntu_version "$first")
+    SSH_LOGIN_OK="${hosts}|${SSH_USER}|${SSH_KEY_PATH}|${SSH_PORT:-22}"
+    return 0
+  done
+}
+
+# ssh_type_suggestion HOST — prints "demo|production <reason>": production only
+# when CPU, RAM and the unused disks meet the production minimums.
+ssh_type_suggestion() {
+  local host="$1" cpus ram_gb disks="" line h dev bytes parts mounts fstype model stable
+  cpus=$(prov_ssh_fact "$host" CPUS); ram_gb=$(( $(prov_ssh_fact "$host" MEM_KB) * 1024 / 1000000000 ))
+  for line in "${SSH_FACT_DISKS[@]}"; do
+    IFS='|' read -r h dev bytes parts mounts fstype model stable <<< "$line"
+    [[ "$h" == "$host" && "$parts" == 1 && -z "$mounts" ]] && disks+="${disks:+/}$(gb_of_bytes "$bytes")"
+  done
+  local have="${cpus} vCPU / ${ram_gb} GB and unused disks ${disks:-none} GB"
+  if (( cpus >= 28 && ram_gb * 100 >= 112 * 95 )) && prov_ssh_disks_fit "1200 1000 1000 500" "$(prov_ssh_free_disk_bytes "$host" "" "")"; then
+    echo "production ${have} meet production (28 vCPU / 112 GB, disks 1200/1000/1000/500 GB)."
+  else
+    echo "demo ${have}; production needs 28 vCPU / 112 GB and disks 1200/1000/1000/500 GB, demo 16 vCPU / 64 GB and 500/300/250/150 GB."
+  fi
 }
 
 # The host's short name as an installer name (lowercase, letters/digits/-).
@@ -617,6 +1006,9 @@ prov_ssh_default_key() {
 prov_ssh_text() {
   case "$1" in
     setup_title) echo "Existing-host Deployment Setup" ;;
+    mode_hint)
+      echo "online: the host(s) download stanctl and images from the Instana repository themselves (simplest)."
+      echo "air-gapped: everything comes from one instana-airgapped.tar.gz package; you will be guided to obtain or build it." ;;
     topology_hint)
       echo "single-node: everything on one existing host (labs, demos, small setups)."
       echo "three-node: Instana spread over three existing hosts, IBM 'production' type, at least 12 vCPUs / 48 GB each." ;;
