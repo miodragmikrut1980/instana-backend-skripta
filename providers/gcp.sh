@@ -1009,19 +1009,154 @@ prov_gcp_destroy_from_state() {
 # Cleanup without a state file: the operator names the project, zone and VM;
 # the installer lists the VM, the disks named <vm>-* and the instana-allow-*
 # firewall rules, shows them, and deletes only after an explicit confirmation.
+# ── Clean-up: pick a lab from a list (UX v2) ────────────────────────────────
+# Labs in the project, read-only: VMs, disks and firewall rules carrying the
+# same instana-lab-id label (three-node labs), and single-node VMs with the
+# installer's disk names <vm>-analytics/-metrics/-objects/-data. Nothing
+# without that label or exact naming is ever listed; the control machine never.
+# Prints one line per lab: "key|zone|vms|disks|rules|summary" (lists are
+# space-separated names; vms "name:status:created", disks "name:sizeGB").
+gcp_list_labs() {
+  local project="$1" inst disks fws self mine
+  inst=$(gcloud compute instances list --project="$project" --format=json 2>"$GCP_LIST_ERR") || return 1
+  disks=$(gcloud compute disks list --project="$project" --format=json 2>>"$GCP_LIST_ERR") || return 1
+  fws=$(gcloud compute firewall-rules list --project="$project" --format=json 2>>"$GCP_LIST_ERR") || return 1
+  self=$(hostname -s 2>/dev/null || true)
+  mine=$( { declare -F prov_ssh_local_ips >/dev/null && prov_ssh_local_ips; } | jq -R . | jq -s . 2>/dev/null || echo '[]')
+  jq -r -n --argjson inst "${inst:-[]}" --argjson disks "${disks:-[]}" --argjson fws "${fws:-[]}" \
+     --arg self "$self" --argjson mine "${mine:-[]}" '
+    def zone: (.zone // "" | split("/") | last);
+    def ip: (.networkInterfaces[0].networkIP // "");
+    def nat: (.networkInterfaces[0].accessConfigs[0].natIP // "");
+    ($inst | map(select(.name != $self and ((ip as $i | $mine | index($i)) | not) and ((nat as $n | $n == "" or ($mine | index($n) | not)))))) as $vms
+    | ($vms | map(select((.labels["instana-lab-id"] // "") != "")) | group_by(.labels["instana-lab-id"])) as $groups
+    | ( $groups[] | (.[0].labels["instana-lab-id"]) as $id
+        | ($disks | map(select((.labels["instana-lab-id"] // "") == $id))) as $d
+        | ($fws | map(select((.description // "") == ("instana-lab-id=" + $id)))) as $f
+        | [ "lab:" + $id, (.[0] | zone),
+            (map(.name + ":" + .status + ":" + (.creationTimestamp // "" | .[0:10])) | join(" ")),
+            ($d | map(.name + ":" + (.sizeGb // "0")) | join(" ")),
+            ($f | map(.name) | join(" ")),
+            "three-node lab " + (map(.name) | join(", ")) ] | join("|") ),
+      ( $vms[] | select((.labels["instana-lab-id"] // "") == "") | . as $v | ($v | zone) as $z
+        | ($disks | map(select((.zone | split("/") | last) == $z and (.name as $n | ["-analytics","-metrics","-objects","-data"] | map($v.name + .) | index($n))))) as $d
+        | select($d | length > 0)
+        | ($disks | map(select((.zone | split("/") | last) == $z and .name == $v.name))) as $boot
+        | [ "vm:" + $v.name, $z, ($v.name + ":" + $v.status + ":" + ($v.creationTimestamp // "" | .[0:10])),
+            (($d + $boot) | map(.name + ":" + (.sizeGb // "0")) | join(" ")), "",
+            "single-node lab " + $v.name ] | join("|") )'
+}
+
 prov_gcp_destroy_by_name() {
-  local project zone vm confirm vm_found disks fws expected
   echo "" >&2
-  echo -e "${BOLD}Clean up GCP resources by VM name${RESET}" >&2
-  echo "  No deployment is recorded in this folder, so tell me which VM to look for." >&2
-  echo "  Disks created by this installer are named <vm-name>-analytics/-metrics/-objects/-data." >&2
-  command -v gcloud >/dev/null 2>&1 || die "gcloud is required."
+  echo -e "${BOLD}Clean up a lab${RESET}" >&2
+  command -v gcloud >/dev/null 2>&1 ||
+    die_with_steps "gcloud is not installed on this machine, so the labs cannot be listed or removed from here." \
+      "Install the Google Cloud CLI and log in, then run the clean-up again:|gcloud auth login && ./install.sh"
   check_gcp_login
   OPERATION_NAME="clean-up"
+  hint "The project whose labs are listed (read-only; nothing is deleted without your typed confirmation)."
   prompt_required GCP_PROJECT "GCP Project ID" "$(default_gcp_project)" validate_gcp_project_id
+  local project="$GCP_PROJECT" err_out
+  GCP_LIST_ERR=$(mktemp)
+  log "Listing the labs in project ${project} (read-only)..."
+  local -a labs=()
+  local out
+  if ! out=$(gcp_list_labs "$project"); then
+    err_out=$(grep -v '^\s*$' "$GCP_LIST_ERR" | head -2 | paste -sd' ' -); rm -f "$GCP_LIST_ERR"
+    die_with_steps "The labs of project ${project} could not be listed: ${err_out:-gcloud failed}. Nothing was deleted." \
+      "*Why it stops: without a complete list the installer cannot show exactly what would be deleted, so it deletes nothing." \
+      "Check access to the project (compute.instances.list, disks.list, firewalls.list):|gcloud compute instances list --project=${project} --limit=1" \
+      "Then run the clean-up again:|./install.sh"
+  fi
+  rm -f "$GCP_LIST_ERR"
+  [[ -z "$out" ]] || mapfile -t labs <<< "$out"
+  if (( ${#labs[@]} == 0 )); then
+    ok "No labs of this installer were found in project ${project} (VMs with the instana-lab-id label, or VMs with <name>-analytics/-metrics/-objects/-data disks)."
+    hint "A VM made in another way can be looked up by its name instead."
+    if prompt_yes_no "Look up a VM by its name?" N; then gcp_destroy_by_vm_name "$project"; fi
+    log "Nothing was deleted."
+    exit 0
+  fi
+  local i=1 key zone vms dsk rules summ v n st cr d sz total running
+  echo "" >&2
+  echo -e "${CYAN}?${RESET} Labs in ${project} (this control machine is not listed):" >&2
+  for line in "${labs[@]}"; do
+    IFS='|' read -r key zone vms dsk rules summ <<< "$line"
+    total=0; running=0
+    for d in $dsk; do sz="${d##*:}"; (( total += ${sz:-0} )); done
+    for v in $vms; do [[ "$v" == *:RUNNING:* ]] && (( ++running )); done
+    printf '  %2d) %s  (zone %s)\n' "$i" "$summ" "$zone" >&2
+    for v in $vms; do IFS=: read -r n st cr <<< "$v"; printf '        VM %-24s %-10s created %s\n' "$n" "$st" "$cr" >&2; done
+    printf '        disks: %s GB in %s disk(s)%s\n' "$total" "$(wc -w <<< "$dsk" | tr -d ' ')" "${rules:+; firewall rules: $(wc -w <<< "$rules" | tr -d ' ')}" >&2
+    if (( running > 0 )); then echo "        cost: running VMs are billed per hour, disks while they exist" >&2
+    else echo "        cost: VMs stopped, but the disks are still billed while they exist" >&2; fi
+    (( ++i ))
+  done
+  local answer pick
+  while true; do
+    read -rp "$(echo -e "${CYAN}  Select [1-${#labs[@]}, n = look up a VM by name, < = back]:${RESET} ")" answer ||
+      die "Input ended; clean-up cancelled. Nothing was deleted."
+    case "$answer" in
+      "<") prov_gcp_destroy_by_name; return ;;
+      n|N) gcp_destroy_by_vm_name "$project"; return ;;
+    esac
+    if [[ "$answer" =~ ^[0-9]+$ ]] && (( answer >= 1 && answer <= ${#labs[@]} )); then pick="${labs[$((answer-1))]}"; break; fi
+    echo "  Type a number from 1 to ${#labs[@]}, n to look a VM up by name, or < to choose another project." >&2
+  done
+  IFS='|' read -r key zone vms dsk rules summ <<< "$pick"
+  gcp_delete_lab "$project" "$zone" "$summ" "$vms" "$dsk" "$rules"
+}
+
+# gcp_delete_lab PROJECT ZONE TITLE "VMS" "DISKS" "RULES" — shows exactly what
+# is deleted; a preview (--dry-run) stops there; a real run needs the typed
+# DELETE phrase, then deletes VMs, the remaining disks and the lab's rules.
+gcp_delete_lab() {
+  local project="$1" zone="$2" title="$3" vms="$4" dsk="$5" rules="$6" v n st cr d expected confirm
+  echo "" >&2
+  echo -e "${BOLD}This is what would be deleted (${title}, ${project}/${zone}):${RESET}" >&2
+  for v in $vms; do IFS=: read -r n st cr <<< "$v"; echo "  VM    ${n}  (${st})" >&2; done
+  for d in $dsk; do echo "  disk  ${d%%:*}  (${d##*:} GB; the data on it is lost)" >&2; done
+  for d in $rules; do echo "  firewall rule  ${d}  (belongs to this lab only)" >&2; done
+  if [[ "$DRY_RUN" == true ]]; then
+    warn "Preview only (dry-run). Nothing was deleted."
+    exit 0
+  fi
+  expected="DELETE ${project}/${zone}"
+  echo -e "${BOLD}${RED}  This permanently deletes everything listed above.${RESET}" >&2
+  read -rp "$(echo -e "${CYAN}?${RESET} Type '${expected}' to confirm (anything else cancels): ")" confirm ||
+    die "Input ended; clean-up cancelled. Nothing was deleted."
+  [[ "$confirm" == "$expected" ]] || { log "Confirmation did not match; nothing was deleted."; exit 0; }
+  for v in $vms; do
+    n="${v%%:*}"
+    log "Deleting VM ${n}..."
+    gcloud compute instances delete "$n" --project="$project" --zone="$zone" --quiet && ok "VM ${n} deleted."
+  done
+  for d in $dsk; do
+    n="${d%%:*}"
+    # Boot disks carry the VM's name and are removed together with the VM.
+    if ! gcloud compute disks describe "$n" --project="$project" --zone="$zone" >/dev/null 2>&1; then
+      log "Disk ${n} is already gone (deleted with its VM)."; continue
+    fi
+    log "Deleting disk ${n}..."
+    gcloud compute disks delete "$n" --project="$project" --zone="$zone" --quiet && ok "Disk ${n} deleted."
+  done
+  for d in $rules; do
+    gcloud compute firewall-rules delete "$d" --project="$project" --quiet && ok "Firewall rule ${d} deleted."
+  done
+  ok "Clean-up of ${title} in ${project}/${zone} finished."
+  exit 0
+}
+
+# Look-up by VM name (the earlier clean-up), for VMs the list does not show.
+gcp_destroy_by_vm_name() {
+  local project="$1" zone vm confirm vm_found disks fws expected
+  echo "  Disks created by this installer are named <vm-name>-analytics/-metrics/-objects/-data." >&2
   hint "The zone is found automatically from the VM name."
   prompt_required VM_NAME "VM name to clean up (e.g. mikrut-air; for three-node the node0 name, e.g. instana-0)" ""
-  project="$GCP_PROJECT"; vm="$VM_NAME"
+  vm="$VM_NAME"
+  [[ "$vm" != "$(hostname -s 2>/dev/null || true)" ]] ||
+    die_with_steps "'${vm}' is this control machine; the clean-up never deletes it." "*Choose the VM of the lab to remove:|./install.sh"
   local base="${vm%-0}"   # three-node: instana-0 -> also instana-1, instana-2
 
   log "Searching project ${project} (all zones) for resources of '${vm}'..."

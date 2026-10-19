@@ -452,3 +452,22 @@ and every answer was lost.
   section 7 (existing hosts) describes the hosts-first flow.
   config-generator.html: "kubectl without sudo" (KUBE_USER_ACCESS).
   examples/README.txt: optional keys with defaults.
+
+2026-10-19 — UX v2, step 11 (GCP): clean-up picks a lab from a list
+- "clean up a lab" (menu, or --destroy without a recorded deployment) lists
+  the labs of the project read-only: VMs, disks and firewall rules with the
+  same instana-lab-id label (three-node labs), and single-node VMs with the
+  installer's disk names <vm>-analytics/-metrics/-objects/-data (plus the
+  boot disk). Each lab shows its zone, VMs with status and creation date,
+  disk count and size, and a cost note (stopped VMs still pay for disks).
+  The control machine (by name and by address) and anything without the
+  label or the exact names are never listed.
+- After picking a lab, exactly what will be deleted is shown. A preview
+  (--dry-run) stops there, asks no phrase and deletes nothing. A real run
+  needs the typed "DELETE <project>/<zone>" and deletes the VMs, then the
+  remaining disks, then the lab's own firewall rules (never the shared
+  instana-allow-* rules); a wrong phrase deletes nothing (exit 0).
+- A listing error (no permission, API) is explained and nothing is deleted.
+  n = look a VM up by name (the earlier clean-up), < = another project.
+  Existing hosts (ssh) are unchanged: nothing is deleted there.
+- New test-cleanup-list.sh.

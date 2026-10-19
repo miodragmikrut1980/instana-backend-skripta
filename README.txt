@@ -23,7 +23,7 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
 
 2b) SVEZ POCETAK kad folder vec postoji (brise se lokalni state, config i
     izvestaj poslednje instalacije — GCP resursi ostaju netaknuti; ako
-    postoje, kasnije ih brises kroz "clean up" po imenu VM-a):
+    postoje, kasnije ih brises kroz meni "clean up a lab"):
      cd ~ && rm -rf ~/instana-backend-skripta
      git clone https://github.com/miodragmikrut1980/instana-backend-skripta.git
      cd instana-backend-skripta && ./install.sh
@@ -42,8 +42,14 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
      ./install.sh --destroy          brisanje resursa iz ovog foldera
      ./install.sh --destroy --dry-run  pregled brisanja
      ./install.sh --help
-   Bez state fajla meni nudi "clean up": unese se ime VM-a (npr. instana-0),
-   skripta sama nadje zonu, izlista VM/diskove i brise posle potvrde.
+   Bez state fajla meni nudi "clean up a lab": skripta izlista labove
+   projekta (samo citanje): three-node labove po labeli instana-lab-id i
+   single-node VM-ove sa diskovima <ime>-analytics/-metrics/-objects/-data,
+   sa statusom, datumom, diskovima i napomenom o trosku (i zaustavljen VM
+   placa diskove). Upravljacka masina se nikad ne nudi. Izaberes lab ->
+   tacan spisak sta se brise -> kucana potvrda DELETE <projekat>/<zona>
+   (pregled sa --dry-run je bez potvrde i nista ne brise). n = trazi VM po
+   imenu, < = drugi projekat.
 
 5) PARAMETRI IZ FAJLA UMESTO PITANJA (config-generator.html, --config):
    a) Otvori config-generator.html (u ovom folderu) u browseru na svom
@@ -162,9 +168,11 @@ Started without options from a terminal, install.sh shows a start menu:
 install / dry-run / resume (if a deployment is recorded) / destroy preview /
 destroy / exit. ./install.sh --destroy (optionally with --dry-run) runs the
 cleanup directly; destroy.sh still exists but need not be called by hand.
-Without a state file the menu offers "clean up" instead: it asks project,
-zone and VM name, lists the VM, its <vm>-* disks and instana-allow-* rules,
-asks y/n, and deletes only after DELETE <project>/<zone> is typed.
+Without a state file the menu offers "clean up a lab" instead: it lists the
+labs of the project (instana-lab-id label groups and single-node VMs with
+<vm>-analytics/-metrics/-objects/-data disks; never the control machine),
+shows exactly what a picked lab consists of, and deletes only after
+DELETE <project>/<zone> is typed (a --dry-run preview deletes nothing).
 Legacy v0.3.x resources are not adopted. Uncertain stanctl up execution
 requires inspection; never starts a second remote installer blindly.
 

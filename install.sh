@@ -250,7 +250,7 @@ start_menu() {
     options+=("destroy (preview): list the GCP resources of this folder's deployment that would be deleted" \
               "destroy: DELETE the GCP resources of this folder's deployment (VM, disks, firewall rules)")
   else
-    options+=("clean up: find leftover GCP resources by VM name, show them, delete only after confirmation")
+    options+=("clean up a lab: pick it from the list, see its resources, delete after confirmation")
   fi
   [[ -f "$REPORT_FILE" ]] && options+=("show report: UI URL, IP and hosts entries of the last installation from this folder")
   options+=("exit")
@@ -271,7 +271,7 @@ start_menu() {
     dry-run:*) START_CHOICE=dry-run; DRY_RUN=true; warn "$(provider_text_or dry_run_banner "Dry-run mode — no GCP resources will be created.")" ;;
     resume:*) START_CHOICE=resume; RESUME=true ;;
     "destroy (preview)"*) DRY_RUN=true; run_destroy ;;
-    destroy:*|"clean up:"*) run_destroy ;;
+    destroy:*|"clean up"*) run_destroy ;;
     "show report"*) echo ""; cat "$REPORT_FILE"; echo ""; exit 0 ;;
     *) exit 0 ;;
   esac
