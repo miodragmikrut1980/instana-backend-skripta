@@ -1,5 +1,7 @@
 Primeri JSON fajlova za test-config-file.sh
 Tajne u fajlovima su lazne test vrednosti (test-*-0000).
+Optional keys with defaults (no question, also without a terminal): UBUNTU_VERSION
+(ubuntu-2404-lts-amd64), SIZE (minimum), KUBE_USER_ACCESS (no); E at the plan changes them.
 
 single-gcp-online-full.json
   Every value valid, secrets embedded (fake test values). Expect: zero prompts until 'Start now?'.

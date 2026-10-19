@@ -217,6 +217,11 @@ pre#preview .x{color:#F08A80;text-decoration:underline wavy #F08A80}
         <label><input type="radio" name="TLS_MODE" value="auto-generate (self-signed)" checked><span>Generate self-signed</span></label>
         <label><input type="radio" name="TLS_MODE" value="provide custom certificate files"><span>Use my certificate files</span></label>
       </div></div>
+    <div style="margin-top:14px"><span class="lbl">kubectl without sudo for the SSH user on the Instana host</span>
+      <div class="seg" style="margin-top:4px">
+        <label><input type="radio" name="KUBE_USER_ACCESS" value="no" checked><span>No<small>use sudo kubectl</small></span></label>
+        <label><input type="radio" name="KUBE_USER_ACCESS" value="yes"><span>Yes<small>copies the cluster-admin kubeconfig</small></span></label>
+      </div></div>
     <div class="grid" id="tlsFiles" style="margin-top:12px" hidden>
       <div class="field wide"><label class="lbl" for="TLS_CRT_PATH">Certificate path on the control VM</label><input type="text" class="path" id="TLS_CRT_PATH" placeholder="~/certs/instana.crt"><span class="msg"></span></div>
       <div class="field wide"><label class="lbl" for="TLS_KEY_PATH">Key path on the control VM</label><input type="text" class="path" id="TLS_KEY_PATH" placeholder="~/certs/instana.key"><span class="msg"></span></div>
@@ -413,6 +418,7 @@ function collect(){
   put("TENANT_NAME", val("TENANT_NAME"), "tu");
   put("UNIT_NAME", val("UNIT_NAME"), "tu");
   put("TLS_MODE", radio("TLS_MODE"));
+  put("KUBE_USER_ACCESS", radio("KUBE_USER_ACCESS"));
   if (P.TLS_MODE === "provide custom certificate files") { put("TLS_CRT_PATH", val("TLS_CRT_PATH"), "path"); put("TLS_KEY_PATH", val("TLS_KEY_PATH"), "path"); }
   if (air) {
     put("AIRGAP_SOURCE", radio("AIRGAP_SOURCE"));
@@ -517,7 +523,7 @@ function load(o){
   // accept provider-neutral aliases for gcp
   [["PROVIDER_SCOPE","GCP_PROJECT"],["PROVIDER_LOCATION","GCP_ZONE"],["PROVIDER_NETWORK","GCP_NETWORK"],["PROVIDER_SUBNET","GCP_SUBNET"]]
     .forEach(([a,g]) => { if (P[a] && !P[g]) P[g] = P[a]; });
-  ["PROVIDER","TOPOLOGY","INSTALL_MODE","INSTALL_TYPE","SIZE","TLS_MODE","AIRGAP_SOURCE","SSH_VIA_PRIVATE"].forEach(k => P[k] && setRadio(k, P[k]));
+  ["PROVIDER","TOPOLOGY","INSTALL_MODE","INSTALL_TYPE","SIZE","TLS_MODE","AIRGAP_SOURCE","SSH_VIA_PRIVATE","KUBE_USER_ACCESS"].forEach(k => P[k] && setRadio(k, P[k]));
   layout(); renderNames(); renderHosts();
   Object.entries(P).forEach(([k, v]) => { const i = $(k); if (i && i.type !== "radio") i.value = v; });
   const S = o.secrets || {}; const has = Object.values(S).some(Boolean);

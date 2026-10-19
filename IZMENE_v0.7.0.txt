@@ -440,3 +440,15 @@ and every answer was lost.
   the admin password and the three keys are asked again.
 - New test-start-flow.sh (real terminal: dry-run without screen offer, menu
   before screen with --start=install, resume table).
+
+2026-10-19 — UX v2, step 10 (also GCP): plan layout; docs
+- The plan is grouped: Where (project/zone/network or hosts and login, SSH
+  CIDR), What (topology, type, connectivity, Ubuntu, versions, kubectl
+  without sudo), Access (domain, tenant/unit, UI URL, TLS), Resources
+  (machine type, VM and disks or the hosts' disks and changes, network).
+  "Backend version" says why it is not chosen yet (dry-run, or the control
+  machine could not list the versions). The E/S explanation is one sentence.
+- README: new section 6 (question flow, "<", detected defaults, plan),
+  section 7 (existing hosts) describes the hosts-first flow.
+  config-generator.html: "kubectl without sudo" (KUBE_USER_ACCESS).
+  examples/README.txt: optional keys with defaults.

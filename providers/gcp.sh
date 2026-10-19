@@ -26,17 +26,17 @@ prov_gcp_state_resource_pattern() { echo '^(vm_|disk_|firewall_|fw_)'; }
 prov_gcp_plan_target_lines() {
   printf "  %-30s %s\n" "GCP Project:"       "$GCP_PROJECT"
   printf "  %-30s %s\n" "Zone:"              "$GCP_ZONE"
+  printf "  %-30s %s\n" "Network / subnet:"  "${GCP_NETWORK:-default} / ${GCP_SUBNET:-default}"
+}
+
+# Plan block: the VM(s) and the data disks that will be created.
+prov_gcp_plan_resource_lines() {
   if [[ "$TOPOLOGY" == three-node ]]; then
     printf "  %-30s %s\n" "Machine type:"      "n2-standard-16 on each node (three-node lab, fixed)"
   else
     printf "  %-30s %s\n" "Machine type:"      "$MACHINE_TYPE"
   fi
-}
-
-# Plan block: the VM(s) and the data disks that will be created.
-prov_gcp_plan_resource_lines() {
   if [[ "$TOPOLOGY" == "single-node" ]]; then
-    echo ""
     printf "  %-30s %s\n" "VM name:" "$VM_NAME"
     echo ""
     echo "  Disks to create (dedicated per directory, as required by documentation):"

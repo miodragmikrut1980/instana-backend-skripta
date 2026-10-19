@@ -1,4 +1,4 @@
-Instana GCP lab v0.7.0 — install on existing hosts over SSH (PROVIDER ssh); parameters from a JSON file (--config, config-generator.html); provider layer (GCP behind providers/); backend version chosen first; resilient installer
+Instana GCP lab v0.7.0 — UX v2 ("<" goes back, detected defaults, hosts first); install on existing hosts over SSH (PROVIDER ssh); parameters from a JSON file (--config, config-generator.html); provider layer (GCP behind providers/); backend version chosen first; resilient installer
 CURRENT: read IZMENE_v0.7.0.txt and IZMENE_v0.6.1.txt first, then the older IZMENE files for details.
 
 QUICK START — POKRETANJE NA UPRAVLJACKOJ VM
@@ -71,11 +71,30 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
    S = sacuvaj parametre u novi fajl (bez kljuceva) i stani, N = odustani.
      ./install.sh --export-config [fajl]   parametri sacuvani u ovom folderu
                                            (.install-config.json) kao takav fajl
-   Rucni unos (odgovori jedan po jedan) ostaje prva opcija u meniju; za GCP
-   pitanja su ista kao ranije. Three-node vise ne pita velicinu (uvek small,
-   3x n2-standard-16).
+   Rucni unos (odgovori jedan po jedan) ostaje prva opcija u meniju (vidi 6).
+   Three-node ne pita velicinu (uvek small, 3x n2-standard-16).
 
-6) INSTALACIJA NA POSTOJECE HOSTOVE (PROVIDER ssh, bez GCP-a):
+6) TOK PITANJA (UX v2) - NAZAD, PREDLOZI, PLAN:
+   - U svakom pitanju "<" vraca na prethodno pitanje; raniji odgovori ostaju
+     kao Enter. Promenjen odgovor ponovo pita samo ono sto od njega zavisi.
+     Blokovi bez "<" (paket, liste verzija, hostovi iz fajla) se preskacu na
+     putu nazad; njihove vrednosti menja E na planu.
+   - Liste imaju podrazumevani izbor: "Select [1-2, Enter = 1, < = back]".
+   - GCP: projekat, zona (region iz zone), mreza i SSH CIDR su JEDAN blok
+     "Use detected" (iz gcloud-a i ove masine): Enter = prihvati, c = promeni.
+     Ako javna IP ove masine nije otkrivena, 0.0.0.0/0 se ne prihvata Enterom.
+     Ubuntu verzija i velicina masine se ne pitaju (24.04, minimum za tip);
+     menja ih E na planu, kao i "kubectl without sudo" (podrazumevano no).
+   - Ime VM-a se proverava odmah (da li vec postoji u zoni).
+   - Plan je grupisan: Where / What / Access / Resources. Y = start,
+     E = promeni vrednost, S = sacuvaj u fajl, N ili Enter = odustani.
+   - Na kraju instalacije se nista ne pita: /etc/hosts linije koriste javnu
+     IP node 0 kad je poznata.
+   - Ponuda za screen dolazi posle menija i samo za install/resume.
+   - Odustajanje (potvrdjeno) zavrsava sa exit 0: "Nothing was created or
+     changed".
+
+7) INSTALACIJA NA POSTOJECE HOSTOVE (PROVIDER ssh, bez GCP-a):
    Skripta se poveze SSH-om na 1 ili 3 Ubuntu hosta koje vec imas (kod
    korisnika, on-prem, bilo koji cloud). Ne pravi, ne brise i bez pitanja ne
    restartuje hostove. Pokretanje:
@@ -92,18 +111,24 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
    SSH kljuc sa lozinkom (passphrase) mora biti u ssh-agent-u:
      eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519
    (skripta u terminalu jednom pokrene ssh-add; lozinku nikad ne cita/cuva).
-   Na upravljackoj VM u Google Cloud-u (gcloud prijavljen) skripta za adresu
-   hosta ponudi listu pokrenutih VM-ova projekta (ime, zona, interna IP;
-   ova masina i vec izabrani hostovi izostavljeni); "enter another address"
-   za bilo koji drugi host. Bez gcloud-a se adresa kuca. SSH korisnik je
-   podrazumevano ubuntu.
-   Tok: pitanja (hostovi, korisnik, kljuc, port; imena = imena hostova) ->
-   skripta procita hostove (samo citanje) -> izbor diskova (nude se samo
-   neiskorisceni diskovi dovoljne velicine, pamti se /dev/disk/by-id/...) ->
-   plan -> Y -> posebna potvrda izmena na hostovima (kernel + RESTART,
-   UFW, root SSH izmedju nodova, formatiranje praznih diskova) -> faze 3-5:
-   provera hostova, diskova i spisak portova koje mreza mora da propusti
-   (TCP <ssh port>, 80, 443, 8443; three-node i portovi izmedju nodova).
+   Tok (UX v2): prvo hostovi - lista pokrenutih VM-ova gcloud projekta (ime,
+   interna i eksterna IP, zona, tip masine; upravljacka masina se nikad ne
+   nudi) i Host unosi iz ~/.ssh/config, ili ukucane adrese (host:port za
+   drugi port). 1 host = single-node, 3 hosta = three-node. Zatim skripta
+   SAMA nadje prijavu (proba lokalne kljuceve x korisnike ubuntu i tvoj
+   login, najvise 4 pokusaja) i ponudi je ("Enter = use this login"), odmah
+   procita hostove (samo citanje) i pokaze tabelu provera. Svaka greska
+   (nema odgovora, odbijen kljuc, promenjen host kljuc, sudo trazi lozinku,
+   premali host...) daje meni: ponovo upisi adresu / izaberi sa liste /
+   promeni prijavu / proveri ponovo / odustani - bez prekida, nista se ne
+   gubi. Tip (demo/production) se predlaze iz CPU/RAM/diskova, diskovi se
+   rasporede sami (Enter = prihvati, c = biraj sam), imena = imena hostova.
+   Za online lab sa poznatom javnom IP domen se predlaze kao
+   instana.<a-b-c-d>.sslip.io (samo predlog; nikad za air-gapped).
+   Plan nabraja izmene na hostovima (kernel + RESTART, UFW, root SSH izmedju
+   nodova, formatiranje praznih diskova) i potrebne mrezne veze (za GCP VM
+   procita firewall pravila, samo citanje); JEDNO Y u terminalu odobrava
+   sve (pamti se za --resume). Faze 3-5: provera hostova, diskova i portova.
    Svako zaustavljanje kaze sta je nadjeno i na kom hostu, zasto to
    blokira instalaciju, tacne komande za popravku i kako nastaviti.
    --destroy za ssh brise SAMO lokalni state ovog foldera; na hostovima

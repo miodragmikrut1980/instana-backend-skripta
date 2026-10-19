@@ -1508,24 +1508,34 @@ show_plan() {
   echo -e "${BOLD}  Installation Plan${RESET}"
   echo -e "${BOLD}════════════════════════════════════════════════════════════════${RESET}"
   echo ""
+  # Grouped: where it goes, what is installed, how it is reached, what is
+  # created or changed.
+  echo -e "  ${BOLD}Where${RESET}"
+  provider_plan_target_lines
+  ! provider_uses_param SSH_SOURCE_CIDR || printf "  %-30s %s\n" "SSH source CIDR:"   "$SSH_SOURCE_CIDR"
+  echo ""
+  echo -e "  ${BOLD}What${RESET}"
   printf "  %-30s %s\n" "Topology:"         "$TOPOLOGY"
   printf "  %-30s %s\n" "Installation type:" "$INSTALL_TYPE"
   printf "  %-30s %s\n" "Connectivity mode:" "$INSTALL_MODE"
   ! provider_uses_param UBUNTU_VERSION || printf "  %-30s %s\n" "Ubuntu version:"    "$UBUNTU_VERSION"
-  provider_plan_target_lines
+  if [[ -n "${BACKEND_VERSION:-}" ]]; then
+    printf "  %-30s %s\n" "stanctl package:"   "${STANCTL_APT_VERSION:-?}"
+    printf "  %-30s %s\n" "Backend version:"   "$BACKEND_VERSION"
+  elif [[ "$INSTALL_MODE" == online && "$DRY_RUN" == true ]]; then
+    printf "  %-30s %s\n" "Backend version:"   "chosen before Start in a real run (a dry-run does not contact the repository)"
+  elif [[ "$INSTALL_MODE" == online ]]; then
+    printf "  %-30s %s\n" "Backend version:"   "chosen on the Instana host in phase 10 (this control machine could not list the versions)"
+  fi
+  printf "  %-30s %s\n" "kubectl without sudo:" "${KUBE_USER_ACCESS:-no} (for the SSH user on the Instana host; E changes it)"
+  echo ""
+  echo -e "  ${BOLD}Access${RESET}"
   printf "  %-30s %s\n" "Base domain:"       "$BASE_DOMAIN"
   printf "  %-30s %s\n" "Tenant/Unit:"       "${TENANT_NAME}/${UNIT_NAME}"
   printf "  %-30s %s\n" "UI URL (after DNS):" "https://${UNIT_NAME}-${TENANT_NAME}.${BASE_DOMAIN}"
   printf "  %-30s %s\n" "TLS:"               "$TLS_MODE"
-  printf "  %-30s %s\n" "kubectl without sudo:" "${KUBE_USER_ACCESS:-no} (for the SSH user on the Instana host; E changes it)"
-  ! provider_uses_param SSH_SOURCE_CIDR || printf "  %-30s %s\n" "SSH source CIDR:"   "$SSH_SOURCE_CIDR"
-  if [[ -n "${BACKEND_VERSION:-}" ]]; then
-    printf "  %-30s %s\n" "stanctl package:"   "${STANCTL_APT_VERSION:-?}"
-    printf "  %-30s %s\n" "Backend version:"   "$BACKEND_VERSION"
-  elif [[ "$INSTALL_MODE" == online ]]; then
-    printf "  %-30s %s\n" "Backend version:"   "chosen on the Instana VM in phase 10"
-  fi
-
+  echo ""
+  echo -e "  ${BOLD}Resources${RESET}"
   provider_plan_resource_lines
 
   if [[ "$DRY_RUN" == true ]]; then
@@ -1541,8 +1551,8 @@ show_plan() {
     echo "  $(provider_text_or start_line "Enter Y and press Enter to START creating GCP resources and installing Instana.")"
   fi
   if [[ "${PLAN_EDITABLE:-false}" == true ]]; then
-    echo "  Enter E to change one of the values above first$(provider_uses_param SIZE && echo ' (also the Ubuntu version and the machine size)')."
-    echo "  Enter S to save these parameters to a JSON file (without keys) for a later run, and stop."
+    echo "  Enter E to change one of the values above first$(provider_uses_param SIZE && echo ' (also the Ubuntu version and the machine size)'), or S to save"
+    echo "  these parameters to a JSON file (without keys) for a later run, and stop."
   fi
   echo "  Enter N, or press Enter without typing anything, to cancel without starting."
   echo ""
