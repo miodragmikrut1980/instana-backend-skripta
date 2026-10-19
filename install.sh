@@ -2190,6 +2190,50 @@ handle_existing_state_for_new_deployment() {
   esac
 }
 
+# offer_provider_switch SAVED SAVED_SOURCE REQUESTED REQUESTED_SOURCE — a new
+# deployment with another provider was requested in a folder that records one.
+# Shows what the recorded deployment is, then: continue it (its own provider,
+# --resume), set its files aside (renamed with a timestamp, nothing deleted)
+# and start the requested one, or cancel. Sets PROVIDER_SWITCH=keep|new.
+offer_provider_switch() {
+  local saved="$1" saved_src="$2" requested="$3" requested_src="$4" choice ts f where vms last=0 i
+  echo "" >&2
+  warn "Provider '${requested}' was requested (${requested_src}), but this folder already records a deployment with provider '${saved}' (${saved_src})."
+  if [[ -f "$STATE_FILE" ]]; then
+    if [[ "$saved" == ssh ]]; then where="hosts $(get_state ssh_target)"; else where="project/zone $(get_state gcp_project)/$(get_state gcp_zone)"; fi
+    vms=$(jq -r 'to_entries[] | select(.key|test("^(vm_|host_)")) | .key | sub("^(vm_|host_)";"")' "$STATE_FILE" 2>/dev/null | paste -sd, -)
+    for ((i=1; i<=12; i++)); do [[ "$(get_state "progress_phase_${i}")" == completed ]] && last=$i; done
+    echo "    recorded: ${where}   topology: $(get_state topology)   VMs/hosts: ${vms:-none recorded}   last completed phase: ${last}/12" >&2
+    if [[ "$saved" == gcp && -n "$vms" ]]; then
+      echo "    Its Google Cloud resources may still exist and cost money; if it is a lab you no longer need, delete them first: ./install.sh --destroy" >&2
+    fi
+  fi
+  choice=$(prompt_choice "What do you want to do?" \
+    "continue the recorded deployment with its own provider '${saved}' (resume)" \
+    "set the recorded files aside (renamed, nothing deleted) and start a NEW '${requested}' deployment here" \
+    "cancel") || die "Installation cancelled; nothing was changed."
+  case "$choice" in
+    continue*)
+      [[ -f "$STATE_FILE" ]] || die_with_steps "There is no started deployment to continue in this folder (only saved parameters for provider '${saved}')." \
+        "Start it with its saved parameters:|unset INSTANA_PROVIDER; ./install.sh"
+      RESUME=true; PROVIDER_SWITCH=keep
+      log "Continuing the recorded '${saved}' deployment (--resume)." ;;
+    set*)
+      ts=$(date +%Y%m%d-%H%M%S)
+      for f in "$STATE_FILE" "$CONFIG_FILE"; do
+        [[ -f "$f" ]] || continue
+        # Only the files of the recorded deployment are moved (saved parameters
+        # without PROVIDER but with a GCP project are GCP parameters).
+        if [[ "$f" == "$CONFIG_FILE" && "$(jq -r '.parameters.PROVIDER // (if (.parameters.GCP_PROJECT // "") != "" then "gcp" else empty end)' "$f" 2>/dev/null)" != "$saved" ]]; then continue; fi
+        mv "$f" "${f}.${ts}.old" || die "Could not set $(basename "$f") aside; nothing was changed."
+        ok "$(basename "$f") set aside as $(basename "$f").${ts}.old (nothing deleted)."
+      done
+      [[ "$saved" != gcp ]] || warn "The Google Cloud resources of that deployment were not touched; remove them later with the clean-up menu option (by VM name) if you no longer need them."
+      PROVIDER_SWITCH=new ;;
+    *) log "Installation cancelled; nothing was changed."; exit 0 ;;
+  esac
+}
+
 # After a dropped connection the operator simply runs ./install.sh again: if an
 # installer is still running inside a screen session, offer to jump back to it.
 offer_reattach_running_installer() {

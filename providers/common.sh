@@ -97,10 +97,25 @@ resolve_provider() {
   if [[ -n "$from_state" ]]; then saved="$from_state" saved_src=".install-state.json"
   elif [[ -n "$from_config" ]]; then saved="$from_config" saved_src=".install-config.json"; fi
   if [[ -n "$saved" && -n "$requested" && "$requested" != "$saved" ]]; then
-    provider_resolve_failed "Provider '${requested}' was requested (${requested_src}) but this folder records provider '${saved}' (${saved_src}); the provider of a recorded deployment never changes." \
-      "Continue with the recorded provider: drop the request and rerun:|unset INSTANA_PROVIDER; ./install.sh" \
-      "*For a deployment with provider '${requested}', use a new folder (each folder holds one deployment)."
-    return 1
+    # A new deployment in a terminal: the operator may continue the recorded
+    # one or set its files aside (renamed, never deleted) and start the new
+    # one. --resume and runs without a terminal keep the hard stop.
+    PROVIDER_SWITCH=""
+    if [[ "${RESUME:-false}" != true && -t 0 && " $PROVIDERS_SUPPORTED " == *" $requested "* ]] &&
+       declare -F offer_provider_switch >/dev/null; then
+      offer_provider_switch "$saved" "$saved_src" "$requested" "$requested_src"
+    fi
+    case "$PROVIDER_SWITCH" in
+      keep) requested="" ;;
+      new) saved="" saved_src="" ;;
+      *)
+        provider_resolve_failed "Provider '${requested}' was requested (${requested_src}) but this folder records provider '${saved}' (${saved_src}); the provider of a recorded deployment never changes." \
+          "Continue with the recorded provider: drop the request and rerun:|unset INSTANA_PROVIDER; ./install.sh" \
+          "If the recorded deployment is a lab you no longer need, delete its resources first (GCP resources cost money while they exist):|./install.sh --destroy" \
+          "*Or run the installer in a terminal without --resume: it offers to set the recorded files aside (renamed, nothing deleted) and start the '${requested}' deployment here." \
+          "*Or use a new folder for the '${requested}' deployment (each folder holds one deployment)."
+        return 1 ;;
+    esac
   fi
   chosen="${saved:-${requested:-gcp}}"
   chosen_src="${saved_src:-${requested_src}}"
