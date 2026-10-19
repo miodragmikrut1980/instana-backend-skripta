@@ -35,7 +35,7 @@ TAIL=$'instana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent
 
 # 1. The first key that the host accepts is found and offered with one Enter.
 touch "$SCEN/deny-key-google_compute_engine"
-run probe_key $'1\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
+run probe_key $'10.0.0.5\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "ubuntu @ $KEYS/google_compute_engine   refused"
 has "ubuntu @ $KEYS/id_ed25519   OK (port 22)"
@@ -47,7 +47,7 @@ echo "PASS: the login is found by trying the keys; the working one is offered"
 # 2. ubuntu refused: the local login name is tried next.
 me=$(id -un)
 touch "$SCEN/10.0.0.5.deny-user-ubuntu"
-run probe_user $'1\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
+run probe_user $'10.0.0.5\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "${me} @ $KEYS/google_compute_engine   OK (port 22)"
 has "SSH login:                     ${me} on port 22"
@@ -56,7 +56,7 @@ echo "PASS: when ubuntu is refused, the local login name is tried"
 
 # 3. Unreachable host: retry menu, re-enter the address, continue.
 echo 255 > "$SCEN/10.0.0.9.rc"; echo "ssh: connect to host 10.0.0.9 port 22: Connection timed out" > "$SCEN/10.0.0.9.err"
-run unreachable $'1\n10.0.0.9\n1\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
+run unreachable $'10.0.0.9\n1\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "Cannot log in to 10.0.0.9: no answer from 10.0.0.9 on port 22 within 5 s"
 has "Check from here: ssh -v -p 22"
@@ -68,7 +68,7 @@ echo "PASS: an unreachable host gives the retry menu, not a stop"
 
 # 4. A failed host check (sudo) is shown in the table; choose another host.
 host_facts 10.0.0.6 SUDO=no
-run bad_check $'1\n10.0.0.6\n\n2\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
+run bad_check $'10.0.0.6\n\n2\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "│ sudo        asks for a password"
 has "cannot run sudo without a password on 10.0.0.6"
@@ -78,7 +78,7 @@ echo "PASS: a failed host check is explained at the question, with the fix"
 
 # 5. Cancel from the retry menu stops with a plain message, nothing changed.
 echo 255 > "$SCEN/10.0.0.8.rc"; echo "ssh: connect to host 10.0.0.8 port 22: Connection refused" > "$SCEN/10.0.0.8.err"
-run cancel $'1\n10.0.0.8\n5\n'
+run cancel $'10.0.0.8\n5\n'
 [[ "$RC" == 0 ]] || fail "an operator cancel must exit 0 (like N at the plan), got $RC"
 has "nothing listens on port 22 of 10.0.0.8 (Connection refused)"
 has "Installation cancelled by the operator. Nothing was created or changed."
@@ -88,21 +88,21 @@ echo "PASS: cancel from the retry menu stops cleanly"
 # 6. Install type: suggested from CPU/RAM/disks with the reason; production
 #    on a host that is too small is explained and asked again.
 host_facts 10.0.0.6 CPUS=16 MEM_KB=65000000
-run type_small $'1\n10.0.0.6\n\n1\n2\n1\n\n'"$TAIL"
+run type_small $'10.0.0.6\n\n1\n2\n1\n\n'"$TAIL"
 done_ok
 has "Suggested from the checks above: demo ("
 has "production needs 28 vCPU / 112 GB"
 has "This host is too small for production"
 has "Installation type:             demo"
 host_facts 10.0.0.6
-run type_big $'1\n10.0.0.5\n\n1\n\n\n'"$TAIL"
+run type_big $'10.0.0.5\n\n1\n\n\n'"$TAIL"
 done_ok
 has "Suggested from the checks above: production ("
 has "Installation type:             production"
 echo "PASS: the install type is suggested from the host, with the reason"
 
 # 7. Three hosts = three-node; names are the hosts' own names (not asked).
-run three $'1\ninst-a.lab inst-b.lab inst-c.lab\n\n1\n\n'"$TAIL"
+run three $'inst-a.lab inst-b.lab inst-c.lab\n\n1\n\n'"$TAIL"
 done_ok
 has "Topology:                      three-node"
 has "NODE0_NAME = inst-a (the host's own name; E at the plan changes it)"
@@ -113,7 +113,7 @@ echo "PASS: three addresses give a three-node deployment named after the hosts"
 # 8. Back across the hosts (domain → disks → type → mode → login → hosts):
 #    single → three re-asks what depends on the hosts
 #    (names, disks, login check) instead of keeping stale single-node values.
-run hosts_change $'1\n10.0.0.5\n\n1\n1\n\n<\n<\n<\n<\n<\ninst-a.lab inst-b.lab inst-c.lab\n\n\n\n'"$TAIL"
+run hosts_change $'10.0.0.5\n\n1\n1\n\n<\n<\n<\n<\n<\ninst-a.lab inst-b.lab inst-c.lab\n\n\n\n'"$TAIL"
 done_ok
 has "Topology:                      three-node"
 has "Host inst-a:"
@@ -123,7 +123,7 @@ hasnt "VM name:"
 echo "PASS: changing the hosts re-asks names, disks and the login"
 
 # 9. A wrong count of addresses is explained and asked again.
-run count_bad $'1\n10.0.0.5 10.0.0.6\nn\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
+run count_bad $'10.0.0.5 10.0.0.6\nn\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "2 addresses given; give 1 (single-node) or 3 (three-node), separated by spaces."
 echo "PASS: 2 addresses are refused with the reason"
@@ -142,7 +142,7 @@ exit 0
 FAKE
 printf '#!/usr/bin/env bash\ncase "$1" in -I) echo 10.172.0.2 ;; *) echo ctl ;; esac\n' > "$FAKE_ROOT/bin/hostname"
 chmod +x "$FAKE_ROOT/bin/gcloud" "$FAKE_ROOT/bin/hostname"
-run gcloud_list $'1\n2\n\n1\n1\n\n'"$TAIL"
+run gcloud_list $'2\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "ssh-test-1             10.0.0.5        34.65.106.11    europe-west6-b  n2-standard-16"
 has "a)  enter another address"
@@ -153,7 +153,7 @@ echo "PASS: the gcloud list shows name, addresses, zone and machine type; the co
 
 # 11. Disks: one proposed mapping, smallest disk that fits, largest role first.
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_ROOT/bin/gcloud"; printf '#!/usr/bin/env bash\necho ctl\n' > "$FAKE_ROOT/bin/hostname"
-run disk_map $'1\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
+run disk_map $'10.0.0.5\n\n1\n1\n\n'"$TAIL"
 done_ok
 grep -qE "analytics +≥  500 GB  →  sdb +600 GB" "$OUT" || fail "analytics → sdb"
 grep -qE "metrics +≥  300 GB  →  sdc +1100 GB" "$OUT" || fail "metrics → sdc"
@@ -163,7 +163,7 @@ echo "PASS: the disk mapping is proposed (smallest fitting disk, largest role fi
 
 # 12. Three-node node 1 (the review case): data must not take the 1300 GB disk
 #     that analytics needs.
-run disk_three $'1\ninst-a.lab inst-b.lab inst-c.lab\n\n1\n\n'"$TAIL"
+run disk_three $'inst-a.lab inst-b.lab inst-c.lab\n\n1\n\n'"$TAIL"
 done_ok
 grep -qE "analytics +≥ 1200 GB  →  sdd +1300 GB" "$OUT" || fail "node 1 analytics → sdd"
 grep -qE "data +≥  500 GB  →  sdb +600 GB" "$OUT" || fail "node 1 data → sdb"
@@ -171,21 +171,21 @@ has "inst-c (inst-c.lab): no data disk needed"
 echo "PASS: three-node mapping keeps the big disk for analytics"
 
 # 13. c = choose each disk yourself, then the mapping is shown again.
-run disk_choose $'1\n10.0.0.5\n\n1\n1\nc\n2\n1\n1\n1\n\n'"$TAIL"
+run disk_choose $'10.0.0.5\n\n1\n1\nc\n2\n1\n1\n1\n\n'"$TAIL"
 done_ok
 has "? Disk for analytics on instana-backend:"
 grep -qE "analytics +≥  500 GB  →  sdc +1100 GB" "$OUT" || fail "chosen disk not used"
 echo "PASS: c lets the operator choose each disk, then confirm the mapping"
 
 # 14. "<" at the mapping goes back to the install type.
-run disk_back $'1\n10.0.0.5\n\n1\n1\n<\n\n\n'"$TAIL"
+run disk_back $'10.0.0.5\n\n1\n1\n<\n\n\n'"$TAIL"
 done_ok
 [[ "$(count '? Select installation type:')" == 2 ]] || fail "< at the mapping must go back to the type"
 echo "PASS: < at the disk mapping goes back"
 
 # 15. No complete mapping possible: explained with the fix, no stop until cancel.
 NO_DATA_DISKS=1 host_facts 10.0.0.7
-run disk_none $'1\n10.0.0.7\n\n1\n1\n3\n'
+run disk_none $'10.0.0.7\n\n1\n1\n3\n'
 [[ "$RC" == 0 ]] || fail "an operator cancel must exit 0, got $RC"
 has "no unused disk of at least 500 GB is left for the Instana analytics directory"
 has "Attach an empty disk of that size"
@@ -209,7 +209,7 @@ esac
 exit 0
 FAKE
 chmod +x "$FAKE_ROOT/bin/gcloud"
-run plan_network $'1\n1\n\n1\n1\n\n'"$TAIL"
+run plan_network $'1\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "Changes the installer will make on the host(s) (Y below approves them):"
 has "Network (outside the host(s); the installer does not change it):"
@@ -265,7 +265,7 @@ echo "PASS: one Y at the plan approves the host changes (terminal only), recorde
 MANY="$FAKE_ROOT/many"; mkdir -p "$MANY"
 for k in k1 k2 k3 k4 k5 k6; do cp "$FAKE_KEY" "$MANY/$k"; touch "$SCEN/deny-key-$k"; done
 : > "$SSH_LOG"
-INSTANA_SSH_DIR="$MANY" run tries $'1\n10.0.0.5\n5\n'
+INSTANA_SSH_DIR="$MANY" run tries $'10.0.0.5\n5\n'
 tries=$(grep -c -- "-- 10.0.0.5 true" "$SSH_LOG" || true)
 [[ "$tries" == 4 ]] || fail "expected 4 login tries, got $tries"
 while IFS= read -r line; do
@@ -277,7 +277,7 @@ echo "PASS: at most 4 tries, each non-interactive with exactly one key"
 
 # 19. A host that does not answer is tried once, not with every key.
 : > "$SSH_LOG"
-run timeout_once $'1\n10.0.0.9\n5\n'
+run timeout_once $'10.0.0.9\n5\n'
 [[ "$(grep -c -- "-- 10.0.0.9 true" "$SSH_LOG" || true)" == 1 ]] || fail "an unreachable host must be tried once"
 echo "PASS: no further tries when the host itself does not answer"
 
@@ -285,7 +285,7 @@ echo "PASS: no further tries when the host itself does not answer"
 LOCK="$FAKE_ROOT/lock"; mkdir -p "$LOCK"; cp "$FAKE_KEY" "$LOCK/google_compute_engine"; cp "$FAKE_KEY" "$LOCK/id_ed25519"
 touch "$SCEN/locked-google_compute_engine"
 : > "$SSH_LOG"
-INSTANA_SSH_DIR="$LOCK" run locked $'1\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
+INSTANA_SSH_DIR="$LOCK" run locked $'10.0.0.5\n\n1\n1\n\n'"$TAIL"
 done_ok
 if grep -q -- "-i $LOCK/google_compute_engine" "$SSH_LOG"; then fail "a locked key without ssh-agent was passed to ssh"; fi
 has "google_compute_engine: passphrase-protected and not loaded in ssh-agent — skipped"
@@ -295,11 +295,11 @@ echo "PASS: a passphrase key without ssh-agent is skipped, never tried"
 # 21. A changed login reads the host facts again (no reuse of facts read with
 #     the earlier login).
 : > "$SSH_LOG"
-run login_same $'1\n10.0.0.5\n\n<\n\n1\n1\n\n'"$TAIL"
+run login_same $'10.0.0.5\n\n<\n\n1\n1\n\n'"$TAIL"
 done_ok
 base=$(grep -o FACTS_END=1 "$SSH_LOG" | wc -l | tr -d ' ')
 : > "$SSH_LOG"
-run login_change $'1\n10.0.0.5\n\n<\nc\nadmin\n\n\n\n1\n1\n\n'"$TAIL"
+run login_change $'10.0.0.5\n\n<\nc\nadmin\n\n\n\n1\n1\n\n'"$TAIL"
 done_ok
 [[ "$(grep -o FACTS_END=1 "$SSH_LOG" | wc -l | tr -d ' ')" == $(( base + 1 )) ]] || fail "facts must be read again after the login changed (and only then)"
 # ... already in the questions (the checks shown are those of the new login).
@@ -309,7 +309,7 @@ echo "PASS: a changed login reads the host facts again"
 
 # 22. Back to the install type after the disks were mapped: the suggestion
 #     still sees all unused disks (production stays possible).
-run type_after_map $'1\n10.0.0.5\n\n1\n1\n\n<\n<\n2\n\n'"$TAIL"
+run type_after_map $'10.0.0.5\n\n1\n1\n\n<\n<\n2\n\n'"$TAIL"
 done_ok
 [[ "$(count 'Suggested from the checks above: production (')" == 2 ]] || fail "the suggestion must not change after the disk mapping"
 hasnt "This host is too small for production"
@@ -317,7 +317,7 @@ has "Installation type:             production"
 echo "PASS: going back to the type after the disk mapping keeps the suggestion"
 
 # 23. A port given with an earlier address does not stick to new hosts.
-run port_reset $'1\n10.0.0.5:2222\n<\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
+run port_reset $'10.0.0.5:2222\n<\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "SSH login:                     ubuntu on port 22,"
 echo "PASS: host:port does not stick after the hosts are picked again"
@@ -335,11 +335,11 @@ esac
 exit 0
 FAKE
 chmod +x "$FAKE_ROOT/bin/gcloud"
-run sslip $'1\n1\n\n1\n1\n\n\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\ny'
+run sslip $'1\n\n1\n1\n\n\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\ny'
 done_ok
 has "Domain for the UI; suggested: 34-65-106-11.sslip.io (sslip.io, no DNS setup needed)."
 has "Base domain:                   instana.34-65-106-11.sslip.io"
-run sslip_air $'1\n1\n\n2\n1\n\ninstana.example.com\n'
+run sslip_air $'1\n\n2\n1\n\ninstana.example.com\n'
 hasnt "sslip.io"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_ROOT/bin/gcloud"
 echo "PASS: sslip.io is suggested only for an online existing-host lab with a known public IP"
@@ -362,13 +362,13 @@ esac
 exit 0
 FAKE
 chmod +x "$FAKE_ROOT/bin/gcloud"
-run fw_deny $'1\n1\n\n1\n1\n\n'"$TAIL"
+run fw_deny $'1\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "✗ blocked or not verifiable: TCP 443 (deny rule deny-https)"
 has "✓ allowed from anywhere: TCP 8443, 80"
 has "organization or network firewall policies are not"
 export FWCASE=noaccess
-run fw_noaccess $'1\n1\n\n1\n1\n\n'"$TAIL"
+run fw_noaccess $'1\n\n1\n1\n\n'"$TAIL"
 unset FWCASE
 done_ok
 has "not verifiable (could not read them: ERROR: (gcloud.compute.firewall-rules.list) Required 'compute.firewalls.list' permission)"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Input file (--config FILE, or "import them from a JSON file" in the menu):
+# Input file (--config FILE, or "Import a JSON file" in the menu):
 # values from the file are checked like typed answers, only missing or invalid
 # ones are asked, and every stop explains what is wrong and how to fix it.
 # Uses the files in examples/ and mocks gcloud/curl like test-dry-run.sh.
@@ -41,6 +41,10 @@ new_case() {
   chmod 600 "$CASE"/examples/*.json
   OUT="$CASE/out.txt"
 }
+
+# found_here — puts an input file into the case folder; only then the
+# parameter-source menu is shown (otherwise the questions start at once).
+found_here() { cp "$CASE/examples/single-gcp-online-full.json" "$CASE/instana-config-found.json"; }
 
 # run_installer STDIN ARGS... — exit code in RC, colour-free output in $OUT.
 run_installer() {
@@ -103,12 +107,18 @@ has "- TENANT_NAME: 'Tenant-0' cannot be used: Tenant name 'Tenant-0' is invalid
 has 'Example: "TENANT_NAME": "tenant0".'
 echo "PASS: no terminal: every invalid value is listed with the reason and a valid example"
 
-# 4. Import from the menu: invalid values are explained, then asked; typed answers win.
+# 4. Import from the menu: a file found in the folder makes the menu appear
+#    and is the Enter default at the path; invalid values are explained,
+#    then asked; typed answers win.
 new_case invalid_menu
-run_installer $'2\n'"$CASE/examples/single-gcp-invalid-values.json"$'\nmy-project-1\n\nmikrut-lab\ninstana.lab.example.com\ntenant0\ny' --dry-run
+cp "$CASE/examples/single-gcp-invalid-values.json" "$CASE/instana-config-invalid.json"
+run_installer $'2\n\nmy-project-1\n\nmikrut-lab\ninstana.lab.example.com\ntenant0\ny' --dry-run
 completed
+has "? Where do the answers come from?"
+has "2) Import a JSON file"
+has "found: $CASE/instana-config-invalid.json ("
 for k in GCP_PROJECT SSH_SOURCE_CIDR VM_NAME BASE_DOMAIN TENANT_NAME; do
-  has "${k} from single-gcp-invalid-values.json cannot be used (reason above); please enter it now. Valid example:"
+  has "${k} from instana-config-invalid.json cannot be used (reason above); please enter it now. Valid example:"
 done
 has "GCP Project:                   my-project-1"
 has "VM name:                       mikrut-lab"
@@ -141,6 +151,7 @@ run_installer "" --config examples/single-gcp-alias-conflict.json --dry-run
 [[ "$RC" != 0 ]] || fail "conflict without a terminal must stop"
 has "- GCP_ZONE: the file gives two different values, GCP_ZONE='europe-west6-b' and PROVIDER_LOCATION='europe-west6-a' (the same setting under two names). Keep only one of them."
 new_case conflict_menu
+found_here   # an input file in the folder: the parameter-source menu is shown
 run_installer $'2\n'"$CASE/examples/single-gcp-alias-conflict.json"$'\n2\ny' --dry-run
 completed
 has "gives two different values for the same setting: GCP_ZONE='europe-west6-b' and PROVIDER_LOCATION='europe-west6-a'"
@@ -150,6 +161,7 @@ echo "PASS: alias conflict: listed without a terminal, chosen with one"
 
 # 8. Unknown key: ignored with a suggestion; the real key is then asked.
 new_case unknown_key
+found_here   # an input file in the folder: the parameter-source menu is shown
 run_installer $'2\n'"$CASE/examples/single-gcp-unknown-key.json"$'\nmytenant\ny' --dry-run
 completed
 has "Unknown key TENNANT_NAME in single-gcp-unknown-key.json is ignored. Did you mean TENANT_NAME? Correct the name in the file so it is used next time."
@@ -271,6 +283,7 @@ echo "PASS: unusable files and option combinations stop with HOW TO RESOLVE"
 
 # 15. Menu import: a wrong path is explained and asked again.
 new_case menu_path
+found_here   # an input file in the folder: the parameter-source menu is shown
 run_installer $'2\n/nope.json\nn\n'"$CASE/examples/single-gcp-online-full.json"$'\ny' --dry-run
 completed
 has "Input file not found: /nope.json"
@@ -375,6 +388,7 @@ echo "PASS: existing deployment: resume refused for a file, set-aside continues"
 
 # 20. Closed input in the new questions stops with what happened and how to go on.
 new_case conflict_eof
+found_here   # an input file in the folder: the parameter-source menu is shown
 run_installer $'2\n'"$CASE/examples/single-gcp-alias-conflict.json" --dry-run
 [[ "$RC" != 0 ]] || fail "closed input at the conflict question must stop"
 has "Input ended while choosing between GCP_ZONE='europe-west6-b' and PROVIDER_LOCATION='europe-west6-a'"
@@ -385,7 +399,9 @@ run_installer "e" --config examples/single-gcp-online-full.json --dry-run
 has "Input ended while choosing the value to change; the installation was not started and nothing was created."
 has "at the plan answer E and pick the value by its number"
 new_case menu_eof
-run_installer "" --dry-run
+found_here   # an input file in the folder: the parameter-source menu is shown
+# (an empty line would be Enter = 1; the input must really be closed)
+RC=0; ( cd "$CASE" && PATH="$TEST_ROOT/bin:$PATH" bash ./install.sh --dry-run < /dev/null ) > "$OUT" 2>&1 || RC=$?
 [[ "$RC" != 0 ]] || fail "closed input at the source menu must stop"
 has "Input ended before the way to provide the parameters was chosen"
 has "./install.sh --config instana-config.json"
@@ -420,5 +436,26 @@ run_installer "" --config kube.json --dry-run
 has "- KUBE_USER_ACCESS: 'maybe' cannot be used: KUBE_USER_ACCESS 'maybe' is not one of: 'no', 'yes'."
 has 'Example: "KUBE_USER_ACCESS": "no" (default) or "yes".'
 echo "PASS: KUBE_USER_ACCESS other than yes/no is refused with the reason"
+
+# 25. Nothing to import here (no saved answers, no instana-config*.json):
+#     no source menu, one tip line, and no "back" at the very first question.
+#     With a file here the menu is shown and Enter = 1 = type the answers.
+ANSWERS=$'1\n1\n1\n\ninstana-backend\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\ny'
+new_case no_menu
+run_installer "$ANSWERS" --dry-run
+completed
+has "Tip: answers can also come from a file: ./install.sh --config FILE (config-generator.html)"
+hasnt "Where do the answers come from?"
+if grep -A3 "? Select deployment topology:" "$OUT" | grep -q "0) ← back"; then fail "the first question has nothing to go back to"; fi
+grep -A3 "? Select installation connectivity mode:" "$OUT" | grep -q "0) ← back" || fail "later questions offer 0) ← back"
+new_case menu_enter
+found_here
+run_installer $'\n'"$ANSWERS" --dry-run
+completed
+has "? Where do the answers come from?"
+hasnt "Tip: answers can also come from a file"
+hasnt "Path of the JSON file"
+grep -A3 "? Select deployment topology:" "$OUT" | grep -q "0) ← back" || fail "after the menu the first question goes back to it"
+echo "PASS: no source menu when there is nothing to import; with a file Enter = type the answers"
 
 echo "All input-file tests passed."

@@ -18,17 +18,19 @@ cat > "$CASE/drv.sh" <<'EOF'
 set --; source ./install.sh
 NAV_ON=1
 hint "Short help line." "Longer help line one."
-for i in 1 2 3 4 5 6; do rc=0; v=$(prompt X "Name" "def") || rc=$?; echo "RESULT[$v] rc=$rc"; done
+for i in 1 2 3 4 5 6 7 8; do rc=0; v=$(prompt X "Name" "def") || rc=$?; echo "RESULT[$v] rc=$rc"; done
 EOF
-PTY_SCRIPT=./drv.sh pty_install "$CASE" 'RAW:\x1b[D' '' 'RAW:\x1b[D' '<' 'RAW:\x1bOD' '' '?' 'abc' '' 'RAW:\x1b[D' 'RAW:\x7f' 'xyz'
+PTY_SCRIPT=./drv.sh pty_install "$CASE" 'RAW:\x1b[D' '' 'RAW:\x1b[D' '<' 'RAW:\x1bOD' '' '?' 'abc' '' 'RAW:\x1b[D' 'RAW:\x7f' 'xyz' \
+  'RAW:\x1b[D\x7fq\n' 'RAW:\x1b[D' 'RAW:\x08' 'w'
 OUT="$CASE/pty.txt"
 mapfile -t res < <(grep -o 'RESULT\[[^]]*\] rc=[0-9]' "$OUT")
-expected=("RESULT[] rc=3" "RESULT[] rc=3" "RESULT[] rc=3" "RESULT[abc] rc=0" "RESULT[def] rc=0" "RESULT[xyz] rc=0")
+expected=("RESULT[] rc=3" "RESULT[] rc=3" "RESULT[] rc=3" "RESULT[abc] rc=0" "RESULT[def] rc=0" "RESULT[xyz] rc=0"
+          "RESULT[q] rc=0" "RESULT[w] rc=0")
 [[ "${res[*]}" == "${expected[*]}" ]] || fail "got: ${res[*]}"
 grep -q "Short help line.  ? = more" "$OUT" || fail "the hint must offer ? = more"
 grep -q "Longer help line one." "$OUT" || fail "? must show the longer help"
 grep -q "\[← = back\]" "$OUT" || fail "a text question must name the arrow key for back"
-echo "PASS: arrow+Enter, arrow+<+Enter and ESC O D each go back once; ? shows help; Backspace undoes the arrow"
+echo "PASS: arrow+Enter, arrow+<+Enter and ESC O D each go back once; ? shows help; Backspace (^? or ^H, also typed at once) undoes the arrow"
 
 # 2. Pick list in a terminal: 0) ← back, the arrow, and Enter = default.
 newcase pick

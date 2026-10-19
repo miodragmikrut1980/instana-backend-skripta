@@ -672,9 +672,26 @@ input_resolve_provider() {
   fi
 }
 
+# file_age FILE — how long ago FILE was changed, e.g. "5 min", "3 h", "2 days".
+file_age() {
+  local m now d
+  m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo "")
+  [[ "$m" =~ ^[0-9]+$ ]] || { printf '?'; return 0; }
+  now=$(date +%s); d=$(( now - m )); (( d >= 0 )) || d=0
+  if (( d < 3600 )); then printf '%d min' $(( d / 60 ))
+  elif (( d < 172800 )); then printf '%d h' $(( d / 3600 ))
+  else printf '%d days' $(( d / 86400 )); fi
+}
+
+# default_input_file [here] — newest instana-config*.json in the current
+# folder, the installer folder or the home folder ("here": not the home folder).
 default_input_file() {
   local f
-  f=$(ls -t "$PWD"/instana-config*.json "$SCRIPT_DIR"/instana-config*.json "$HOME"/instana-config*.json 2>/dev/null | head -1 || true)
+  if [[ "${1:-}" == here ]]; then
+    f=$(ls -t "$PWD"/instana-config*.json "$SCRIPT_DIR"/instana-config*.json 2>/dev/null | head -1 || true)
+  else
+    f=$(ls -t "$PWD"/instana-config*.json "$SCRIPT_DIR"/instana-config*.json "$HOME"/instana-config*.json 2>/dev/null | head -1 || true)
+  fi
   printf '%s' "$f"
 }
 
@@ -721,33 +738,43 @@ choose_parameter_source() {
     import_parameters
     return 0
   fi
-  local choice
-  local -a options=("enter the parameters now (questions one by one)" \
-                    "import them from a JSON file (made with config-generator.html or --export-config)")
+  local choice found
+  found=$(default_input_file here)
+  # Nothing to import or reuse here: no menu, straight to the questions.
+  if [[ ! -f "$CONFIG_FILE" && -z "$found" ]]; then
+    echo "" >&2
+    echo -e "    ${DIM}Tip: answers can also come from a file: ./install.sh --config FILE (config-generator.html)${RESET}" >&2
+    PARAMS_SOURCE=manual; WIZ_EXIT=done
+    collect_parameters
+    return 0
+  fi
+  local -a options=("Type them now"$'\t'"questions one by one")
+  if [[ -n "$found" ]]; then
+    options+=("Import a JSON file"$'\t'"found: ${found/#$HOME/~} ($(file_age "$found") old); Enter at the path takes it")
+  else
+    options+=("Import a JSON file"$'\t'"made with config-generator.html or --export-config")
+  fi
   if [[ -f "$CONFIG_FILE" ]]; then
-    options+=("reuse the parameters saved in this folder (.install-config.json; keys are asked again)" \
-              "edit the parameters saved in this folder (saved values offered as defaults)")
+    options+=("Reuse the saved answers"$'\t'"of the last run in this folder; keys are asked again" \
+              "Edit the saved answers"$'\t'"saved values offered as defaults")
   fi
   # "<" at the first question (or at the file path) comes back to this menu.
   local WIZ_BACK_EXIT=1
   while true; do
     echo "" >&2
-    hint "Type the answers now, or import a file prepared with config-generator.html: values from the file are" \
-         "checked like typed answers, and only the missing or invalid ones are asked." \
-         "In every question, < goes back to the previous one; blocks without '<' (hosts, disks, package, versions)" \
-         "are passed over on the way back, and E at the plan changes their values."
-    choice=$(prompt_choice "How do you want to provide the deployment parameters?" "${options[@]}") ||
+    hint "Values from a file are checked like typed answers; only missing or invalid ones are asked."
+    choice=$(PROMPT_CHOICE_DEFAULT="Type them now" prompt_choice "Where do the answers come from?" "${options[@]}") ||
       die_with_steps "Input ended before the way to provide the parameters was chosen; the installation was not started and nothing was created." \
         "Run the installer in a terminal and answer the menu (1 = type the answers, 2 = import a file):|./install.sh" \
         "Or, without a terminal, give a complete input file:|./install.sh --config instana-config.json"
     WIZ_EXIT=done
     case "$choice" in
-      "enter"*) PARAMS_SOURCE=manual; collect_parameters ;;
-      "import"*)
+      Type*) PARAMS_SOURCE=manual; collect_parameters ;;
+      Import*)
         NAV_BACK=0; NAV_ON=1; INPUT_CONFIG=""; ask_input_file; NAV_ON=0
         if (( NAV_BACK )); then INPUT_CONFIG=""; continue; fi
         import_parameters ;;
-      "reuse"*) PARAMS_SOURCE=saved; offer_saved_parameters "reuse saved parameters" || collect_parameters ;;
+      Reuse*) PARAMS_SOURCE=saved; offer_saved_parameters "reuse saved parameters" || collect_parameters ;;
       *) PARAMS_SOURCE=saved; offer_saved_parameters "edit parameters (saved text values as defaults)" || collect_parameters ;;
     esac
     [[ "$WIZ_EXIT" == back ]] || return 0

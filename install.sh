@@ -930,6 +930,8 @@ wiz_run() {
     WIZ_REVISIT=""; (( i != revisit )) || WIZ_REVISIT="$step"
     revisit=-1
     NAV_BACK=0; NAV_ASKED=0; NAV_ON=1
+    # Nothing to go back to (first question, no menu before it): no "back".
+    if (( ${#stack[@]} == 0 )) && [[ "${WIZ_BACK_EXIT:-0}" != 1 && -z "${EDIT_KEY:-}" ]]; then NAV_ON=0; fi
     "$step"
     NAV_ON=0; WIZ_REVISIT=""
     if (( NAV_BACK )); then
@@ -1169,17 +1171,20 @@ wiz_download_key() {
   hint "Download key: access to IBM's software repository (from your Instana entitlement)." \
        "The three keys come from the Instana portal or the IBM license center:" \
        "download key = access to the software repository; agent key = lets agents connect; sales key = your license." \
-       "Paste each one (typing shows • per character)."
+       "Paste each one (typing shows • per character)." \
+       "A key that is only '<' or '?' is not possible here ('<' alone goes back, '?' shows this help)."
   prompt_secret_required "DOWNLOAD_KEY" "Instana download key" "Download key"
 }
 wiz_agent_key() {
   use_imported_secret AGENT_KEY && return 0
-  hint "Agent key: lets the Instana agents connect to this backend."
+  hint "Agent key: lets the Instana agents connect to this backend." \
+       "A key that is only '<' or '?' is not possible here ('<' alone goes back, '?' shows this help)."
   prompt_secret_required "AGENT_KEY" "Instana agent key" "Agent key"
 }
 wiz_sales_key() {
   use_imported_secret SALES_KEY && return 0
-  hint "Sales key: your Instana license."
+  hint "Sales key: your Instana license." \
+       "A key that is only '<' or '?' is not possible here ('<' alone goes back, '?' shows this help)."
   prompt_secret_required "SALES_KEY" "Instana sales key" "Sales key"
 }
 

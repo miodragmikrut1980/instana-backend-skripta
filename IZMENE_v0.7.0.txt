@@ -588,3 +588,20 @@ and every answer was lost.
 - Tests: test-start-flow.sh 7-9 (menu texts, target question and 0 = back,
   --dry-run with and without INSTANA_PROVIDER, Enter reattaches); mutants
   killed.
+
+2026-10-19 — UX v3: parameter-source menu only when there is something to import (C2)
+- No saved answers here and no instana-config*.json in this folder: the menu
+  is not shown; one dimmed line says that answers can also come from a file
+  (./install.sh --config FILE, config-generator.html), and the questions start.
+- Otherwise "Where do the answers come from?": 1) Type them now (Enter = 1),
+  2) Import a JSON file (a file found here is named with its age and is the
+  Enter default at the path), Reuse / Edit the saved answers. The jargon line
+  about blocks without '<' is gone.
+- The first question offers no "back" when there is nothing before it (no
+  menu); after the menu it goes back to the menu as before.
+- Key questions: "?" also says that a key of only '<' or '?' is not possible.
+- Tests: test-config-file.sh 25 (no menu + tip, no back at the first question,
+  menu with a file, Enter = 1), cases that import from the menu put a file
+  into the folder first; test-dry-run.sh / test-ssh-login-flow.sh inputs no
+  longer answer the menu; test-answer-keys.sh: Backspace as ^? or ^H, also
+  typed together with the arrow; mutants killed.

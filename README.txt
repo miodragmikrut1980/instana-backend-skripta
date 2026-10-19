@@ -82,7 +82,10 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
    S = sacuvaj parametre u novi fajl (bez kljuceva) i stani, N = odustani.
      ./install.sh --export-config [fajl]   parametri sacuvani u ovom folderu
                                            (.install-config.json) kao takav fajl
-   Rucni unos (odgovori jedan po jedan) ostaje prva opcija u meniju (vidi 6).
+   Meni "Where do the answers come from?" (1 = kucaj odgovore, Enter = 1) se
+   prikazuje samo kad ovde ima sta da se uveze (instana-config*.json u folderu
+   ili sacuvani odgovori); inace pitanja krecu odmah, uz jedan red sa savetom
+   za --config (vidi 6).
    Three-node ne pita velicinu (uvek small, 3x n2-standard-16).
 
 6) TOK PITANJA (UX v2) - NAZAD, PREDLOZI, PLAN:

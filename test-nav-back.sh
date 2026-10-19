@@ -60,6 +60,10 @@ run() {
   CASE="$TEST_ROOT/$name"; mkdir -p "$CASE"
   cp -R "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR/providers" "$SCRIPT_DIR/examples" "$CASE/"
   chmod 600 "$CASE"/examples/*.json
+  # An input file in the folder: the parameter-source menu is shown, so "<"
+  # at the first question has somewhere to go (without one the questions
+  # start at once; test-start-flow.sh / test-config-file.sh cover that).
+  [[ -n "${NOFILE:-}" ]] || cp "$CASE/examples/single-gcp-online-full.json" "$CASE/instana-config-found.json"
   [[ -z "${CERTDIR:-}" ]] || cp "$TEST_ROOT/lab.crt" "$TEST_ROOT/lab.key" "$CASE/"
   jq 'del(.parameters.GCP_ZONE, .parameters.BASE_DOMAIN)' "$CASE/examples/single-gcp-online-full.json" > "$CASE/nozone.json"
   chmod 600 "$CASE/nozone.json"
@@ -102,7 +106,7 @@ echo "PASS: a changed install type is used by the size question"
 # 4. "<" at the first question returns to the parameter-source menu.
 run first_back $'1\n<\n1\n1\n1\n1\n\ninstana-backend\n'"$TAIL"
 done_ok
-[[ "$(count '? How do you want to provide the deployment parameters?')" == 2 ]] || fail "menu must be shown again"
+[[ "$(count '? Where do the answers come from?')" == 2 ]] || fail "menu must be shown again"
 echo "PASS: < at the first question goes back to the menu"
 
 # 5. Secrets: "<" from the agent key back to the download key; Enter keeps it.
@@ -138,7 +142,7 @@ echo "PASS: in a run from a file, < at the first asked question explains where e
 # 9. Import from the menu: "<" at the file path returns to the menu.
 run import_back $'2\n<\n1\n1\n1\n1\n\ninstana-backend\n'"$TAIL"
 done_ok
-[[ "$(count '? How do you want to provide the deployment parameters?')" == 2 ]] || fail "menu must be shown again after < at the file path"
+[[ "$(count '? Where do the answers come from?')" == 2 ]] || fail "menu must be shown again after < at the file path"
 echo "PASS: < at the file path goes back to the menu"
 
 # 10. Location block: c changes one value; "<" inside the change menu returns

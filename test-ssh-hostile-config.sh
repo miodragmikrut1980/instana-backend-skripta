@@ -27,7 +27,7 @@ saved_case() {
     MACHINE_TYPE:"existing host", TLS_CRT_PATH:"", TLS_KEY_PATH:"", AIRGAP_ARCHIVE:""} + {($k): $v})}' > "$dir/.install-config.json"
   chmod 600 "$dir/.install-config.json"
   : > "$SSH_LOG"
-  # Menu: 3 = reuse the parameters saved in this folder.
+  # Menu: 3 = reuse the saved answers of this folder.
   RC=0
   (cd "$dir" && bash ./install.sh --dry-run <<< $'3\n' > out.raw 2>&1) || RC=$?
   sed 's/\x1b\[[0-9;]*m//g' "$dir/out.raw" > "$dir/out.txt"
