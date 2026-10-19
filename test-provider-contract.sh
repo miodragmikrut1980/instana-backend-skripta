@@ -104,8 +104,13 @@ cp -R "$(dirname "$0")"/*.sh "$(dirname "$0")"/providers "$TEST_DIR/"
   echo '{"provider":"gcp","vm_lab":"created"}' > .install-state.json
   msg=$(progress_fail_current "test stop" 2>&1)
   [[ "$msg" == *"continue where it stopped: ./install.sh --resume"* ]] || { echo "FAIL: stop hint after resources: $msg" >&2; exit 1; }
+  # An existing-host deployment records only host_*/hostdisk_* keys.
+  echo '{"provider":"ssh","ssh_target":"ubuntu@10.0.0.5:22","host_lab":"checked"}' > .install-state.json
+  resolve_provider
+  msg=$(progress_fail_current "test stop" 2>&1)
+  [[ "$msg" == *"./install.sh --resume"* ]] || { echo "FAIL: ssh stop hint after host checks: $msg" >&2; exit 1; }
   rm -f .install-state.json
 )
-echo 'PASS: the stop hint names --resume only when something was created'
+echo 'PASS: the stop hint names --resume only when something was created (GCP and existing hosts)'
 echo 'PASS: the confirmed plan records the provider in the state file; ACTIVE_PROVIDER from the environment is ignored'
 

@@ -38,8 +38,10 @@ base() {
   VM_HOST=203.0.113.5; test "$(provider_get_ip lab "" "" public)" = 203.0.113.5
   SSH_VIA_PRIVATE=true; test "$(provider_get_ip lab "" "" public)" = unknown
   SSH_VIA_PRIVATE=false; VM_HOST=10.0.0.5
-  prov_ssh_is_private 172.20.1.1 && prov_ssh_is_private 100.64.0.1 && prov_ssh_is_private 192.168.0.1
-  if prov_ssh_is_private 172.32.0.1 || prov_ssh_is_private 8.8.8.8; then echo "FAIL: public address taken as private" >&2; exit 1; fi
+  for a in 10.1.2.3 172.20.1.1 100.64.0.1 192.168.0.1 127.0.0.1 169.254.10.1; do
+    prov_ssh_is_private "$a" || { echo "FAIL: $a not treated as non-public" >&2; exit 1; }
+  done
+  if prov_ssh_is_private 172.32.0.1 || prov_ssh_is_private 8.8.8.8 || prov_ssh_is_private 169.255.0.1; then echo "FAIL: public address taken as private" >&2; exit 1; fi
   rm -f "$FAKE_ROOT/bin/gcloud"
   test "$(provider_hint ssh lab "" "" 'df -h /')" = "ssh -i $FAKE_KEY -p 2222 ubuntu@10.0.0.5 'df -h /'"
   test "$(provider_ssh_port)" = 2222

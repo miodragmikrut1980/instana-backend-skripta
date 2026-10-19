@@ -216,6 +216,12 @@ creates, deletes, or reboots a host without confirmation.
   instead of "Installation Complete!" with "DRY-RUN" as IP and /etc/hosts
   lines (also GCP; the rest of the GCP dry-run output is unchanged).
 - Disk prompts say "the Instana <role> directory" (no more "data data").
+- Fix: changing any value at the plan ("E") no longer stops an existing-
+  host deployment whose disks exactly cover the roles (the disk check now
+  counts the host's own chosen disks as available). The disk filter keeps
+  every other open role of the host possible, in whatever order roles are
+  filled. Loopback (127/8) and link-local (169.254/16) addresses are never
+  offered as the public IP.
 
 2026-10-19 — UX v2, step 1: pick-list default, control machine never listed
 - Pick lists can carry a default: "Select [1-3, Enter = 1]" and Enter
