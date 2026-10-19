@@ -340,3 +340,20 @@ and every answer was lost.
 - Runs from a file and E at the plan keep the per-disk questions.
 - Tests: test-ssh-login-flow.sh cases 11-15; test-dry-run.sh existing-host
   inputs (disks = one Enter).
+
+2026-10-19 — UX v2: review fixes for the GCP location block
+- After another project or zone in the block, a network that was detected
+  from this machine (or the default) is worked out again: this machine's
+  network/subnet are offered only in its own project and region, otherwise
+  default/default with that label (a typed or saved network is kept).
+- When this machine's public IP cannot be detected, the block shows
+  "detection failed — 0.0.0.0/0 allows SSH from the whole internet" and
+  Enter does not accept it: the operator types the IP/32 (hint: curl
+  ifconfig.me) or 0.0.0.0/0 explicitly.
+- The VM-name check treats only "not found" as free; any other gcloud
+  answer (permission, API, timeout) is reported and the check is left to
+  phase 3, which already stops on an existing VM.
+- The GCP plan shows the IBM minimum for the install type (CPU/RAM, disk
+  IOPS and throughput); the full table is shown with E → SIZE.
+- Tests: test-nav-back.sh cases 18-20 with a metadata-aware curl mock;
+  gcloud mocks answer "not found" for unknown VMs.

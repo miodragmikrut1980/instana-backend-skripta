@@ -54,6 +54,10 @@ prov_gcp_plan_resource_lines() {
         echo "    ${VM_NAME}-data       :  500 GB SSD (pd-ssd)"
         ;;
     esac
+    case "$INSTALL_TYPE" in
+      demo) echo "  IBM minimum (demo): 16 vCPUs / 64 GB RAM, disk IOPS ≥ 1000, throughput ≥ 125 MiB/s (table: E → SIZE)." ;;
+      production) echo "  IBM minimum (production): 28 vCPUs / 112 GB RAM, disk IOPS ≥ 3000, throughput ≥ 250 MiB/s (table: E → SIZE)." ;;
+    esac
   else
     echo ""
     printf "  %-30s %s\n" "Node 0 (backend):"   "$NODE0_NAME"
@@ -226,6 +230,18 @@ gcp_saved() {
   jq -r --arg k "$1" '.parameters[$k] // empty' "$CONFIG_FILE" 2>/dev/null || true
 }
 
+readonly GCP_CIDR_UNSAFE="detection failed — 0.0.0.0/0 allows SSH from the whole internet"
+
+# After another project or zone: the network that was detected (or the
+# default) is worked out again; a typed or saved one is kept.
+gcp_redetect_network() {
+  [[ "$src_net" != "your answer" && "$src_net" != saved ]] || return 0
+  local detected
+  detected=$(gcp_detect_network "$GCP_PROJECT" "$GCP_REGION")
+  if [[ -n "$detected" ]]; then read -r GCP_NETWORK GCP_SUBNET <<< "$detected"; src_net="this machine's network"
+  else GCP_NETWORK=default; GCP_SUBNET=default; src_net="every project has 'default'"; fi
+}
+
 gcp_location_block() {
   local local_zone src_project src_zone src_net src_cidr answer which detected
   local_zone=$(detect_local_gce_zone)
@@ -249,7 +265,11 @@ gcp_location_block() {
   else src_net="your answer"; fi
   if [[ -z "${SSH_SOURCE_CIDR:-}" ]]; then
     SSH_SOURCE_CIDR=$(gcp_saved SSH_SOURCE_CIDR); src_cidr="saved"
-    [[ -n "$SSH_SOURCE_CIDR" ]] || { SSH_SOURCE_CIDR=$(detect_public_cidr); src_cidr="this machine's public IP"; }
+    if [[ -z "$SSH_SOURCE_CIDR" ]]; then
+      SSH_SOURCE_CIDR=$(detect_public_cidr); src_cidr="this machine's public IP"
+      # Detection failed: 0.0.0.0/0 is only a placeholder, never accepted with Enter.
+      [[ "$SSH_SOURCE_CIDR" != 0.0.0.0/0 ]] || src_cidr="$GCP_CIDR_UNSAFE"
+    fi
   else src_cidr="your answer"; fi
   NAV_ASKED=1
   while true; do
@@ -271,6 +291,12 @@ gcp_location_block() {
     case "$answer" in
       "<") NAV_BACK=1; return 0 ;;
       "")
+        if [[ "$src_cidr" == "$GCP_CIDR_UNSAFE" ]]; then
+          warn "SSH from: this machine's public IP could not be detected, and 0.0.0.0/0 would open SSH to the whole internet."
+          hint "Press c, choose 'SSH from (CIDR)' and type your public IP with /32 (find it with: curl ifconfig.me)," \
+               "or type 0.0.0.0/0 there yourself if SSH from anywhere is really intended."
+          continue
+        fi
         prov_gcp_validate_param GCP_PROJECT "$GCP_PROJECT" && prov_gcp_validate_param GCP_ZONE "$GCP_ZONE" &&
           prov_gcp_validate_param GCP_NETWORK "$GCP_NETWORK" && prov_gcp_validate_param GCP_SUBNET "$GCP_SUBNET" &&
           validate_cidr "$SSH_SOURCE_CIDR" && return 0
@@ -283,11 +309,11 @@ gcp_location_block() {
             hint "The Google Cloud project that will own and pay for the VM(s): its ID (lowercase), not the display name;" \
                  "'gcloud projects list' shows the projects your account can use."
             prompt_required GCP_PROJECT "GCP Project ID" "$GCP_PROJECT" validate_gcp_project_id
-            (( NAV_BACK )) || src_project="your answer" ;;
+            (( NAV_BACK )) || { src_project="your answer"; gcp_redetect_network; } ;;
           Zone)
             hint "Zone = a data center, e.g. europe-west6-b (Zurich) or us-central1-a (Iowa); the region follows from it."
             prompt_required GCP_ZONE "GCP Zone" "$GCP_ZONE" validate_gcp_zone
-            (( NAV_BACK )) || { src_zone="your answer"; GCP_REGION="${GCP_ZONE%-*}"; }
+            (( NAV_BACK )) || { src_zone="your answer"; GCP_REGION="${GCP_ZONE%-*}"; gcp_redetect_network; }
             ;;
           "Network and subnet")
             hint "VPC network and subnet the VM(s) attach to; the subnet must be in region ${GCP_REGION}."

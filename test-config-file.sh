@@ -15,7 +15,7 @@ cat > "$TEST_ROOT/bin/gcloud" <<'GCLOUD'
 case "$*" in
   *"auth list"*) echo tester@example.com ;;
   *"regions describe"*) printf '%s\n' '{"quotas":[{"metric":"CPUS","limit":999,"usage":0}]}' ;;
-  *"instances describe"*) exit 1 ;;
+  *"instances describe"*) echo "ERROR: (gcloud.compute.instances.describe) The resource was not found" >&2; exit 1 ;;
   *) exit 0 ;;
 esac
 GCLOUD

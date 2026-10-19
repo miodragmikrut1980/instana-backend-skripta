@@ -9,18 +9,40 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 mkdir -p "$TEST_ROOT/bin"
+# META=1: this control machine is a GCE VM (project ctl-project, zone
+# europe-west6-b, network mynet/mysub); IPIFY_FAIL=1: no public IP detected.
 cat > "$TEST_ROOT/bin/gcloud" <<'GCLOUD'
 #!/usr/bin/env bash
 case "$*" in
+  *"config get-value project"*) [[ "${META:-}" == 1 ]] && echo ctl-project ;;
+  *"instances describe ctl "*) echo mysub ;;
+  *"instances describe noperm"*) echo "ERROR: (gcloud.compute.instances.describe) Required 'compute.instances.get' permission" >&2; exit 1 ;;
   *"auth list"*) echo tester@example.com ;;
   *"regions describe"*) printf '%s\n' '{"quotas":[{"metric":"CPUS","limit":999,"usage":0}]}' ;;
   *"instances describe taken-vm"*) echo taken-vm ;;
-  *"instances describe"*) exit 1 ;;
+  *"instances describe"*) echo "ERROR: (gcloud.compute.instances.describe) The resource 'projects/p/zones/z/instances/x' was not found" >&2; exit 1 ;;
   *) exit 0 ;;
 esac
 GCLOUD
-printf '#!/usr/bin/env bash\necho 203.0.113.10\n' > "$TEST_ROOT/bin/curl"
-chmod +x "$TEST_ROOT/bin/gcloud" "$TEST_ROOT/bin/curl"
+cat > "$TEST_ROOT/bin/curl" <<'CURL'
+#!/usr/bin/env bash
+url="${!#}"
+case "$url" in
+  *metadata.google.internal*)
+    [[ "${META:-}" == 1 ]] || exit 7
+    case "$url" in
+      */instance/zone) echo projects/1/zones/europe-west6-b ;;
+      */project/project-id) echo ctl-project ;;
+      */network-interfaces/0/network) echo projects/1/networks/mynet ;;
+      */network-interfaces/0/ip) echo 10.172.0.2 ;;
+      *) exit 22 ;;
+    esac ;;
+  *ipify*) [[ "${IPIFY_FAIL:-}" == 1 ]] && exit 6; echo 203.0.113.10 ;;
+  *) echo 203.0.113.10 ;;
+esac
+CURL
+printf '#!/usr/bin/env bash\necho ctl\n' > "$TEST_ROOT/bin/hostname"
+chmod +x "$TEST_ROOT/bin/gcloud" "$TEST_ROOT/bin/curl" "$TEST_ROOT/bin/hostname"
 mkdir -p "$TEST_ROOT/pkg/airgapped/config" "$TEST_ROOT/pkg/airgapped/buildmeta"
 printf '#!/bin/sh\necho stanctl version 1.10.9\n' > "$TEST_ROOT/pkg/airgapped/stanctl"
 printf 'instana-version: 3.285.123-0\n' > "$TEST_ROOT/pkg/airgapped/config/instana.yaml"
@@ -195,5 +217,34 @@ run file_keep $'2\nnozone.json\neurope-west6-c\n<\n\ninstana.example.com\ny'
 done_ok
 has "Zone:                          europe-west6-c"
 echo "PASS: going back into a block keeps the answer typed there"
+
+# 18. This machine's network is offered only for its own project and region;
+#     another project or zone in the block re-derives it (default/default).
+export META=1
+run net_detect $'1\n1\n1\n1\nc\n1\nother-proj\nc\n2\nus-central1-a\n\ninstana-backend\n'"$TAIL"
+unset META
+done_ok
+grep -qE "Network +mynet / subnet mysub +\(this machine's network\)" "$OUT" || fail "this machine's network must be offered first"
+grep -q "Network   default / subnet default .*(every project has 'default')" "$OUT" || fail "network must be re-derived after another project"
+[[ "$(grep -c "mynet / subnet mysub" "$OUT")" == 1 ]] || fail "this machine's network shown for another project"
+echo "PASS: this machine's network is offered only in its own project and region"
+
+# 19. Public IP not detected: 0.0.0.0/0 is labelled and not accepted with Enter.
+export IPIFY_FAIL=1
+run cidr_fail $'1\n1\n1\n1\n\nc\n4\n198.51.100.7/32\n\ninstana-backend\n'"$TAIL"
+unset IPIFY_FAIL
+done_ok
+has "detection failed — 0.0.0.0/0 allows SSH from the whole internet"
+has "this machine's public IP could not be detected, and 0.0.0.0/0 would open SSH to the whole internet"
+has "curl ifconfig.me"
+has "SSH source CIDR:               198.51.100.7/32"
+echo "PASS: a failed IP detection never opens SSH to the internet with one Enter"
+
+# 20. The VM-name lookup failing for another reason is said, not taken as "free".
+run vm_noperm $'1\n1\n1\n1\n\nnoperm\n'"$TAIL"
+done_ok
+has "Could not check now whether a VM named 'noperm' exists in us-central1-a: ERROR: (gcloud.compute.instances.describe) Required 'compute.instances.get' permission. Phase 3 checks again"
+hasnt "Could not check now whether a VM named 'instana-backend'"
+echo "PASS: a failing name lookup is reported, not treated as a free name"
 
 echo "All back-navigation tests passed."

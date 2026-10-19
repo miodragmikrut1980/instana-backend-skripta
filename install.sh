@@ -2423,9 +2423,16 @@ validate_vm_name() {
 validate_new_vm_name() {
   validate_vm_name "$1" "${2:-VM name}" || return 1
   [[ "$(provider_name)" == gcp && -n "${GCP_ZONE:-}" && -n "${GCP_PROJECT:-}" ]] || return 0
-  if timeout 20 gcloud compute instances describe "$1" --zone="$GCP_ZONE" --project="$GCP_PROJECT" --format='value(name)' >/dev/null 2>&1; then
+  local errout rc=0
+  errout=$(timeout 20 gcloud compute instances describe "$1" --zone="$GCP_ZONE" --project="$GCP_PROJECT" --format='value(name)' 2>&1 >/dev/null) || rc=$?
+  if (( rc == 0 )); then
     err "A VM named '${1}' already exists in ${GCP_ZONE} (project ${GCP_PROJECT}); choose another name (e.g. ${1}-2), or remove the old lab first with ./install.sh → clean up."
     return 1
+  fi
+  # Only "not found" means free; any other answer (no permission, API off,
+  # timeout) is not a verdict: say so and go on (phase 3 checks again).
+  if [[ "$errout" != *"was not found"* && "$errout" != *"notFound"* ]]; then
+    warn "Could not check now whether a VM named '${1}' exists in ${GCP_ZONE}: $(head -1 <<< "${errout:-no answer (exit ${rc})}" | cut -c1-160). Phase 3 checks again before anything is created."
   fi
 }
 
