@@ -342,7 +342,9 @@ prov_ssh_gather_facts() {
       "$(prov_ssh_continue_cmd)" \
       "Try the same login by hand; it must work without a password prompt:|$(prov_ssh_cmd_line "$host") true" \
       "*If it asks for a password or is refused: authorize the key on the host ($(printf 'ssh-copy-id -i %s -p %s %s@%s' "$(prov_ssh_q "${SSH_KEY_PATH}.pub")" "${SSH_PORT:-22}" "$SSH_USER" "$host"))." \
-      "*If it times out: check that the host is running and that port ${SSH_PORT:-22} is open from this machine."
+      "*If it times out: check that the host is running and that port ${SSH_PORT:-22} is open from this machine." \
+      "*Run the installer as the same Linux user ($(id -un 2>/dev/null || echo "\$USER")) who owns the key ${SSH_KEY_PATH}; a key authorized for another user on this machine does not help." \
+      "*Google Cloud hosts with OS Login enforced (metadata enable-oslogin=TRUE on the project) ignore keys in the instance or project metadata: set enable-oslogin=false on that instance, or grant the user OS Login access."
   fi
   rm -f "$errf"
   local -a links=() kept=() kept_links=()
@@ -512,6 +514,7 @@ prov_ssh_text() {
     resume_mismatch) echo "Host, user or port differs from the saved state of this deployment. No changes made." ;;
     ip_confirm_line) echo "Confirm public IPv4 addresses. Enter accepts the address used for SSH." ;;
     default_vm_name) prov_ssh_name_from_host "${VM_HOST:-}" instana-backend ;;
+    dry_run_banner) echo "Dry-run mode — nothing will be changed on the hosts (they are only read over SSH)." ;;
     destroy_banner) echo "This forgets the deployment recorded in this folder; nothing on the hosts is deleted or changed" ;;
     destroy_nothing_hint)
       echo "  The installer has not checked or changed any host for this deployment yet; there is nothing to forget."
@@ -524,6 +527,7 @@ prov_ssh_text() {
 
 prov_ssh_phase_text() {
   case "$1:$2" in
+    1:start) echo "Verify required command-line tools, acquire the installer lock, check the SSH key, and collect or reuse saved non-secret parameters." ;;
     2:title) echo "Host access and installation plan" ;;
     2:start) echo "Check SSH access, the ssh-agent key and the chosen data disks on every host, then display the complete plan before anything is changed." ;;
     2:done) echo "Host access and installation plan were validated." ;;

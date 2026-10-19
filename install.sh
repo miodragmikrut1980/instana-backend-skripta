@@ -209,7 +209,7 @@ if [[ "$EXPORT_CONFIG" == true && ( -n "$INPUT_CONFIG" || "$RESUME" == true || "
   die_with_steps "--export-config only writes a file and stops; it cannot be combined with --config, --resume or --destroy." \
     "Export on its own:|./install.sh --export-config"
 fi
-[[ "$DRY_RUN" != true || "$DESTROY" == true ]] || warn "Dry-run mode — no GCP resources will be created."
+# The dry-run notice is printed at the start of main, once the provider files are loaded.
 
 # --destroy hands over to destroy.sh (same folder, same state file) so the
 # operator never has to remember a second script.
@@ -262,7 +262,7 @@ start_menu() {
   choice=$(prompt_choice "What do you want to do?" "${options[@]}") || exit 0
   case "$choice" in
     install:*) ;;
-    dry-run:*) DRY_RUN=true; warn "Dry-run mode — no GCP resources will be created." ;;
+    dry-run:*) DRY_RUN=true; warn "$(provider_text_or dry_run_banner "Dry-run mode — no GCP resources will be created.")" ;;
     resume:*) RESUME=true ;;
     "destroy (preview)"*) DRY_RUN=true; run_destroy ;;
     destroy:*|"clean up:"*) run_destroy ;;
@@ -1145,7 +1145,7 @@ show_plan() {
   printf "  %-30s %s\n" "Topology:"         "$TOPOLOGY"
   printf "  %-30s %s\n" "Installation type:" "$INSTALL_TYPE"
   printf "  %-30s %s\n" "Connectivity mode:" "$INSTALL_MODE"
-  printf "  %-30s %s\n" "Ubuntu version:"    "$UBUNTU_VERSION"
+  ! provider_uses_param UBUNTU_VERSION || printf "  %-30s %s\n" "Ubuntu version:"    "$UBUNTU_VERSION"
   provider_plan_target_lines
   printf "  %-30s %s\n" "Base domain:"       "$BASE_DOMAIN"
   printf "  %-30s %s\n" "Tenant/Unit:"       "${TENANT_NAME}/${UNIT_NAME}"
@@ -2294,12 +2294,16 @@ ensure_detachable_session() {
       local inner_rc; inner_rc=$(cat "$marker" 2>/dev/null || echo unknown); rm -f "$marker"
       if [[ "$inner_rc" == 0 ]]; then
         rm -f "$logf"
+        local run_log; run_log=$(ls -t "$SCRIPT_DIR"/install-*.log 2>/dev/null | head -1 || true)
+        echo "" >&2
         if [[ -f "$REPORT_FILE" ]] && (( $(stat -c %Y "$REPORT_FILE" 2>/dev/null || echo 0) >= started_epoch )); then
-          echo "" >&2
           ok "The installer finished inside screen. Its final report (also kept in ${REPORT_FILE}):"
           sed 's/^/  /' "$REPORT_FILE" >&2
           echo "" >&2
         fi
+        ok "Completed after $(fmt_duration $(( SECONDS - started ))) inside screen session ${name}."
+        echo "  Report: ./install.sh --report   Log: ${run_log:-${SCRIPT_DIR}/install-*.log}" >&2
+        echo "" >&2
         exit 0
       fi
       err "The installer inside screen ended after $(( SECONDS - started )) s (exit code ${inner_rc}). Its last output:"
@@ -2363,6 +2367,10 @@ main() {
   if [[ -n "${INSTANA_EXIT_MARKER:-}" ]]; then
     trap 'rc=$?; on_exit_report "$rc" "$BASH_COMMAND"; echo "$rc" > "$INSTANA_EXIT_MARKER"' EXIT
   fi
+  # Wording before the provider is resolved in phase 1: the provider that was
+  # requested or is recorded here (resolve_provider decides and re-applies).
+  provider_word_early
+  [[ "$DRY_RUN" != true || "$DESTROY" == true ]] || warn "$(provider_text_or dry_run_banner "Dry-run mode — no GCP resources will be created.")"
   if [[ "$DESTROY" == true ]]; then
     run_destroy
   fi

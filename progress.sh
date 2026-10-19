@@ -122,11 +122,12 @@ provider_phase_word() {
   declare -F provider_phase_text >/dev/null || return 0
   provider_phase_text "$@"
 }
+declare -a PROGRESS_DEFAULT_TITLES=("${PROGRESS_TITLES[@]}")
 progress_apply_provider_titles() {
   local i t
   for ((i=1; i<=PROGRESS_TOTAL; i++)); do
     t=$(provider_phase_word "$i" title)
-    [[ -z "$t" ]] || PROGRESS_TITLES[$i]="$t"
+    PROGRESS_TITLES[$i]="${t:-${PROGRESS_DEFAULT_TITLES[$i]}}"
   done
 }
 

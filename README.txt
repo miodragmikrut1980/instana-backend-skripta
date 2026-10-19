@@ -103,6 +103,17 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
    blokira instalaciju, tacne komande za popravku i kako nastaviti.
    --destroy za ssh brise SAMO lokalni state ovog foldera; na hostovima
    ostaje sve (skripta ispise sta i kako se rucno uklanja).
+   SSH pristup: pokreni instalaciju kao ISTI Linux korisnik koji je vlasnik
+   kljuca (SSH_KEY_PATH); kljuc drugog korisnika na ovoj masini ne vazi.
+   Hostovi u Google Cloud-u sa ukljucenim OS Login-om (metadata projekta
+   enable-oslogin=TRUE) ignorisu ssh-keys iz metadata: na toj instanci
+   postavi enable-oslogin=false, ili korisniku daj OS Login prava.
+   Proba pre instalacije (mora proci bez lozinke):
+     ssh -i <kljuc> -p <port> <korisnik>@<host> sudo -n true
+   Ako folder vec ima deployment drugog providera (npr. stari GCP lab),
+   skripta u terminalu ponudi: nastavi taj deployment, ili ga skloni u
+   stranu (fajlovi se preimenuju, nista se ne brise) i kreni novi; za
+   GCP lab koji vise ne treba prvo ./install.sh --destroy.
 
 Ne klonirati repo unutar postojeceg klona (nastaje ugnjezdeni folder sa
 odvojenim state fajlovima). Ne koristiti rm -r * bez pwd provere.

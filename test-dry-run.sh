@@ -83,6 +83,9 @@ run_case() {
       grep -q '\[PHASE 5/12\] Network port checklist' output.txt
       grep -q 'Install on:                    existing host(s), nothing is created or deleted' output.txt
       grep -q 'REBOOT of each host' output.txt
+      if grep -q 'GCP\|Ubuntu version:\|Capacity check and virtual machines\|Dedicated data disks' output.txt; then echo "FAIL: $name: GCP wording in an existing-host run: $(grep -m3 'GCP\|Ubuntu version:\|Capacity check\|Dedicated data disks' output.txt)" >&2; exit 1; fi
+      grep -q 'Dry-run mode — nothing will be changed on the hosts' output.txt
+      grep -q '  \[ \] 3/12 Host checks (OS, CPU, RAM, sudo)' output.txt
     fi
     if [[ "$name" == single_online_ssh ]]; then
       grep -q 'ufw allow 2222/tcp' output.txt

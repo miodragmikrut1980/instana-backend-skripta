@@ -131,6 +131,18 @@ resolve_provider() {
   ! declare -F progress_apply_provider_titles >/dev/null || progress_apply_provider_titles
 }
 
+# provider_word_early — before resolve_provider, phase 1 texts and the dry-run
+# notice use the provider that is requested (INSTANA_PROVIDER) or recorded in
+# this folder; for GCP nothing changes. resolve_provider sets the real one.
+provider_word_early() {
+  local p="${INSTANA_PROVIDER:-}"
+  [[ -n "$p" ]] || { [[ -f "${STATE_FILE:-}" ]] && p=$(jq -r '.provider // empty' "$STATE_FILE" 2>/dev/null || true); }
+  [[ -n "$p" ]] || { [[ -f "${CONFIG_FILE:-}" ]] && p=$(jq -r '.parameters.PROVIDER // empty' "$CONFIG_FILE" 2>/dev/null || true); }
+  [[ -n "$p" && "$p" != gcp && " $PROVIDERS_SUPPORTED " == *" $p "* ]] || return 0
+  ACTIVE_PROVIDER="$p"
+  ! declare -F progress_apply_provider_titles >/dev/null || progress_apply_provider_titles
+}
+
 # provider_text_or KEY DEFAULT_LINE... — the provider's own wording for KEY
 # (one line per output line), or the default lines.
 provider_text_or() {
