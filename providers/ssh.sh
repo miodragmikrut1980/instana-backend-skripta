@@ -897,6 +897,86 @@ wiz_ssh_login() {
   done
 }
 
+# ── Typed answers: data disks as one proposed mapping ──────────────────────
+# Every role gets the smallest unused disk that is large enough and still
+# leaves a disk for the other roles (largest role first), so big disks are
+# kept for the roles that need them and every complete mapping is found.
+ssh_auto_map_disks() {
+  local node host role key c best best_gb p gb model dev
+  for node in $(prov_ssh_nodes); do
+    host=$(prov_ssh_host_for "$node")
+    for role in $(prov_ssh_roles_for "$node"); do
+      key=$(prov_ssh_disk_key_for "$node" "$role")
+      [[ -z "${!key:-}" ]] || continue
+      best=""; best_gb=""
+      while IFS= read -r c; do
+        [[ -n "$c" ]] || continue
+        IFS='|' read -r p gb model dev <<< "$c"
+        if [[ -z "$best" ]] || (( gb < best_gb )); then best="$p"; best_gb="$gb"; fi
+      done < <(prov_ssh_disk_candidates "$host" "$role" "$key")
+      if [[ -z "$best" ]]; then
+        SSH_FAIL_REASON="${host}: no unused disk of at least $(prov_ssh_role_min_gb "$role") GB is left for the Instana ${role,,} directory (disks: $(prov_ssh_disk_summary "$host")). Attach an empty disk of that size (no partitions, not mounted), then choose 'check again'"
+        return 1
+      fi
+      printf -v "$key" '%s' "$best"
+    done
+  done
+}
+
+ssh_disk_row() {
+  local host="$1" role="$2" path="$3" dev line h d bytes rest
+  dev=$(prov_ssh_disk_dev "$host" "$path")
+  for line in "${SSH_FACT_DISKS[@]}"; do
+    IFS='|' read -r h d bytes rest <<< "$line"
+    [[ "$h" == "$host" && "$d" == "$dev" ]] || continue
+    printf '    %-10s ≥ %4s GB  →  %-9s %5s GB  (%s)\n' "${role,,}" "$(prov_ssh_role_min_gb "$role")" "${dev#/dev/}" "$(gb_of_bytes "$bytes")" "${path##*/}"
+    return 0
+  done
+  printf '    %-10s → %s\n' "${role,,}" "$path"
+}
+
+# The mapping block: Enter = use it, c = choose each disk yourself, < = back.
+ssh_disk_block() {
+  local node host role key answer action missing
+  while true; do
+    missing=false
+    for key in $(prov_ssh_disk_keys); do [[ -n "${!key:-}" ]] || missing=true; done
+    if [[ "$missing" == true ]] && ! ssh_auto_map_disks; then
+      action=$(ssh_failure_menu "${SSH_FAIL_REASON}." "$(prov_ssh_hosts | head -1)"); ssh_menu_stop "$action"
+      case "$action" in
+        back|retype) [[ "$action" != retype ]] || SSH_HOSTS_TYPE_FIRST=1; NAV_BACK=1; return 0 ;;
+        *) for key in $(prov_ssh_disk_keys); do printf -v "$key" '%s' ""; done
+           local h; while IFS= read -r h; do unset "SSH_FACT[${h}|GATHERED]"; prov_ssh_ensure_facts "$h"; done < <(prov_ssh_hosts)
+           continue ;;
+      esac
+    fi
+    NAV_ASKED=1
+    echo "" >&2
+    hint "Each Instana data directory gets its own disk; matched by size (largest need first, smallest disk that fits)." \
+         "The disks are formatted (ext4) when the installation starts, and only if they are blank."
+    for node in $(prov_ssh_nodes); do
+      host=$(prov_ssh_host_for "$node")
+      [[ -n "$(prov_ssh_roles_for "$node")" ]] || { echo "  ${node} (${host}): no data disk needed" >&2; continue; }
+      echo "  Disk mapping on ${node} (${host}):" >&2
+      for role in $(prov_ssh_roles_for "$node"); do
+        key=$(prov_ssh_disk_key_for "$node" "$role")
+        ssh_disk_row "$host" "$role" "${!key}" >&2
+      done
+    done
+    read -rp "$(echo -e "${CYAN}?${RESET} Enter = use this mapping, c = choose the disks yourself, < = back: ")" answer ||
+      die "Input ended before the parameters were complete; installation cancelled. Nothing was created."
+    case "$answer" in
+      "") return 0 ;;
+      "<") NAV_BACK=1; return 0 ;;
+      c|C)
+        for key in $(prov_ssh_disk_keys); do printf -v "$key" '%s' ""; done
+        local NAV_ON=0
+        prov_ssh_collect_host_params ;;
+      *) echo "  Please press Enter to use this mapping, c to choose the disks yourself, or < to go back." >&2 ;;
+    esac
+  done
+}
+
 # ssh_type_suggestion HOST — prints "demo|production <reason>": production only
 # when CPU, RAM and the unused disks meet the production minimums.
 ssh_type_suggestion() {

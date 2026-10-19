@@ -849,6 +849,12 @@ wiz_size() { show_hw_requirements_and_pick_machine_type; }
 
 # Provider values that need the names and the size (existing hosts: data disks).
 wiz_host_params() {
+  # Existing hosts, typed answers: one proposed disk mapping (Enter / c / <).
+  if [[ "$(provider_name)" == ssh && "$PARAMS_SOURCE" != import && "${EDIT_KEY:-}" != DISK_DEV_* ]]; then
+    ssh_disk_block
+    WIZ_DONE[host_params]=1
+    return 0
+  fi
   [[ -z "${WIZ_DONE[host_params]:-}" || "${WIZ_REVISIT:-}" == wiz_host_params ]] || return 0
   local NAV_ON=0
   provider_collect_host_params

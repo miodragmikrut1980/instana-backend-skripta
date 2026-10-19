@@ -35,7 +35,7 @@ TAIL=$'instana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent
 
 # 1. The first key that the host accepts is found and offered with one Enter.
 touch "$SCEN/deny-key-google_compute_engine"
-run probe_key $'1\n10.0.0.5\n\n1\n1\n1\n1\n1\n1\n'"$TAIL"
+run probe_key $'1\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "ubuntu @ $KEYS/google_compute_engine   refused"
 has "ubuntu @ $KEYS/id_ed25519   OK (port 22)"
@@ -47,7 +47,7 @@ echo "PASS: the login is found by trying the keys; the working one is offered"
 # 2. ubuntu refused: the local login name is tried next.
 me=$(id -un)
 touch "$SCEN/10.0.0.5.deny-user-ubuntu"
-run probe_user $'1\n10.0.0.5\n\n1\n1\n1\n1\n1\n1\n'"$TAIL"
+run probe_user $'1\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "${me} @ $KEYS/google_compute_engine   OK (port 22)"
 has "SSH login:                     ${me} on port 22"
@@ -56,7 +56,7 @@ echo "PASS: when ubuntu is refused, the local login name is tried"
 
 # 3. Unreachable host: retry menu, re-enter the address, continue.
 echo 255 > "$SCEN/10.0.0.9.rc"; echo "ssh: connect to host 10.0.0.9 port 22: Connection timed out" > "$SCEN/10.0.0.9.err"
-run unreachable $'1\n10.0.0.9\n1\n10.0.0.5\n\n1\n1\n1\n1\n1\n1\n'"$TAIL"
+run unreachable $'1\n10.0.0.9\n1\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "Cannot log in to 10.0.0.9: no answer from 10.0.0.9 on port 22 within 5 s"
 has "Check from here: ssh -v -p 22"
@@ -68,7 +68,7 @@ echo "PASS: an unreachable host gives the retry menu, not a stop"
 
 # 4. A failed host check (sudo) is shown in the table; choose another host.
 host_facts 10.0.0.6 SUDO=no
-run bad_check $'1\n10.0.0.6\n\n2\n10.0.0.5\n\n1\n1\n1\n1\n1\n1\n'"$TAIL"
+run bad_check $'1\n10.0.0.6\n\n2\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "│ sudo        asks for a password"
 has "cannot run sudo without a password on 10.0.0.6"
@@ -87,21 +87,21 @@ echo "PASS: cancel from the retry menu stops cleanly"
 # 6. Install type: suggested from CPU/RAM/disks with the reason; production
 #    on a host that is too small is explained and asked again.
 host_facts 10.0.0.6 CPUS=16 MEM_KB=65000000
-run type_small $'1\n10.0.0.6\n\n1\n2\n1\n1\n1\n1\n1\n'"$TAIL"
+run type_small $'1\n10.0.0.6\n\n1\n2\n1\n\n'"$TAIL"
 done_ok
 has "Suggested from the checks above: demo."
 has "production needs 28 vCPU / 112 GB"
 has "This host is too small for production"
 has "Installation type:             demo"
 host_facts 10.0.0.6
-run type_big $'1\n10.0.0.5\n\n1\n\n1\n1\n1\n1\n'"$TAIL"
+run type_big $'1\n10.0.0.5\n\n1\n\n\n'"$TAIL"
 done_ok
 has "Suggested from the checks above: production."
 has "Installation type:             production"
 echo "PASS: the install type is suggested from the host, with the reason"
 
 # 7. Three hosts = three-node; names are the hosts' own names (not asked).
-run three $'1\ninst-a.lab inst-b.lab inst-c.lab\n\n1\n1\n1\n1\n1\n'"$TAIL"
+run three $'1\ninst-a.lab inst-b.lab inst-c.lab\n\n1\n\n'"$TAIL"
 done_ok
 has "Topology:                      three-node"
 has "NODE0_NAME = inst-a (the host's own name; E at the plan changes it)"
@@ -109,9 +109,10 @@ has "Host inst-b:"
 hasnt "? Node 0 name"
 echo "PASS: three addresses give a three-node deployment named after the hosts"
 
-# 8. Back across the hosts: single → three re-asks what depends on the hosts
+# 8. Back across the hosts (domain → disks → type → mode → login → hosts):
+#    single → three re-asks what depends on the hosts
 #    (names, disks, login check) instead of keeping stale single-node values.
-run hosts_change $'1\n10.0.0.5\n\n1\n1\n1\n1\n1\n1\n<\n<\n<\n<\ninst-a.lab inst-b.lab inst-c.lab\n\n\n1\n1\n1\n1\n'"$TAIL"
+run hosts_change $'1\n10.0.0.5\n\n1\n1\n\n<\n<\n<\n<\n<\ninst-a.lab inst-b.lab inst-c.lab\n\n\n\n'"$TAIL"
 done_ok
 has "Topology:                      three-node"
 has "Host inst-a:"
@@ -121,7 +122,7 @@ hasnt "VM name:"
 echo "PASS: changing the hosts re-asks names, disks and the login"
 
 # 9. A wrong count of addresses is explained and asked again.
-run count_bad $'1\n10.0.0.5 10.0.0.6\nn\n10.0.0.5\n\n1\n1\n1\n1\n1\n1\n'"$TAIL"
+run count_bad $'1\n10.0.0.5 10.0.0.6\nn\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "2 addresses given; give 1 (single-node) or 3 (three-node), separated by spaces."
 echo "PASS: 2 addresses are refused with the reason"
@@ -140,7 +141,7 @@ exit 0
 FAKE
 printf '#!/usr/bin/env bash\ncase "$1" in -I) echo 10.172.0.2 ;; *) echo ctl ;; esac\n' > "$FAKE_ROOT/bin/hostname"
 chmod +x "$FAKE_ROOT/bin/gcloud" "$FAKE_ROOT/bin/hostname"
-run gcloud_list $'1\n2\n\n1\n1\n1\n1\n1\n1\n'"$TAIL"
+run gcloud_list $'1\n2\n\n1\n1\n\n'"$TAIL"
 done_ok
 has "ssh-test-1             10.0.0.5        34.65.106.11    europe-west6-b  n2-standard-16"
 has "a)  enter another address"
@@ -148,5 +149,46 @@ hasnt "34.65.11.204"
 grep -q " 1)  lab-db " "$OUT" && grep -q " 2)  ssh-test-1 " "$OUT" || fail "list order (own zone, by name)"
 grep -q "Host instana-backend: *10.0.0.5 " "$OUT" || fail "the picked VM (2 = ssh-test-1, internal IP 10.0.0.5) must be used"
 echo "PASS: the gcloud list shows name, addresses, zone and machine type; the control machine is not listed"
+
+# 11. Disks: one proposed mapping, smallest disk that fits, largest role first.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_ROOT/bin/gcloud"; printf '#!/usr/bin/env bash\necho ctl\n' > "$FAKE_ROOT/bin/hostname"
+run disk_map $'1\n10.0.0.5\n\n1\n1\n\n'"$TAIL"
+done_ok
+grep -qE "analytics +≥  500 GB  →  sdb +600 GB" "$OUT" || fail "analytics → sdb"
+grep -qE "metrics +≥  300 GB  →  sdc +1100 GB" "$OUT" || fail "metrics → sdc"
+grep -qE "data +≥  150 GB  →  sdd +1300 GB" "$OUT" || fail "data → the remaining disk"
+
+echo "PASS: the disk mapping is proposed (smallest fitting disk, largest role first)"
+
+# 12. Three-node node 1 (the review case): data must not take the 1300 GB disk
+#     that analytics needs.
+run disk_three $'1\ninst-a.lab inst-b.lab inst-c.lab\n\n1\n\n'"$TAIL"
+done_ok
+grep -qE "analytics +≥ 1200 GB  →  sdd +1300 GB" "$OUT" || fail "node 1 analytics → sdd"
+grep -qE "data +≥  500 GB  →  sdb +600 GB" "$OUT" || fail "node 1 data → sdb"
+has "inst-c (inst-c.lab): no data disk needed"
+echo "PASS: three-node mapping keeps the big disk for analytics"
+
+# 13. c = choose each disk yourself, then the mapping is shown again.
+run disk_choose $'1\n10.0.0.5\n\n1\n1\nc\n2\n1\n1\n1\n\n'"$TAIL"
+done_ok
+has "? Disk for analytics on instana-backend:"
+grep -qE "analytics +≥  500 GB  →  sdc +1100 GB" "$OUT" || fail "chosen disk not used"
+echo "PASS: c lets the operator choose each disk, then confirm the mapping"
+
+# 14. "<" at the mapping goes back to the install type.
+run disk_back $'1\n10.0.0.5\n\n1\n1\n<\n\n\n'"$TAIL"
+done_ok
+[[ "$(count '? Select installation type:')" == 2 ]] || fail "< at the mapping must go back to the type"
+echo "PASS: < at the disk mapping goes back"
+
+# 15. No complete mapping possible: explained with the fix, no stop until cancel.
+NO_DATA_DISKS=1 host_facts 10.0.0.7
+run disk_none $'1\n10.0.0.7\n\n1\n1\n5\n'
+[[ "$RC" != 0 ]] || fail "cancel must stop"
+has "no unused disk of at least 500 GB is left for the Instana analytics directory"
+has "Attach an empty disk of that size"
+has "? What now?"
+echo "PASS: a host without suitable disks is explained, with retry options"
 
 echo "All existing-host login flow tests passed."

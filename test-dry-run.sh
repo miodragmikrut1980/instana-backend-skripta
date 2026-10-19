@@ -131,11 +131,12 @@ AIR_TO_ONLINE=$'1\n1\n2\n1\n\ninstana-backend\ninstana.example.com\ntenant0\nuni
 run_case single_airgapped_to_online "$AIR_TO_ONLINE"
 
 # Existing hosts: no Ubuntu image, SSH CIDR or size questions; one disk per data directory.
-# Hosts first (1 address = single-node, host:port), the detected login (Enter), mode, type.
-SSH_SINGLE=$'1\n10.0.0.5:2222\n\n1\n1\n1\n1\n1\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\ny'
+# Hosts first (1 address = single-node, host:port), the detected login (Enter), mode, type,
+# the proposed disk mapping (Enter).
+SSH_SINGLE=$'1\n10.0.0.5:2222\n\n1\n1\n\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\ny'
 run_case single_online_ssh "$SSH_SINGLE" ssh
 
-SSH_AIR_MULTI=$'1\n10.0.0.11 10.0.0.12 10.0.0.13\n\n2\n1\n1\n1\n1\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n1\ny'
+SSH_AIR_MULTI=$'1\n10.0.0.11 10.0.0.12 10.0.0.13\n\n2\n\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\n'"$TEST_ROOT/instana-airgapped.tar.gz"$'\n1\ny'
 run_case multi_airgapped_ssh "$SSH_AIR_MULTI" ssh
 
 echo "All dry-run smoke tests passed."

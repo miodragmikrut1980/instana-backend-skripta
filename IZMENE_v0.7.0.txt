@@ -326,3 +326,17 @@ and every answer was lost.
 - Runs from a file keep the earlier per-value questions.
 - Tests: new test-ssh-login-flow.sh (10 cases); test-dry-run.sh existing-host
   inputs (hosts first, login = Enter); the fake ssh can refuse a user or a key.
+
+2026-10-19 — UX v2, step 5: existing hosts — one proposed disk mapping
+- Typed answers: the data disks are no longer picked one by one. Every role
+  gets the smallest unused disk that is large enough and still leaves a
+  disk for the other roles (largest role first), shown as one table per host
+  (role, minimum, device, size, stable by-id name). Enter uses it, c lets
+  the operator choose each disk (only disks that keep a complete mapping
+  possible are offered), < goes back.
+- When no complete mapping exists, the reason (which role, which size, the
+  disks found) is shown with the retry menu (another host / check again
+  after attaching a disk / cancel) instead of a stop.
+- Runs from a file and E at the plan keep the per-disk questions.
+- Tests: test-ssh-login-flow.sh cases 11-15; test-dry-run.sh existing-host
+  inputs (disks = one Enter).
