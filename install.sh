@@ -535,11 +535,16 @@ read_answer() {
             "") echo "" >&2; return 3 ;;                                  # Enter: back
             $'\x7f'|$'\b') break ;;                                        # Backspace: undo
             $'\e') read_key_rest >/dev/null ;;                             # another special key: ignored
-            *) __pre="<${__k}"; break ;;
+            $'\x04') echo "" >&2; return 1 ;;                               # Ctrl+D: end of input
+            *) [[ "$__k" =~ ^[[:cntrl:]]$ ]] || { __pre="<${__k}"; break; } ;;  # other control keys: ignored
           esac
         done
         if [[ -z "$__pre" ]]; then printf '\r\033[K' >&2; continue; fi
-      elif [[ "$__first" != $'\x7f' && "$__first" != $'\b' ]]; then
+      elif [[ "$__first" == $'\x04' ]]; then
+        echo "" >&2; return 1                                             # Ctrl+D on an empty answer: end of input
+      elif [[ "$__first" =~ ^[[:cntrl:]]$ ]]; then
+        printf '\r\033[K' >&2; continue                                 # Backspace or another control key: ignored
+      else
         __pre="$__first"
       fi
       if [[ -z "$__first" ]]; then

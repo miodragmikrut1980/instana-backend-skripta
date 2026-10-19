@@ -657,3 +657,10 @@ and every answer was lost.
 - Tests: test-answer-keys.sh 5 (keys 0.4 s apart), test-dry-run.sh (boot
   disks, three-node changes line), test-start-flow.sh (older saved GCP
   answers, final hint per target).
+
+2026-10-20 — UX v3: Ctrl+D after the left arrow
+- Ctrl+D right after the left arrow, or as the first key of an empty answer,
+  ends the input like a closed input (the installer stops with "Input ended
+  ... nothing was created"); before, it was stored as a literal ^D ("<^D")
+  and a second Ctrl+D did not cancel. Other control keys there are ignored.
+- Tests: test-answer-keys.sh 6 (keys 0.4 s apart).

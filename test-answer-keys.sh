@@ -94,4 +94,19 @@ expected=("RESULT[x] rc=0" "RESULT[] rc=3" "RESULT[] rc=3" "RESULT[] rc=3" "RESU
 [[ "${res[*]}" == "${expected[*]}" ]] || fail "paced keys, got: ${res[*]}"
 echo "PASS: at human typing speed Backspace undoes the arrow and Enter after it goes back"
 
+# 6. Ctrl+D right after the arrow, or as the first key, ends the input (the
+#    caller then stops as at a closed input); other control keys are ignored.
+newcase ctrld
+cat > "$CASE/drv.sh" <<'EOF'
+set --; source ./install.sh
+NAV_ON=1
+for i in 1 2 3; do rc=0; v=$(prompt X "Name" "def") || rc=$?; echo "RESULT[$(printf '%q' "$v")] rc=$rc"; done
+EOF
+PTY_GAP=0.4 PTY_SCRIPT=./drv.sh pty_install "$CASE" 'RAW:\x1b[D' 'RAW:\x04' 'RAW:\x04' 'RAW:\x1b[D' 'RAW:\x01' 'RAW:\x7f' 'RAW:z' 'RAW:\n'
+OUT="$CASE/pty.txt"
+mapfile -t res < <(grep -o 'RESULT\[[^]]*\] rc=[0-9]' "$OUT")
+expected=("RESULT[''] rc=1" "RESULT[''] rc=1" "RESULT[z] rc=0")
+[[ "${res[*]}" == "${expected[*]}" ]] || fail "Ctrl+D, got: ${res[*]}"
+echo "PASS: Ctrl+D after the arrow or on an empty answer ends the input; other control keys are ignored"
+
 echo "All answer-key tests passed."
