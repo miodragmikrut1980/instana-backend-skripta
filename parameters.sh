@@ -72,8 +72,10 @@ offer_saved_parameters() {
     (.parameters|all(.[]; type=="string"))' "$CONFIG_FILE" >/dev/null || die "Invalid saved configuration."
   chmod 600 "$CONFIG_FILE"
   local key choice
-  echo "Saved non-secret parameters:" >&2
-  jq '.parameters' "$CONFIG_FILE" >&2
+  # A readable table instead of raw JSON (empty values left out).
+  echo "Saved parameters of this deployment (keys and the admin password are never saved):" >&2
+  jq -r '.parameters | to_entries[] | select(.value != "") | "  \(.key)\t\(.value)"' "$CONFIG_FILE" 2>/dev/null |
+    awk -F'\t' '{printf "%-24s %s\n", $1, $2}' >&2
   if [[ "${RESUME:-false}" == true ]]; then
     echo "Resume mode: automatically reusing locked saved parameters; editing is disabled." >&2
     choice="reuse saved parameters"
@@ -96,6 +98,9 @@ offer_saved_parameters() {
   validate_tenant_unit_name "$TENANT_NAME" Tenant || die "Saved tenant name is invalid."
   validate_tenant_unit_name "$UNIT_NAME" Unit || die "Saved unit name is invalid."
   ! provider_uses_param SSH_SOURCE_CIDR || validate_cidr "$SSH_SOURCE_CIDR" || die "Saved SSH CIDR is invalid."
+  declare -F hint >/dev/null && hint "The admin password and the three Instana keys are never saved; type them again (hidden, • per character)." \
+    "Use the same ones as when this deployment was started: download key = software repository, agent key = agents," \
+    "sales key = license."
   reask_secret ADMIN_PASSWORD "Instana admin password" "Admin password"
   reask_secret DOWNLOAD_KEY "Instana download key" "Download key"
   reask_secret AGENT_KEY "Instana agent key" "Agent key"

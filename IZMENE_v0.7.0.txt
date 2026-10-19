@@ -429,3 +429,14 @@ and every answer was lost.
   three-node asked for all three nodes.
 - Tests: test-nav-back.sh 24-25; test-config-file.sh counts the new
   default row.
+
+2026-10-19 — UX v2, step 9 (also GCP): start order, resume table
+- The start menu comes first; the screen offer follows only for install and
+  resume (a dry-run, a report or a clean-up is never offered screen). The
+  re-launch inside screen carries the menu choice (internal --start=...), so
+  the menu is not shown a second time.
+- --resume (and "reuse saved parameters") shows the saved values as a
+  readable table (empty values left out) instead of raw JSON, and says why
+  the admin password and the three keys are asked again.
+- New test-start-flow.sh (real terminal: dry-run without screen offer, menu
+  before screen with --start=install, resume table).

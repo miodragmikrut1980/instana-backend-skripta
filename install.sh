@@ -168,6 +168,7 @@ USAGE
 }
 
 DESTROY=false
+START_CHOICE=""
 EXPORT_CONFIG=false
 EXPORT_CONFIG_PATH=""
 _args=("$@")
@@ -190,6 +191,11 @@ for (( _i = 0; _i < ${#_args[@]}; _i++ )); do
       if [[ "$arg" == --export-config=* ]]; then EXPORT_CONFIG_PATH="${arg#--export-config=}"
       elif (( _i + 1 < ${#_args[@]} )) && [[ "${_args[_i+1]}" != --* ]]; then EXPORT_CONFIG_PATH="${_args[_i+1]}"; (( ++_i )); fi ;;
     --resume) RESUME=true ;;
+    # Internal: the start-menu choice, passed on when the installer re-launches
+    # itself inside screen (so the menu is not shown twice).
+    --start=install) START_CHOICE=install ;;
+    --start=dry-run) START_CHOICE=dry-run; DRY_RUN=true ;;
+    --start=resume) START_CHOICE=resume; RESUME=true ;;
     --dry-run) DRY_RUN=true ;;
     --destroy) DESTROY=true ;;
     --report)
@@ -261,9 +267,9 @@ start_menu() {
   fi
   choice=$(prompt_choice "What do you want to do?" "${options[@]}") || exit 0
   case "$choice" in
-    install:*) ;;
-    dry-run:*) DRY_RUN=true; warn "$(provider_text_or dry_run_banner "Dry-run mode — no GCP resources will be created.")" ;;
-    resume:*) RESUME=true ;;
+    install:*) START_CHOICE=install ;;
+    dry-run:*) START_CHOICE=dry-run; DRY_RUN=true; warn "$(provider_text_or dry_run_banner "Dry-run mode — no GCP resources will be created.")" ;;
+    resume:*) START_CHOICE=resume; RESUME=true ;;
     "destroy (preview)"*) DRY_RUN=true; run_destroy ;;
     destroy:*|"clean up:"*) run_destroy ;;
     "show report"*) echo ""; cat "$REPORT_FILE"; echo ""; exit 0 ;;
@@ -2680,6 +2686,7 @@ offer_reattach_running_installer() {
 # installer therefore offers to re-launch itself inside a screen session.
 ensure_detachable_session() {
   [[ -t 0 && -t 1 ]] || return 0                  # non-interactive: nothing to protect
+  [[ "$DRY_RUN" != true ]] || return 0             # a dry-run changes nothing a lost connection could break
   [[ -z "${STY:-}" && -z "${TMUX:-}" ]] || return 0   # already inside screen/tmux
   [[ "${INSTANA_NO_SCREEN:-}" != 1 ]] || return 0
   offer_reattach_running_installer
@@ -2802,10 +2809,15 @@ main() {
     exit 0
   fi
   [[ -z "$INPUT_CONFIG" ]] || input_prepare_cli_file
-  ensure_detachable_session "$@"
+  # The menu first: the screen offer only matters for a run that installs
+  # (install / resume), not for a dry-run, a report or a clean-up.
   if [[ $# -eq 0 && -t 0 ]]; then
     start_menu
+    case "${START_CHOICE:-}" in
+      install|dry-run|resume) set -- "--start=${START_CHOICE}" ;;
+    esac
   fi
+  ensure_detachable_session "$@"
   echo ""
   log "Log file: ${LOG_FILE}"
 
