@@ -513,6 +513,8 @@ show_more_help() {
 # not a closed input: ask before cancelling. N (or Enter) asks the question
 # again; Y, or Ctrl+D once more, cancels ("nothing was created"). Without a
 # terminal a closed input still stops at once (read returns 1).
+# Prompts must not be nested inside a $(...) that does more work after the
+# prompt: after Y only the innermost subshell and the main shell stop.
 ctrl_d_cancel() {
   local a="" rc=0
   echo "" >&2
@@ -748,9 +750,26 @@ type_detail() {
 # is closed (non-interactive run with no more input).
 # operator_cancel — the operator chose to cancel: not an error (exit 0, like
 # answering N at the plan), and it says that nothing was created.
+# Once this deployment has resources (VMs, disks, changed hosts), a cancel
+# leaves an incomplete deployment: that is said plainly (they are billed or
+# changed), with how to continue or remove it, and the exit code is non-zero.
 operator_cancel() {
   ERROR_REPORTED=true
   local op="${OPERATION_NAME:-installation}"
+  if [[ "$op" == installation && "${DRY_RUN:-false}" != true ]] && declare -F deployment_has_resources >/dev/null &&
+     deployment_has_resources 2>/dev/null; then
+    local undo
+    if [[ "$(provider_name)" == ssh ]]; then
+      undo="or forget the local record with ./install.sh --destroy (the changes on the hosts stay)"
+      warn "Installation cancelled by the operator. Changes on the existing host(s) were already made; the deployment is incomplete."
+    else
+      undo="or remove them with ./install.sh --destroy"
+      warn "Installation cancelled by the operator. Resources of this deployment exist and are billed; the deployment is incomplete."
+    fi
+    log "Continue where it stopped with ./install.sh --resume, ${undo}."
+    mark_stopped "installation cancelled by the operator — resources of this deployment exist (./install.sh --resume or ./install.sh --destroy)"
+    exit 1
+  fi
   log "${op^} cancelled by the operator. Nothing was created or changed."
   mark_stopped "${op} cancelled by the operator — nothing was created or changed"
   exit 0
@@ -3051,6 +3070,12 @@ ensure_detachable_session() {
       rm -f "$rcfile"
       local inner_rc; inner_rc=$(cat "$marker" 2>/dev/null || echo unknown); rm -f "$marker"
       local stop_reason; stop_reason=$(screen_stop_reason "$marker")
+      if [[ "$inner_rc" != 0 && -n "$stop_reason" ]]; then
+        echo "" >&2
+        warn "The installer inside screen session ${name} ended: ${stop_reason}. Log: ${logf}"
+        ERROR_REPORTED=true
+        [[ "$inner_rc" =~ ^[0-9]+$ ]] && exit "$inner_rc" || exit 1
+      fi
       if [[ "$inner_rc" == 0 && -n "$stop_reason" ]]; then
         rm -f "$logf"
         echo "" >&2

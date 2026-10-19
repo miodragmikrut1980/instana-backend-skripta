@@ -114,6 +114,26 @@ grep -q "REASON=\[installation cancelled by the operator" "$CASE/r.txt" || { cat
 [[ ! -f "$CASE/m.exit.stopped" ]] || fail "the marker must be removed after reading"
 echo "PASS: a cancel inside screen is reported as cancelled, not completed"
 
+# 6b. A cancel after resources exist says so (billed / hosts changed), how to
+#     continue or remove them, and exits non-zero; a dry-run or an empty state
+#     still says nothing was created.
+for p in gcp ssh; do
+  CASE="$TEST_ROOT/cancel-$p"; mkdir -p "$CASE"; cp -R "$SRC"/*.sh "$SRC/providers" "$CASE/"
+  if [[ $p == gcp ]]; then echo '{"provider":"gcp","gcp_project":"p","gcp_zone":"z","vm_lab":"created"}' > "$CASE/.install-state.json"
+  else echo '{"provider":"ssh","ssh_target":"10.0.0.5","host_10.0.0.5":"prepared"}' > "$CASE/.install-state.json"; fi
+  chmod 600 "$CASE/.install-state.json"
+  rc=0; ( cd "$CASE"; set --; INSTANA_EXIT_MARKER="$CASE/m.exit" bash -c 'source ./install.sh; resolve_provider; DRY_RUN=false; operator_cancel' ) > "$CASE/out.txt" 2>&1 || rc=$?
+  [[ "$rc" != 0 ]] || fail "$p: a cancel with resources must exit non-zero"
+  if grep -q "Nothing was created" "$CASE/out.txt"; then fail "$p: must not say nothing was created"; fi
+  grep -q "Continue where it stopped with ./install.sh --resume" "$CASE/out.txt" || fail "$p: how to continue"
+  grep -q "resources of this deployment exist" "$CASE/m.exit.stopped" || fail "$p: stop marker"
+  if [[ $p == gcp ]]; then grep -q "Resources of this deployment exist and are billed" "$CASE/out.txt" || fail "gcp: billed"
+  else grep -q "Changes on the existing host(s) were already made" "$CASE/out.txt" || fail "ssh: hosts changed"; fi
+  rc=0; ( cd "$CASE"; set --; bash -c 'source ./install.sh; resolve_provider; DRY_RUN=true; operator_cancel' ) > "$CASE/dry.txt" 2>&1 || rc=$?
+  [[ "$rc" == 0 ]] && grep -q "Nothing was created or changed" "$CASE/dry.txt" || fail "$p: a dry-run cancel creates nothing"
+done
+echo "PASS: a cancel after resources exist says they exist, how to continue or remove them, non-zero exit"
+
 # 7. The menu names the target of each install, explains the clean-up, and
 #    a dry-run asks where it would install (0 = back to the menu).
 source "$SRC/test-pty-lib.inc"

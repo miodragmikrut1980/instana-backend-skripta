@@ -676,3 +676,15 @@ and every answer was lost.
   still stops at once, as before.
 - Tests: test-answer-keys.sh 6 (N re-asks, Y cancels, Ctrl+D twice cancels,
   other control keys ignored; keys 0.4 s apart).
+
+2026-10-20 — UX v3: a cancel after resources exist says so
+- A cancel by the operator (Y at "Cancel the installation?", also via
+  Ctrl+D) once this deployment has resources no longer says "Nothing was
+  created or changed". GCP: "Resources of this deployment exist and are
+  billed; the deployment is incomplete"; existing hosts: "Changes on the
+  existing host(s) were already made". Both say how to continue
+  (./install.sh --resume) or remove / forget it (./install.sh --destroy); the
+  exit code is 1 and the screen stop marker says the same. Before any
+  resource, and in a dry-run, the message and exit 0 stay as before.
+- Inside screen, a non-zero end with a stop reason prints that reason.
+- Tests: test-start-flow.sh 6b (gcp and ssh state with resources, dry-run).
