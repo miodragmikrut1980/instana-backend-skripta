@@ -260,44 +260,86 @@ run_destroy() {
 }
 
 # Interactive start menu when run without options from a terminal.
+# The target (new GCP VMs or existing hosts) is part of the choice; it is
+# passed on as INSTANA_PROVIDER (also into screen).
+CLEANUP_DETAIL="deletes the VMs, disks and firewall rules of a lab this installer created on GCP;\nshows the list first and deletes only after you type DELETE.\nExisting hosts: only forgets the local record, the machines are never touched."
 start_menu() {
-  local choice
-  local -a options=("install: start a new Instana deployment" \
-                    "dry-run: show the plan and simulate all phases, create nothing")
-  [[ -f "$STATE_FILE" ]] && ! state_is_only_progress && options+=("resume: continue the interrupted deployment recorded in this folder")
-  local recorded_provider=""
-  [[ -f "$STATE_FILE" ]] && recorded_provider=$(jq -r '.provider // "gcp"' "$STATE_FILE" 2>/dev/null || echo gcp)
-  if [[ -f "$STATE_FILE" ]] && ! state_is_only_progress && [[ "$recorded_provider" == ssh ]]; then
-    options+=("destroy (preview): show what forgetting this folder's existing-host deployment removes (the hosts are not changed)" \
-              "destroy: forget this folder's existing-host deployment (local state only; nothing on the hosts is deleted)")
-  elif [[ -f "$STATE_FILE" ]] && ! state_is_only_progress; then
-    options+=("destroy (preview): list the GCP resources of this folder's deployment that would be deleted" \
-              "destroy: DELETE the GCP resources of this folder's deployment (VM, disks, firewall rules)")
-  else
-    options+=("clean up a lab: pick it from the list, see its resources, delete after confirmation")
-  fi
-  [[ -f "$REPORT_FILE" ]] && options+=("show report: UI URL, IP and hosts entries of the last installation from this folder")
-  options+=("exit")
-  echo ""
-  echo -e "${BOLD}Instana Standard Edition — GCP installer${RESET}"
+  local choice recorded_provider="" note state=0
   if [[ -f "$STATE_FILE" ]] && ! state_is_only_progress; then
+    state=1
+    recorded_provider=$(jq -r '.provider // "gcp"' "$STATE_FILE" 2>/dev/null || echo gcp)
+  fi
+  local -a options=("Install on new Google Cloud VMs"$'\t'"the installer creates the VMs" \
+                    "Install on existing hosts (SSH)"$'\t'"any cloud or on-prem: AWS, Azure, customer DC" \
+                    "Dry-run"$'\t'"plan only, nothing is created")
+  if (( state )); then
+    options+=("Resume"$'\t'"continue the interrupted deployment recorded in this folder")
     if [[ "$recorded_provider" == ssh ]]; then
-      log "A deployment on existing hosts is recorded in this folder: $(jq -r '[.ssh_target, .topology] | map(. // "?") | join(" / ")' "$STATE_FILE" 2>/dev/null)"
+      options+=("Preview forgetting this deployment"$'\t'"shows what is removed here; nothing is changed" \
+                "Forget this deployment"$'\t'"local record only; the hosts are never touched")
     else
-      log "A deployment is recorded in this folder: $(jq -r '[.gcp_project, .gcp_zone, .topology] | map(. // "?") | join(" / ")' "$STATE_FILE" 2>/dev/null)"
+      options+=("Preview deleting this deployment"$'\t'"lists its GCP resources; deletes nothing" \
+                "Delete this deployment"$'\t'"its VM(s), disks and firewall rules on GCP, after you confirm")
     fi
   else
-    log "No deployment is recorded in this folder (no .install-state.json)."
+    options+=("Clean up a lab"$'\t'"$CLEANUP_DETAIL")
   fi
-  choice=$(prompt_choice "What do you want to do?" "${options[@]}") || exit 0
+  [[ -f "$REPORT_FILE" ]] && options+=("Show report"$'\t'"UI URL, IP and hosts entries of the last installation here")
+  options+=("Exit")
+  if (( state )); then
+    if [[ "$recorded_provider" == ssh ]]; then
+      note="recorded here: existing hosts $(jq -r '[.ssh_target, .topology] | map(. // "?") | join(" / ")' "$STATE_FILE" 2>/dev/null)"
+    else
+      note="recorded here: $(jq -r '[.gcp_project, .gcp_zone, .topology] | map(. // "?") | join(" / ")' "$STATE_FILE" 2>/dev/null)"
+    fi
+  else
+    note="no deployment in this folder"
+  fi
+  echo ""
+  echo -e "${BOLD}Instana installer${RESET}   ${DIM}${note}${RESET}" | log_tee
+  while true; do
+    choice=$(PROMPT_CHOICE_DEFAULT="Install on new Google Cloud VMs" prompt_choice "What do you want to do?" "${options[@]}") || exit 0
+    case "$choice" in
+      "Install on new"*) START_CHOICE=install; export INSTANA_PROVIDER=gcp ;;
+      "Install on existing"*) START_CHOICE=install; export INSTANA_PROVIDER=ssh ;;
+      Dry-run)
+        if dry_run_target_needed; then
+          ask_dry_run_target 1 || continue
+        fi
+        START_CHOICE=dry-run; DRY_RUN=true
+        provider_word_early
+        warn "$(provider_text_or dry_run_banner "Dry-run mode — no GCP resources will be created.")" ;;
+      Resume) START_CHOICE=resume; RESUME=true ;;
+      Preview*) DRY_RUN=true; run_destroy ;;
+      "Delete this"*|Forget*|"Clean up"*) run_destroy ;;
+      "Show report") echo ""; cat "$REPORT_FILE"; echo ""; exit 0 ;;
+      *) exit 0 ;;
+    esac
+    provider_word_early
+    return 0
+  done
+}
+
+# A dry-run in a terminal asks where it would install, unless that is
+# already decided (recorded in this folder, INSTANA_PROVIDER, or --config).
+dry_run_target_needed() {
+  [[ -t 0 && -z "${INSTANA_PROVIDER:-}" && -z "${INPUT_CONFIG:-}" ]] || return 1
+  [[ ! -f "$STATE_FILE" ]] || [[ -z "$(jq -r '.provider // (if .gcp_project then "gcp" else empty end)' "$STATE_FILE" 2>/dev/null)" ]] || return 1
+  [[ ! -f "$CONFIG_FILE" ]] || [[ -z "$(jq -r '.parameters.PROVIDER // empty' "$CONFIG_FILE" 2>/dev/null)" ]] || return 1
+}
+
+# ask_dry_run_target BACK — sets INSTANA_PROVIDER; returns 1 for "back"
+# (BACK=1, from the start menu). Closed input: nothing to simulate, exit.
+ask_dry_run_target() {
+  local choice rc=0
+  choice=$(PROMPT_CHOICE_DEFAULT="New Google Cloud VMs" NAV_CHOICE_BACK="$1" prompt_choice "Dry-run for:" \
+    "New Google Cloud VMs"$'\t'"the installer would create the VMs" \
+    "Existing hosts (SSH)"$'\t'"any cloud or on-prem: AWS, Azure, customer DC") || rc=$?
+  (( rc != 3 )) || return 1
+  (( rc == 0 )) || exit 0
   case "$choice" in
-    install:*) START_CHOICE=install ;;
-    dry-run:*) START_CHOICE=dry-run; DRY_RUN=true; warn "$(provider_text_or dry_run_banner "Dry-run mode — no GCP resources will be created.")" ;;
-    resume:*) START_CHOICE=resume; RESUME=true ;;
-    "destroy (preview)"*) DRY_RUN=true; run_destroy ;;
-    destroy:*|"clean up"*) run_destroy ;;
-    "show report"*) echo ""; cat "$REPORT_FILE"; echo ""; exit 0 ;;
-    *) exit 0 ;;
+    "Existing hosts"*) export INSTANA_PROVIDER=ssh ;;
+    *) export INSTANA_PROVIDER=gcp ;;
   esac
 }
 
@@ -2876,11 +2918,11 @@ offer_reattach_running_installer() {
   hint "It kept running inside screen; reattaching shows its live output (nothing restarts)." \
        "Detach again at any time with Ctrl+A then D."
   local choice
-  choice=$(prompt_choice "Reattach to it (recommended after a lost connection) or start something new?" \
-    "reattach to the running installer ${sessions[0]}" \
-    "continue with a new start (the running one keeps working in the background)") || exit 0
+  choice=$(PROMPT_CHOICE_DEFAULT="Reattach to ${sessions[0]}" prompt_choice "Reattach to it, or start something new?" \
+    "Reattach to ${sessions[0]}"$'\t'"recommended after a lost connection" \
+    "Start something new"$'\t'"the running one keeps working in the background") || exit 0
   case "$choice" in
-    reattach*) exec screen -d -r "${sessions[0]}" ;;
+    Reattach*) exec screen -d -r "${sessions[0]}" ;;
   esac
 }
 
@@ -3009,7 +3051,6 @@ main() {
   # Wording before the provider is resolved in phase 1: the provider that was
   # requested or is recorded here (resolve_provider decides and re-applies).
   provider_word_early
-  [[ "$DRY_RUN" != true || "$DESTROY" == true ]] || warn "$(provider_text_or dry_run_banner "Dry-run mode — no GCP resources will be created.")"
   if [[ "$DESTROY" == true ]]; then
     run_destroy
   fi
@@ -3032,6 +3073,10 @@ main() {
     case "${START_CHOICE:-}" in
       install|dry-run|resume) set -- "--start=${START_CHOICE}" ;;
     esac
+  elif [[ "$DRY_RUN" == true ]]; then
+    # ./install.sh --dry-run in a terminal: where would it install?
+    if [[ -z "$START_CHOICE" ]] && dry_run_target_needed; then ask_dry_run_target 0; provider_word_early; fi
+    warn "$(provider_text_or dry_run_banner "Dry-run mode — no GCP resources will be created.")"
   fi
   ensure_detachable_session "$@"
   echo ""

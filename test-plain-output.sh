@@ -32,7 +32,7 @@ grep -q "$ESC\[1m" "$CASE/pty.raw" || fail "no bold text on a terminal"
 grep -q "What do you want to do?" "$CASE/pty.txt" || fail "start menu not shown"
 ls "$CASE"/install-*.log >/dev/null 2>&1 || fail "no log file written"
 if grep -q "$ESC" "$CASE"/install-*.log; then fail "escape codes in the log of a terminal run: $(grep -m1 "$ESC" "$CASE"/install-*.log | cat -v)"; fi
-grep -q "\[INFO\]" "$CASE"/install-*.log || fail "log lines missing"
+grep -q "Instana installer" "$CASE"/install-*.log || fail "log lines missing"
 echo "PASS: a terminal gets colours, its log stays plain"
 
 # 3. NO_COLOR on a terminal: no colour codes at all.

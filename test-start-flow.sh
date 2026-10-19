@@ -54,7 +54,7 @@ PY
 }
 
 # 1. Dry-run from the menu: no screen offer at all.
-pty_run dryrun 2
+pty_run dryrun 3 1
 grep -q "What do you want to do?" "$OUT" || fail "start menu not shown"
 if grep -q "You are not inside a screen/tmux session" "$OUT"; then fail "a dry-run must not offer screen"; fi
 echo "PASS: a dry-run from the menu does not offer screen"
@@ -86,7 +86,7 @@ echo "PASS: resume shows a readable table and explains why the keys are asked"
 # 4. A still-running installer is offered BEFORE the start menu (a dropped
 #    operator lands back in the live install).
 touch "$TEST_ROOT/sessions"; rm -f "$TEST_ROOT/screen.log"
-pty_run reattach 2 2
+pty_run reattach 2 3
 rm -f "$TEST_ROOT/sessions"
 r=$(grep -n "An installer session is still running in screen" "$OUT" | head -1 | cut -d: -f1)
 m=$(grep -n "What do you want to do?" "$OUT" | head -1 | cut -d: -f1)
@@ -113,5 +113,42 @@ grep -q "cancelled by the operator — nothing was created or changed" "$CASE/m.
 grep -q "REASON=\[installation cancelled by the operator" "$CASE/r.txt" || { cat "$CASE/r.txt" >&2; fail "the outer terminal must read the stop reason"; }
 [[ ! -f "$CASE/m.exit.stopped" ]] || fail "the marker must be removed after reading"
 echo "PASS: a cancel inside screen is reported as cancelled, not completed"
+
+# 7. The menu names the target of each install, explains the clean-up, and
+#    a dry-run asks where it would install (0 = back to the menu).
+source "$SRC/test-pty-lib.inc"
+CASE="$TEST_ROOT/target"; mkdir -p "$CASE"; cp -R "$SRC"/*.sh "$SRC/providers" "$CASE/"
+PATH="$TEST_ROOT/bin:$PATH" pty_install "$CASE" 3 0 3 2
+OUT="$CASE/pty.txt"
+grep -q "2) Install on existing hosts (SSH)   any cloud or on-prem: AWS, Azure, customer DC" "$OUT" || fail "option 2 must say it covers any cloud"
+grep -q "1) Install on new Google Cloud VMs   the installer creates the VMs" "$OUT" || fail "option 1 detail"
+grep -q "deletes the VMs, disks and firewall rules of a lab this installer created on GCP;" "$OUT" || fail "clean-up must say what is deleted"
+grep -q "Existing hosts: only forgets the local record, the machines are never touched." "$OUT" || fail "clean-up must say existing hosts are not touched"
+grep -q "Select \[1-5, Enter = 1\]" "$OUT" || fail "Enter = 1 in the start menu"
+[[ "$(grep -c "? Dry-run for:" "$OUT")" == 2 ]] || fail "the target question must be asked again after going back"
+[[ "$(grep -c "What do you want to do?" "$OUT")" == 2 ]] || fail "0 at the target must return to the menu"
+grep -q "Dry-run mode — nothing will be changed on the hosts" "$OUT" || fail "existing hosts chosen for the dry-run"
+echo "PASS: the menu names each target; a dry-run asks where (0 = back to the menu)"
+
+# 8. ./install.sh --dry-run in a terminal asks the target too, unless it is set.
+CASE="$TEST_ROOT/dryarg"; mkdir -p "$CASE"; cp -R "$SRC"/*.sh "$SRC/providers" "$CASE/"
+PATH="$TEST_ROOT/bin:$PATH" PTY_ARGS=--dry-run pty_install "$CASE" 2
+OUT="$CASE/pty.txt"
+grep -q "? Dry-run for:" "$OUT" || fail "--dry-run must ask the target in a terminal"
+if grep -q "0) ← back" "$OUT"; then fail "nothing to go back to from --dry-run"; fi
+grep -q "Dry-run mode — nothing will be changed on the hosts" "$OUT" || fail "--dry-run: existing hosts chosen"
+CASE="$TEST_ROOT/dryset"; mkdir -p "$CASE"; cp -R "$SRC"/*.sh "$SRC/providers" "$CASE/"
+PATH="$TEST_ROOT/bin:$PATH" PTY_ENV="INSTANA_PROVIDER=gcp" PTY_ARGS=--dry-run pty_install "$CASE"
+if grep -q "Dry-run for:" "$CASE/pty.txt"; then fail "the target must not be asked when INSTANA_PROVIDER is set"; fi
+grep -q "Dry-run mode — no GCP resources will be created" "$CASE/pty.txt" || fail "GCP dry-run banner"
+echo "PASS: --dry-run asks the target in a terminal, not when it is already set"
+
+# 9. Enter at the running-session question reattaches.
+touch "$TEST_ROOT/sessions"; rm -f "$TEST_ROOT/screen.log"
+pty_run reattach_enter ""
+rm -f "$TEST_ROOT/sessions"
+grep -q "Select \[1-2, Enter = 1\]" "$OUT" || fail "Enter = 1 at the running session"
+grep -q "SCREEN-ARGS: -d -r 12345.instana-101532" "$TEST_ROOT/screen.log" || fail "Enter must reattach"
+echo "PASS: Enter at the running-session question reattaches"
 
 echo "All start-flow tests passed."

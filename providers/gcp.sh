@@ -1090,8 +1090,9 @@ prov_gcp_destroy_by_name() {
   fi
   rm -f "$GCP_LIST_ERR"
   [[ -z "$out" ]] || mapfile -t labs <<< "$out"
-  hint "Listed: labs with the instana-lab-id label, and single-node VMs whose four data disks" \
-       "(<name>-analytics/-metrics/-objects/-data) belong only to them. Anything else: n = look a VM up by name."
+  hint "Only resources created by this installer are listed (label instana-lab-id or <vm>-analytics/-metrics/-objects/-data disks)." \
+       "A single-node VM is listed only when those four disks belong to it alone. Anything else: n = look a VM up by name."
+  echo -e "    ${DIM}This control machine and anything else in the project are never listed or deleted.${RESET}" >&2
   if (( ${#labs[@]} == 0 )); then
     ok "No labs of this installer were found in project ${project}."
     if prompt_yes_no "Look up a VM by its name?" N; then gcp_destroy_by_vm_name "$project"; fi

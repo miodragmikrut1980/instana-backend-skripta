@@ -23,7 +23,7 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
 
 2b) SVEZ POCETAK kad folder vec postoji (brise se lokalni state, config i
     izvestaj poslednje instalacije — GCP resursi ostaju netaknuti; ako
-    postoje, kasnije ih brises kroz meni "clean up a lab"):
+    postoje, kasnije ih brises kroz meni "Clean up a lab"):
      cd ~ && rm -rf ~/instana-backend-skripta
      git clone https://github.com/miodragmikrut1980/instana-backend-skripta.git
      cd instana-backend-skripta && ./install.sh
@@ -42,7 +42,12 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
      ./install.sh --destroy          brisanje resursa iz ovog foldera
      ./install.sh --destroy --dry-run  pregled brisanja
      ./install.sh --help
-   Bez state fajla meni nudi "clean up a lab": skripta izlista labove
+   Start meni: 1) Install on new Google Cloud VMs, 2) Install on existing
+   hosts (SSH; bilo koji cloud ili on-prem), 3) Dry-run (pita: GCP ili
+   postojeci hostovi; 0 = nazad), Clean up a lab, Exit; Enter = 1.
+   ./install.sh --dry-run u terminalu isto pita cilj, osim ako je vec poznat
+   (zapisan u folderu, INSTANA_PROVIDER ili --config).
+   Bez state fajla meni nudi "Clean up a lab": skripta izlista labove
    projekta (samo citanje): three-node labove po labeli instana-lab-id i
    single-node VM-ove sa diskovima <ime>-analytics/-metrics/-objects/-data,
    sa statusom, datumom, diskovima i napomenom o trosku (i zaustavljen VM
@@ -170,10 +175,11 @@ kill a running installation; reattach with 'screen -d -r <name>'.
 Use ./install.sh for a new deployment. Use ./install.sh --resume in the same
 deployment folder when the selected topology supports continuation.
 Started without options from a terminal, install.sh shows a start menu:
-install / dry-run / resume (if a deployment is recorded) / destroy preview /
-destroy / exit. ./install.sh --destroy (optionally with --dry-run) runs the
+install on new Google Cloud VMs / install on existing hosts (SSH, any cloud
+or on-prem) / dry-run (asks which of the two) / resume, preview and delete
+(if a deployment is recorded) / clean up a lab / exit; Enter = 1. ./install.sh --destroy (optionally with --dry-run) runs the
 cleanup directly; destroy.sh still exists but need not be called by hand.
-Without a state file the menu offers "clean up a lab" instead: it lists the
+Without a state file the menu offers "Clean up a lab" instead: it lists the
 labs of the project (instana-lab-id label groups and single-node VMs with
 <vm>-analytics/-metrics/-objects/-data disks; never the control machine),
 shows exactly what a picked lab consists of, and deletes only after

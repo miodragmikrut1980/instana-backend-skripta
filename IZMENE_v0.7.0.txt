@@ -568,3 +568,23 @@ and every answer was lost.
   other keys dropped; secret ignores arrows); wording updated in
   test-nav-back.sh, test-ssh-login-flow.sh, test-ssh-host-choice.sh;
   mutants killed (no stripping, arrow acting at once, 0 not going back).
+
+2026-10-19 — UX v3: start menu names the target; dry-run asks it (C1, C3)
+- Start menu: "1) Install on new Google Cloud VMs  (the installer creates
+  the VMs)", "2) Install on existing hosts (SSH)  (any cloud or on-prem: AWS,
+  Azure, customer DC)", "3) Dry-run", "Clean up a lab" with three dimmed lines
+  saying exactly what is deleted (VMs, disks, firewall rules of a lab this
+  installer created on GCP; list first, delete only after DELETE; existing
+  hosts: only the local record is forgotten), Exit. Enter = 1. The choice is
+  passed on as INSTANA_PROVIDER (also into screen).
+- Dry-run asks "Dry-run for: new Google Cloud VMs / existing hosts" (0 = back
+  to the menu). ./install.sh --dry-run in a terminal asks the same, unless
+  the target is already known (recorded in this folder, INSTANA_PROVIDER or
+  --config). Before, --dry-run skipped the menu and always meant GCP.
+- Clean-up list: one dimmed line says only resources created by this
+  installer are listed and that the control machine and everything else in
+  the project are never listed or deleted; details behind "?".
+- A still-running installer in screen: Enter = 1 = reattach.
+- Tests: test-start-flow.sh 7-9 (menu texts, target question and 0 = back,
+  --dry-run with and without INSTANA_PROVIDER, Enter reattaches); mutants
+  killed.
