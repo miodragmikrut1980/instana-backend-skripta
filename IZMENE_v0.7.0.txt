@@ -837,3 +837,39 @@ and every answer was lost.
   empty, removed HOME (the caller's HOME has the data, so using it would
   hide the problem), without sudo, re-offers the list, a wrong key stops
   with HOW TO RESOLVE, and no key and no "as root" wording in the output.
+
+2026-10-29 — resume on a VM where stanctl up already installed Instana
+- Why: the real resume of the 2026-10-29 lab (single-node, phase 10
+  completed, k3s present, backend 3.327.712-0 Core and Unit Ready, stanctl
+  1.15.0) passed the k3s check but stopped in phase 10 with a bare
+  "stanctl returned no selectable compatible backend versions": phase 10
+  ran install_stanctl again, and once a backend is installed "stanctl
+  versions identify" prints no list, only "No newer versions available.
+  You are already running the latest supported version." (seen with 1.15.0
+  and 1.15.1).
+- Resume after this deployment's stanctl up (single-node), phase by phase:
+  3-6 as before (resources and SSH verified); 7 checks THP/swappiness/
+  inotify and never reboots (wrong values: HOW TO RESOLVE, reboot left to
+  the operator); 8 leaves an active UFW as it is (inactive: rules applied);
+  9 keeps verified mounts (read-only check, fstab line only if missing);
+  10 (online) installs nothing and does not touch the repository: it
+  compares the stanctl package with the pinned one and the backend running
+  in Core (Core status version, Core image tag, else the most used
+  instana-core image tag) with the pinned backend. Equal: detail lines
+  "Already installed by this deployment ..." and "Backend X runs in Core
+  ..., as pinned". Different stanctl or backend: HOW TO RESOLVE with what
+  was found, the exact restore command (apt-get install --allow-downgrades
+  stanctl=<pinned> + hold) or how to record a deliberately changed backend
+  (jq on .install-state.json), or delete. Version not readable: warning,
+  phase 11 still requires Core and Unit Ready. 11 checks the cluster, 12
+  and the report follow.
+- Fresh-install path: "No newer versions available" is recognised and
+  stops with HOW TO RESOLVE (stanctl on that VM already knows a backend:
+  inspect, --resume if this deployment installed it, or delete); any other
+  empty list also stops with HOW TO RESOLVE instead of a bare die.
+- Tests: test-resume-installed-e2e.sh runs ./install.sh --resume (main,
+  phases 1-12, real phase functions; only cloud API and SSH transport
+  mocked, identify returning exactly that output): ends with phase 12 and
+  the saved report, no reboot, UFW change, apt, identify or stanctl up;
+  different backend / different stanctl stop with HOW TO RESOLVE; the same
+  output on the fresh path is explained.

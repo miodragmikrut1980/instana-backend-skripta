@@ -2603,6 +2603,127 @@ install_stanctl_airgapped() {
   ok "Air-gapped stanctl package imported on ${vm_name}."
 }
 
+# What stanctl versions identify prints instead of a list once an Instana
+# backend is installed (observed 2026-10-29 with 1.15.0 and 1.15.1 on the VM).
+STANCTL_ALREADY_INSTALLED_TEXT="No newer versions available"
+
+# stanctl_no_versions_stop VM ZONE PROJECT OUTPUT — "versions identify" gave
+# no version list on the fresh-install path: explained, never a bare stop.
+stanctl_no_versions_stop() {
+  local vm="$1" zone="$2" project="$3" out="$4" said
+  said=$(printf '%s\n' "$out" | sed '/^[[:space:]]*$/d' | tail -3 | tr '\n' ' ' | mask_secrets)
+  if [[ "$out" == *"$STANCTL_ALREADY_INSTALLED_TEXT"* ]]; then
+    die_with_steps "stanctl ${STANCTL_CLI_VERSION:-?} on ${vm} lists no backend versions: it reports that an Instana backend is already installed there." \
+      "*stanctl said: ${said:0:300}" \
+      "*Why it stops: this installer is about to install a new backend, but stanctl on ${vm} already knows one (earlier stanctl data in /root/.stanctl, usually with a cluster). Installing over it is not done automatically." \
+      "See what is installed there:|$(provider_hint ssh "$vm" "$zone" "$project" 'sudo ls /root/.stanctl; sudo kubectl get core -A; sudo kubectl get pods -A | head -20')" \
+      "If this deployment installed it (stopped after stanctl up), continue; resume then checks the running installation instead of installing:|./install.sh --resume" \
+      "If it is a leftover that is not needed: remove the lab (menu: destroy or clean up) and install on a new VM:|./install.sh --destroy"
+  fi
+  die_with_steps "stanctl ${STANCTL_CLI_VERSION:-?} on ${vm} returned no selectable backend versions; no backend installation was started." \
+    "*stanctl said: ${said:-nothing}" \
+    "*Why it stops: without a compatible backend version from stanctl the backend cannot be pinned and installed." \
+    "Run the same list by hand on ${vm} (the key is not shown or saved):|read -rsp 'Download key: ' K; echo; sudo STANCTL_DOWNLOAD_KEY=\"\$K\" stanctl versions identify; unset K" \
+    "Continue (or choose another stanctl version when asked):|./install.sh --resume"
+}
+
+# verify_installed_instana VM ZONE PROJECT — phase 10 on a resume after this
+# deployment's stanctl up: nothing is installed or changed. stanctl lists no
+# versions any more once a backend is installed, so instead the installed
+# stanctl package and the backend running in Core are compared with the
+# versions pinned for this deployment.
+verify_installed_instana() {
+  local vm="$1" zone="$2" project="$3" out line pkg="" cli="" st_ver="" spec_tag="" img_tag="" installed="" source=""
+  local pin_stanctl pin_backend
+  pin_stanctl=$(get_state stanctl_apt_version); [[ -n "$pin_stanctl" ]] || pin_stanctl="${REQUESTED_STANCTL_APT_VERSION:-}"
+  pin_backend=$(get_state backend_version); [[ -n "$pin_backend" ]] || pin_backend="${REQUESTED_BACKEND_VERSION:-}"
+  out=$(HEARTBEAT_LABEL="reading the installed stanctl and Instana versions on ${vm}" remote_exec "$vm" "$zone" "$project" '
+set +e
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+echo "PKG=$(dpkg-query -W -f="\${Version}" stanctl 2>/dev/null)"
+echo "CLI=$(stanctl --version 2>/dev/null | head -1)"
+echo "CORE_STATUS_VERSION=$(timeout 30 kubectl get core -n instana-core -o jsonpath="{.items[0].status.instanaVersion}" 2>/dev/null)"
+echo "CORE_SPEC_TAG=$(timeout 30 kubectl get core -n instana-core -o jsonpath="{.items[0].spec.imageConfig.tag}" 2>/dev/null)"
+echo "IMAGE_TAG=$(timeout 30 kubectl get pods -n instana-core -o jsonpath="{range .items[*]}{range .spec.containers[*]}{.image}{\"\n\"}{end}{end}" 2>/dev/null | sed -nE "s/.*:([0-9]+\.[0-9]+\.[0-9]+-[0-9]+)\$/\1/p" | sort | uniq -c | sort -rn | awk "NR==1{print \$2}")"
+') || die_with_steps "Could not read the installed versions on ${vm} (SSH or sudo failed)." \
+      "Check that SSH and sudo work on ${vm}:|$(provider_hint ssh "$vm" "$zone" "$project" 'sudo -n true && echo sudo OK')" \
+      "Then continue:|./install.sh --resume"
+  while IFS= read -r line; do
+    case "$line" in
+      PKG=*) pkg="${line#PKG=}" ;;
+      CLI=*) cli="${line#CLI=}" ;;
+      CORE_STATUS_VERSION=*) st_ver="${line#*=}" ;;
+      CORE_SPEC_TAG=*) spec_tag="${line#*=}" ;;
+      IMAGE_TAG=*) img_tag="${line#*=}" ;;
+    esac
+  done <<< "$out"
+  if [[ -n "$st_ver" && "$st_ver" != Unknown ]]; then installed="$st_ver"; source="Core status"
+  elif [[ -n "$spec_tag" ]]; then installed="$spec_tag"; source="Core image tag"
+  elif [[ -n "$img_tag" ]]; then installed="$img_tag"; source="instana-core pod images"; fi
+  if [[ -z "$pkg" ]]; then
+    die_with_steps "stanctl is not installed on ${vm}, although this deployment already ran stanctl up there." \
+      "*Found: no stanctl package (dpkg-query); Kubernetes from the earlier stanctl up is there." \
+      "*Why it stops: the installation cannot be checked or finished without the stanctl it was made with, and a new stanctl is not installed next to a running backend automatically." \
+      "Look at the VM:|$(provider_hint ssh "$vm" "$zone" "$project" 'dpkg -l | grep -i stanctl; sudo kubectl get core -A')" \
+      "Install the pinned stanctl again (${pin_stanctl:-the version in .install-state.json}), then continue:|sudo apt-get install -y --allow-downgrades stanctl=${pin_stanctl:-<version>} && sudo apt-mark hold stanctl" \
+      "*  then: ./install.sh --resume"
+  fi
+  if [[ -n "$pin_stanctl" && "$pkg" != "$pin_stanctl" ]]; then
+    die_with_steps "stanctl on ${vm} is ${pkg}, but this deployment pinned ${pin_stanctl}." \
+      "*Found: stanctl package ${pkg} (${cli:-no version output}); .install-state.json: stanctl ${pin_stanctl}, backend ${pin_backend:-?}." \
+      "*Why it stops: the installation was made with stanctl ${pin_stanctl}; resume does not swap stanctl under a running backend." \
+      "Put the pinned version back on ${vm}, then continue:|$(provider_hint ssh "$vm" "$zone" "$project" "sudo apt-mark unhold stanctl; sudo apt-get install -y --allow-downgrades stanctl=${pin_stanctl} && sudo apt-mark hold stanctl")" \
+      "*  then: ./install.sh --resume" \
+      "Or, if ${pkg} was installed on purpose, remove the lab (menu: destroy or clean up) and install again with it:|./install.sh --destroy"
+  fi
+  if [[ -n "$installed" && -n "$pin_backend" && "$installed" != "$pin_backend" ]]; then
+    die_with_steps "Instana backend ${installed} runs on ${vm} (${source}), but this deployment pinned ${pin_backend}." \
+      "*Found: Core status version '${st_ver:-empty}', Core image tag '${spec_tag:-empty}', most used instana-core image tag '${img_tag:-none}'; stanctl ${pkg}." \
+      "*Why it stops: the final report and the recorded versions would be wrong; the installer does not change a running backend on resume." \
+      "Look at the Core resource:|$(provider_hint ssh "$vm" "$zone" "$project" 'sudo kubectl get core -n instana-core -o yaml | grep -i -E "version|tag"')" \
+      "If ${installed} is right (e.g. updated by hand), record it for this deployment, then continue:|jq '.backend_version = \"${installed}\"' .install-state.json > s.tmp && mv s.tmp .install-state.json && ./install.sh --resume" \
+      "Otherwise remove the lab (menu: destroy or clean up) and install ${pin_backend} again:|./install.sh --destroy"
+  fi
+  STANCTL_APT_VERSION="$pkg"
+  STANCTL_CLI_VERSION=$(grep -Eo '[0-9]+\.[0-9]+\.[0-9]+([.+~-][0-9A-Za-z.-]+)?' <<< "$cli" | head -1 || true)
+  [[ -z "$STANCTL_CLI_VERSION" ]] || save_state stanctl_cli_version "$STANCTL_CLI_VERSION"
+  BACKEND_VERSION="${pin_backend:-$installed}"
+  remote_exec "$vm" "$zone" "$project" "apt-mark hold stanctl >/dev/null" || true
+  phase_detail done "Already installed by this deployment: stanctl ${pkg} (held), nothing installed or changed."
+  if [[ -n "$installed" ]]; then
+    phase_detail done "Backend ${installed} runs in Core (${source}), as pinned."
+  else
+    phase_detail warn "The running backend version could not be read (Core status/tag and pod images give none); phase 11 checks that Core and Unit are Ready."
+  fi
+  phase_detail done "Version list not read again: once a backend is installed stanctl answers '${STANCTL_ALREADY_INSTALLED_TEXT}...'."
+}
+
+# verify_kernel_installed VM — phase 7 on a resume after stanctl up: the
+# settings are checked, the running cluster is never rebooted.
+verify_kernel_installed() {
+  local vm="$1"
+  if remote_exec "$vm" "$GCP_ZONE" "$GCP_PROJECT" 'set -e; grep -q "\[never\]" /sys/kernel/mm/transparent_hugepage/enabled; test "$(sysctl -n vm.swappiness)" = 0; test "$(sysctl -n fs.inotify.max_user_instances)" = 8192'; then
+    phase_detail done "Kernel settings verified on ${vm} (THP never, swappiness 0, inotify 8192); not rebooted (Instana is installed)."
+    return 0
+  fi
+  die_with_steps "The Instana kernel settings are not active on ${vm}, where this deployment already installed Instana." \
+    "*Why it stops: fixing them needs a reboot, which would restart the whole running cluster; that is not done automatically on resume." \
+    "See the current values:|$(provider_hint ssh "$vm" "$GCP_ZONE" "$GCP_PROJECT" 'cat /sys/kernel/mm/transparent_hugepage/enabled; sysctl vm.swappiness fs.inotify.max_user_instances; cat /etc/sysctl.d/99-stanctl.conf')" \
+    "Restore /etc/sysctl.d/99-stanctl.conf and transparent_hugepage=never in GRUB, reboot the VM yourself, wait for the pods, then continue:|./install.sh --resume"
+}
+
+# configure_ufw_installed VM — phase 8 on a resume after stanctl up: an
+# active UFW is left as it is (rules were applied before stanctl up).
+configure_ufw_installed() {
+  local vm="$1"
+  if remote_exec "$vm" "$GCP_ZONE" "$GCP_PROJECT" 'ufw status | grep -q "^Status: active"'; then
+    phase_detail done "UFW is active on ${vm}; rules not re-applied on the running cluster."
+  else
+    warn "UFW is not active on ${vm}; applying the documented rules now."
+    configure_ufw_single_node "$vm" "$GCP_ZONE" "$GCP_PROJECT"
+  fi
+}
+
 install_stanctl() {
   # IBM docs: install an exact stanctl package and hold it. The installed CLI
   # then queries IBM release metadata for backend versions compatible with it.
@@ -2700,8 +2821,7 @@ install_stanctl() {
   fi
   save_state stanctl_identify_failed ""
   mapfile -t backend_versions < <(printf '%s\n' "$raw_backends" | sed -nE 's/^[[:space:]]*-[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+[-.+~][0-9A-Za-z.-]+)[[:space:]]*$/\1/p' | sort -rV | awk '!seen[$0]++')
-  (( ${#backend_versions[@]} > 0 )) ||
-    die "stanctl returned no selectable compatible backend versions; no backend installation was started."
+  (( ${#backend_versions[@]} > 0 )) || stanctl_no_versions_stop "$vm_name" "$zone" "$project" "$raw_backends"
 
   saved=$(get_state backend_version)
   [[ -n "$saved" ]] || saved="$REQUESTED_BACKEND_VERSION"
@@ -3371,12 +3491,13 @@ main_single_node() {
   phase_start 7 "Apply Instana sysctl and Transparent Huge Pages settings, reboot, and verify both a new boot ID and THP=never."
   # Resume after stanctl up: the cluster is running; a recorded kernel step is
   # verified without rebooting it.
-  if [[ "${RESUME_AFTER_STANCTL_UP:-false}" == true ]]; then resume_kernel "$VM_NAME"; else lab_kernel "$VM_NAME"; fi
+  if [[ "${RESUME_AFTER_STANCTL_UP:-false}" == true ]]; then verify_kernel_installed "$VM_NAME"; else lab_kernel "$VM_NAME"; fi
   phase_done 7 "Kernel settings and reboot were verified."
 
   # UFW firewall rules (single-node, from documentation)
   phase_start 8 "Enable the Ubuntu firewall while preserving SSH and allowing documented Instana service ports."
-  configure_ufw_single_node "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
+  if [[ "${RESUME_AFTER_STANCTL_UP:-false}" == true ]]; then configure_ufw_installed "$VM_NAME"
+  else configure_ufw_single_node "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"; fi
   phase_done 8 "UFW rules were applied."
 
   # Format and mount disks (from documentation)
@@ -3388,7 +3509,10 @@ main_single_node() {
   phase_done 9 "Instana storage paths are mounted."
 
   phase_start 10 "Configure the authenticated Instana package source and install stanctl, or import the selected air-gapped artifacts. Credentials are used in memory and are not written to state or log files."
-  if [[ "$INSTALL_MODE" == "online" ]]; then
+  if [[ "$INSTALL_MODE" == "online" && "${RESUME_AFTER_STANCTL_UP:-false}" == true ]]; then
+    # stanctl up already ran here: verify, do not install (repository untouched).
+    verify_installed_instana "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
+  elif [[ "$INSTALL_MODE" == "online" ]]; then
     add_instana_repository "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
     install_stanctl "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
   else

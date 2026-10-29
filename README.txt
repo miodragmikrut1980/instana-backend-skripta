@@ -196,6 +196,10 @@ STANCTL UP TIMEOUT I NASTAVAK POSLE NJEGA (faza 11):
      do faze 11 (stanctl_up_status u state-u, ili zavrsena faza 10 kod starijih
      state fajlova), faza 11 samo proverava klaster (bez ponovnog stanctl up i
      bez reboot-a u fazi 7) i kad je Instana gore zavrsava fazu 12 i izvestaj.
+     Faze 7-10 tada samo proveravaju: kernel bez reboot-a, aktivan UFW se ne
+     dira, mountovi se ne menjaju, faza 10 ne instalira nista nego poredi
+     stanctl paket i backend koji radi u Core-u sa zakucanim verzijama
+     (stanctl tada vise ne daje listu, samo "No newer versions available").
      Ako nije gore: objasnjen STOP; INSTANA_RERUN_STANCTL_UP=yes ./install.sh
      --resume pusta stanctl up ponovo sa istim verzijama. k3s na VM-u a
      deployment nikad nije stigao do stanctl up = tudji klaster: STOP sa

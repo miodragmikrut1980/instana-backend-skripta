@@ -182,7 +182,8 @@ run_case resume_ready '
   echo "FLAG=$RESUME_AFTER_STANCTL_UP"
   provider_ensure_vms() { :; }; provider_ensure_disks() { :; }; provider_ensure_firewall() { :; }
   wait_for_ssh() { :; }; verify_cpu_x86_64_v3() { :; }; configure_ufw_single_node() { :; }
-  format_and_mount_disk() { :; }; add_instana_repository() { :; }; install_stanctl() { :; }
+  format_and_mount_disk() { :; }; add_instana_repository() { echo "FAIL-REPO"; }; install_stanctl() { echo "FAIL-INSTALL"; }
+  verify_installed_instana() { echo "VERIFIED-INSTALLED"; }  # covered in test-resume-installed-e2e.sh
   lab_kernel() { echo "FAIL-REBOOT"; }
   run_stanctl_up_single_node() { echo "FAIL-RERUN"; }
   post_install_health_check() { echo "HEALTH-CHECK"; }
@@ -201,7 +202,8 @@ has "stanctl up was not repeated: Core and Unit were verified Ready on instana-b
 has "HEALTH-CHECK"
 has "FINAL-REPORT 203.0.113.7"
 has "FINAL-SUMMARY"
-hasnt "FAIL-REBOOT"; hasnt "FAIL-RERUN"
+hasnt "FAIL-REBOOT"; hasnt "FAIL-RERUN"; hasnt "FAIL-REPO"; hasnt "FAIL-INSTALL"
+has "VERIFIED-INSTALLED"
 [[ "$(jq -r .progress_phase_11 "$TEST_DIR/.install-state.json")" == completed ]] || fail "phase 11 not recorded as done"
 echo "PASS: resume with k3s after a phase-11 stop: cluster verified, no stanctl rerun or reboot, phase 12 and report"
 
