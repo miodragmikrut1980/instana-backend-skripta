@@ -745,3 +745,63 @@ and every answer was lost.
 - Tests: test-version-selection.sh (mock stanctl with 401 as root for
   1.15.1: re-offered before Start, phase-10 stop with HOW TO RESOLVE and no
   key in the output, resume switches to 1.15.0 and proceeds).
+
+2026-10-29 — stanctl up timeout: longer wait, cluster check, resume after it
+- Why: a real single-node run (stanctl 1.15.0, backend 3.327.712-0,
+  n2-standard-16 demo) had stanctl up exit 1 after ~63 min: its health check
+  gave up (stanctl --timeout, default 30m0s) while Core was still
+  "Progressing"; minutes later all 59 pods were Running. The installer only
+  showed the generic EXIT box, and ./install.sh --resume then refused at
+  once because /etc/rancher/k3s/k3s.yaml existed, so an installation that
+  actually came up could never get phase 12 and its report.
+- stanctl up now gets --timeout (default 90m) on single-node, three-node,
+  online and air-gapped. The wait is a parameter, STANCTL_UP_TIMEOUT: one
+  plan line "stanctl up timeout   90 min (E changes it)", changed with E
+  (whole minutes 30-600, or 90m / 2h / 1h30m; ? shows why it matters; an
+  invalid value is asked again), optional key in --config (aliases
+  STANCTL_TIMEOUT / stanctl_timeout), an Advanced field in
+  config-generator.html, saved with the parameters (also for --resume) and
+  written by --export-config. INSTANA_STANCTL_TIMEOUT in the environment
+  overrides it ("default" = no --timeout); an invalid value stops in phase
+  1 with HOW TO RESOLVE. No new question in the normal flow.
+- stanctl up output is also kept on the VM (/root/.stanctl-up.out); a lost
+  SSH connection during stanctl up is no longer retried (it would have
+  started a second stanctl up next to the first).
+- When stanctl up fails: its last lines and the end of
+  /root/.stanctl/logs/console.log are shown (time stamps removed, repeated
+  health-check lines folded "(12x)", anything like key/password/token/secret
+  and the keys of this run masked), then the cluster is checked on the VM:
+  running stanctl, nodes Ready, Core and Unit status, pods not Running /
+  not ready. Waits up to 20 min (INSTANA_READY_WAIT_MIN, poll
+  INSTANA_READY_POLL s) with a spinner. Core and Unit Ready on all nodes:
+  "stanctl up reported a failure (exit 1; usually its own timeout), but
+  Instana came up: ..." and phase 12 runs normally. Otherwise
+  die_with_steps: what was found (each Core/Unit not Ready, up to 10 pods),
+  stanctl's lines, why it blocks, the kubectl commands, console.log path,
+  and how to continue (--resume, INSTANA_RERUN_STANCTL_UP=yes, delete).
+  Separate texts for: no k3s yet (resume runs stanctl up again), stanctl
+  still running (watch it, then resume), Kubernetes API not answering.
+- Single-node resume with k3s on the VM: when this deployment reached phase
+  11 (stanctl_up_status recorded, or phase 10 completed for older state
+  files), phase 11 checks the cluster instead of running stanctl up, phase
+  7 verifies the kernel without rebooting the running cluster, and when
+  Instana is up phase 12 and the final report follow. Still not ready:
+  explained stop; INSTANA_RERUN_STANCTL_UP=yes reruns stanctl up with the
+  pinned versions (stanctl up applies the configuration to the existing
+  cluster; IBM's documented way to apply changes, not verified here against
+  this exact failure). k3s although the state shows no phase 10/11 (foreign
+  cluster): the old refusal stays, now as HOW TO RESOLVE (what runs there,
+  k3s-uninstall.sh only if not needed, or another VM); nothing changed.
+- Three-node: stanctl_up_status running/failed no longer stops resume at
+  once; phase 11 checks node0 the same way (3 Ready nodes required), runs
+  stanctl up only when there is no cluster and no running stanctl (or
+  INSTANA_RERUN_STANCTL_UP=yes), never next to a running one.
+- Tests: test-stanctl-up-recovery.sh (13: --timeout flag forms, value
+  checks, recovered timeout -> phase 11 done without rerun and secrets
+  masked, not ready -> HOW TO RESOLVE with Core/Unit/pod names, no k3s,
+  lost connection, resume with k3s -> phase 12 + report without rerun or
+  reboot, resume still not ready, rerun request, foreign cluster stop,
+  three-node); test-nav-back.sh 24b (plan line, E, ? help, invalid value
+  re-asked, 2h -> --timeout 120m); test-config-file.sh (value from a file
+  via alias, invalid without a terminal, invalid re-asked on import,
+  --export-config carries it).

@@ -68,7 +68,7 @@ completed() {
 new_case full
 run_installer "y" --config examples/single-gcp-online-full.json --dry-run
 completed; no_questions
-has "23 values taken from the file; 0 will be asked below."   # incl. KUBE_USER_ACCESS (default no)
+has "24 values taken from the file; 0 will be asked below."   # incl. KUBE_USER_ACCESS (default no), STANCTL_UP_TIMEOUT (default 90m)
 has "Base domain:                   instana.lab.example.com"
 has "Backend version:               3.323.470-0"
 for s in test-download-key-0000 test-agent-key-0000 test-sales-key-0000 Test-Admin-Pass-0000; do
@@ -328,11 +328,11 @@ jq -n '{schema_version:1, parameters:{TOPOLOGY:"single-node", INSTALL_MODE:"onli
   GCP_NETWORK:"default", GCP_SUBNET:"default", SSH_SOURCE_CIDR:"203.0.113.10/32", VM_NAME:"saved-lab", VM_CPUS:"32",
   VM_RAM_GB:"128", MACHINE_TYPE:"n2-standard-32", BASE_DOMAIN:"saved.example.com", TENANT_NAME:"t1", UNIT_NAME:"u1",
   TLS_MODE:"auto-generate (self-signed)", NODE0_NAME:"", NODE1_NAME:"", NODE2_NAME:"", NODE_CPUS:"", NODE_RAM_GB:"",
-  TLS_CRT_PATH:"", TLS_KEY_PATH:"", AIRGAP_ARCHIVE:""}}' > "$CASE/.install-config.json"
+  TLS_CRT_PATH:"", TLS_KEY_PATH:"", AIRGAP_ARCHIVE:"", STANCTL_UP_TIMEOUT:"120m"}}' > "$CASE/.install-config.json"
 chmod 600 "$CASE/.install-config.json"
 run_installer "" --export-config exported.json
 [[ "$RC" == 0 ]] || fail "--export-config exit code $RC"
-jq -e '.parameters.SIZE=="custom" and .parameters.VM_CPUS=="32" and .parameters.VM_NAME=="saved-lab" and (has("secrets")) and (.parameters|has("MACHINE_TYPE")|not)' "$CASE/exported.json" >/dev/null || fail "exported content"
+jq -e '.parameters.SIZE=="custom" and .parameters.VM_CPUS=="32" and .parameters.VM_NAME=="saved-lab" and .parameters.STANCTL_UP_TIMEOUT=="120m" and (has("secrets")) and (.parameters|has("MACHINE_TYPE")|not)' "$CASE/exported.json" >/dev/null || fail "exported content"
 test -f "$CASE/exported.json" || fail "exported file missing"
 for v in test-download-key-0000 test-agent-key-0000 test-sales-key-0000 Test-Admin-Pass-0000; do
   if grep -qF "$v" "$CASE/exported.json"; then fail "secret $v written into the exported file"; fi
@@ -436,6 +436,33 @@ run_installer "" --config kube.json --dry-run
 has "- KUBE_USER_ACCESS: 'maybe' cannot be used: KUBE_USER_ACCESS 'maybe' is not one of: 'no', 'yes'."
 has 'Example: "KUBE_USER_ACCESS": "no" (default) or "yes".'
 echo "PASS: KUBE_USER_ACCESS other than yes/no is refused with the reason"
+
+# STANCTL_UP_TIMEOUT from a file: used (alias stanctl_timeout accepted, 2h =
+# 120 min), saved; invalid without a terminal = explained stop; with answers
+# an invalid value is asked again.
+new_case sttimeout_ok
+jq '.parameters.stanctl_timeout = "2h"' "$CASE/examples/single-gcp-online-full.json" > "$CASE/st.json"; chmod 600 "$CASE/st.json"
+run_installer "y" --config st.json --dry-run
+completed; no_questions
+has "stanctl up timeout:            120 min (E changes it)"
+has "--timeout 120m"
+echo "PASS: STANCTL_UP_TIMEOUT from the file (alias stanctl_timeout) is used in the plan and for stanctl up"
+
+new_case sttimeout_bad
+jq '.parameters.STANCTL_UP_TIMEOUT = "5m"' "$CASE/examples/single-gcp-online-full.json" > "$CASE/st.json"; chmod 600 "$CASE/st.json"
+run_installer "" --config st.json --dry-run
+[[ "$RC" != 0 ]] || fail "an invalid STANCTL_UP_TIMEOUT must stop without a terminal"
+has "- STANCTL_UP_TIMEOUT: '5m' cannot be used: STANCTL_UP_TIMEOUT '5m' is 5 minutes; use 30 to 600 minutes"
+has 'Example: "STANCTL_UP_TIMEOUT": "90m" (default), "2h", "1h30m" or whole minutes "120" (30-600).'
+echo "PASS: an invalid STANCTL_UP_TIMEOUT from the file is refused with the reason"
+
+new_case sttimeout_reask
+jq '.parameters.STANCTL_UP_TIMEOUT = "forever"' "$CASE/examples/single-gcp-online-full.json" > "$CASE/instana-config-st.json"; chmod 600 "$CASE/instana-config-st.json"
+run_installer $'2\n\n45\ny' --dry-run
+completed
+has "STANCTL_UP_TIMEOUT from instana-config-st.json cannot be used (reason above); please enter it now."
+has "stanctl up timeout:            45 min (E changes it)"
+echo "PASS: an invalid STANCTL_UP_TIMEOUT from an imported file is asked again"
 
 # 25. Nothing to import here (no saved answers, no instana-config*.json):
 #     no source menu, one tip line, and no "back" at the very first question.

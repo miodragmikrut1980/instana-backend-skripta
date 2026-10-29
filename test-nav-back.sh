@@ -297,6 +297,19 @@ has "Would copy the cluster-admin kubeconfig to the SSH user's ~/.kube/config"
 hasnt "Allow the current SSH user"
 echo "PASS: kubectl without sudo is chosen at the plan, not asked at the end"
 
+# 24b. stanctl up timeout: one plan line (default 90 min), changed with E;
+#      "?" shows the longer help, an invalid value is asked again, 2h = 120 min.
+run sttimeout $'1\n1\n1\n1\n\ninstana-backend\ninstana.example.com\ntenant0\nunit0\nadmin-secret\ndownload-secret\nagent-secret\nsales-secret\n1\ne\n'"$((k + 1))"$'\n?\n10\nn\n2h\ny'
+done_ok
+has "stanctl up timeout:            90 min (E changes it)"
+has "Changing STANCTL_UP_TIMEOUT"
+has "stanctl stops waiting after this time even if Instana is still starting"
+has "stanctl up timeout '10' is 10 minutes; use 30 to 600 minutes"
+has "stanctl up timeout:            120 min (E changes it)"
+has "stanctl up --env-file /root/.stanctl.env"
+has "--timeout 120m"
+echo "PASS: stanctl up timeout is shown in the plan and changed with E (invalid value asked again)"
+
 # 25. /etc/hosts lines: only node 0's IP; taken as detected, asked only when unknown.
 ( cd "$TEST_ROOT"; mkdir -p ip; cp -R "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR/providers" ip/; cd ip; set --
   PATH="$TEST_ROOT/bin:$PATH" bash -c 'source ./install.sh; DRY_RUN=false TOPOLOGY=three-node NODE0_NAME=n0 NODE1_NAME=n1 NODE2_NAME=n2

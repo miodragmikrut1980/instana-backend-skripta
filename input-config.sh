@@ -79,6 +79,7 @@ input_example() {
     NODE0_NAME|NODE1_NAME|NODE2_NAME) echo "\"mikrut-node-${1:4:1}\"" ;;
     SIZE) echo '"minimum", "production" or "custom"' ;;
     KUBE_USER_ACCESS) echo '"no" (default) or "yes"' ;;
+    STANCTL_UP_TIMEOUT) echo '"90m" (default), "2h", "1h30m" or whole minutes "120" (30-600)' ;;
     VM_CPUS) echo '"32"' ;;
     VM_RAM_GB) echo '"128"' ;;
     BASE_DOMAIN) echo '"instana.lab.example.com"' ;;
@@ -122,6 +123,7 @@ input_purpose() {
     DISK_DEV_*) echo "the dedicated data disk for one Instana data directory" ;;
     SIZE|VM_CPUS|VM_RAM_GB) echo "the machine size" ;;
     KUBE_USER_ACCESS) echo "kubectl without sudo for the SSH user on the Instana host" ;;
+    STANCTL_UP_TIMEOUT) echo "how long stanctl up waits for Instana to come up" ;;
     BASE_DOMAIN) echo "the address Instana is reached at" ;;
     TENANT_NAME|UNIT_NAME) echo "the UI address <unit>-<tenant>.<domain>" ;;
     TLS_MODE|TLS_CRT_PATH|TLS_KEY_PATH) echo "the HTTPS certificate" ;;
@@ -167,6 +169,7 @@ input_check() {
     UBUNTU_VERSION) input_one_of "$key" "$v" ubuntu-2404-lts-amd64 ubuntu-2204-lts ;;
     SIZE) input_one_of "$key" "$v" minimum production custom ;;
     KUBE_USER_ACCESS) input_one_of "$key" "$v" no yes ;;
+    STANCTL_UP_TIMEOUT) validate_stanctl_timeout "$v" "$key" ;;
     AIRGAP_SOURCE) input_one_of "$key" "$v" existing build ;;
     TLS_MODE) input_one_of "$key" "$v" "auto-generate (self-signed)" "provide custom certificate files" auto custom ;;
     GCP_PROJECT|GCP_REGION|GCP_NETWORK|GCP_SUBNET) provider_validate_param "$key" "$v" ;;
@@ -220,6 +223,7 @@ input_normalize() {
       esac ;;
     TLS_CRT_PATH|TLS_KEY_PATH|AIRGAP_ARCHIVE|AIRGAP_OUTPUT_DIR|SSH_KEY_PATH) v=$(input_expand_path "$v") ;;
     SSH_SOURCE_CIDR) [[ "$v" == auto ]] && v=$(detect_public_cidr) ;;
+    STANCTL_UP_TIMEOUT) v=$(stanctl_timeout_normalize "$v") ;;
   esac
   printf '%s' "$v"
 }
@@ -397,8 +401,18 @@ input_refuse_unsupported_provider() { :; }
 # Same value or one side empty: merged. Different values: the operator picks
 # (in a terminal) or the run stops listing the conflict (no terminal).
 input_resolve_aliases() {
-  local pair neutral gcp nv gv choice
+  local pair neutral gcp nv gv choice alias
   INPUT_CONFLICTS=()
+  # Other spellings of STANCTL_UP_TIMEOUT; the canonical name wins.
+  for alias in STANCTL_TIMEOUT stanctl_timeout stanctl_up_timeout; do
+    [[ -n "${IMPORTED[$alias]+x}" ]] || continue
+    if [[ -n "${IMPORTED[$alias]}" && -z "${IMPORTED[STANCTL_UP_TIMEOUT]:-}" ]]; then
+      IMPORTED[STANCTL_UP_TIMEOUT]="${IMPORTED[$alias]}"
+    elif [[ -n "${IMPORTED[$alias]}" && "${IMPORTED[$alias]}" != "${IMPORTED[STANCTL_UP_TIMEOUT]}" ]]; then
+      warn "${alias} ('${IMPORTED[$alias]}') in $(input_source_label) is another name for STANCTL_UP_TIMEOUT; the STANCTL_UP_TIMEOUT value '${IMPORTED[STANCTL_UP_TIMEOUT]}' is used."
+    fi
+    unset "IMPORTED[$alias]"
+  done
   if [[ "$(provider_name)" != gcp ]]; then
     for pair in SCOPE REGION LOCATION NETWORK SUBNET; do
       [[ -z "${IMPORTED[PROVIDER_$pair]:-}" ]] || log "PROVIDER_${pair} ignored: it names a cloud location, which PROVIDER '$(provider_name)' does not use."
@@ -513,7 +527,7 @@ input_applicable_keys() {
   elif [[ -z "$tls" ]]; then
     local k; for k in TLS_CRT_PATH TLS_KEY_PATH; do [[ -z "${IMPORTED[$k]:-}" ]] || keys+=("$k"); done
   fi
-  keys+=(KUBE_USER_ACCESS)
+  keys+=(KUBE_USER_ACCESS STANCTL_UP_TIMEOUT)
   printf '%s\n' "${keys[@]}"
 }
 
@@ -568,8 +582,9 @@ input_evaluate() {
       INPUT_ROWS+=("ok|${key}|not in the file; the host's own name is used")
       continue
     fi
-    if [[ -z "$value" && ( "$key" == UBUNTU_VERSION || "$key" == SIZE || "$key" == KUBE_USER_ACCESS ) ]]; then
+    if [[ -z "$value" && ( "$key" == UBUNTU_VERSION || "$key" == SIZE || "$key" == KUBE_USER_ACCESS || "$key" == STANCTL_UP_TIMEOUT ) ]]; then
       local dflt=ubuntu-2404-lts-amd64; [[ "$key" != SIZE ]] || dflt=minimum; [[ "$key" != KUBE_USER_ACCESS ]] || dflt=no
+      [[ "$key" != STANCTL_UP_TIMEOUT ]] || dflt="${STANCTL_UP_TIMEOUT_DEFAULT:-90m}"
       INPUT_ROWS+=("ok|${key}|not in the file; default ${dflt} (E at the plan changes it)")
       continue
     fi
@@ -816,7 +831,7 @@ input_current_keys() {
   else keys+=(STANCTL_VERSION BACKEND_VERSION); fi
   keys+=(TLS_MODE)
   [[ "$TLS_MODE" == "provide custom certificate files" ]] && keys+=(TLS_CRT_PATH TLS_KEY_PATH)
-  keys+=(KUBE_USER_ACCESS)
+  keys+=(KUBE_USER_ACCESS STANCTL_UP_TIMEOUT)
   printf '%s\n' "${keys[@]}"
 }
 

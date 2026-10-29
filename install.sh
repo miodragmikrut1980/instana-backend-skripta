@@ -955,7 +955,7 @@ declare -A WIZ_DONE=()
 WIZ_STEPS=(wiz_ssh_hosts wiz_ssh_login wiz_topology wiz_mode wiz_type wiz_ubuntu wiz_location wiz_cidr
   wiz_vm_name wiz_node0_name wiz_node1_name wiz_node2_name wiz_size wiz_host_params
   wiz_domain wiz_tenant wiz_unit wiz_admin_password wiz_download_key wiz_agent_key
-  wiz_sales_key wiz_airgap wiz_versions wiz_tls wiz_tls_crt wiz_tls_key wiz_kube)
+  wiz_sales_key wiz_airgap wiz_versions wiz_tls wiz_tls_crt wiz_tls_key wiz_kube wiz_stanctl_timeout)
 
 # ask_choice VAR TEXT OPTION... — sets VAR to the chosen option; the current
 # value (or the saved one when editing saved parameters) is the Enter default.
@@ -1370,6 +1370,27 @@ wiz_kube() {
   fi
   [[ -n "${KUBE_USER_ACCESS:-}" ]] || KUBE_USER_ACCESS=$(jq -r '.parameters.KUBE_USER_ACCESS // empty' "$CONFIG_FILE" 2>/dev/null || true)
   [[ -n "${KUBE_USER_ACCESS:-}" ]] || KUBE_USER_ACCESS=no
+}
+
+# How long stanctl up waits for Instana: not asked (default 90 min, shown in
+# the plan); E at the plan changes it, --config may carry it.
+wiz_stanctl_timeout() {
+  local from_file=""
+  [[ "${PARAMS_SOURCE:-}" != import ]] || from_file="${IMPORTED[STANCTL_UP_TIMEOUT]:-}"
+  use_imported STANCTL_UP_TIMEOUT && return 0
+  # Asked when E picked it, or when the file's value could not be used.
+  if [[ "${EDIT_KEY:-}" == STANCTL_UP_TIMEOUT || -n "$from_file" ]]; then
+    hint "How long stanctl up waits for Instana to come up: whole minutes 30-600, or 90m, 2h, 1h30m." \
+         "stanctl stops waiting after this time even if Instana is still starting, and then reports a failure." \
+         "Larger machines, three-node clusters and newer backends may need longer (a single-node demo took ~63 min on 2026-10-29)." \
+         "After a timeout the installer checks the cluster anyway (up to ${INSTANA_READY_WAIT_MIN} more minutes) and continues when Core and Unit are Ready." \
+         "Saved with the parameters (also for --resume). INSTANA_STANCTL_TIMEOUT in the environment overrides it."
+    prompt_required STANCTL_UP_TIMEOUT "stanctl up timeout" "${STANCTL_UP_TIMEOUT:-$STANCTL_UP_TIMEOUT_DEFAULT}" validate_stanctl_timeout "stanctl up timeout"
+    ! stanctl_timeout_minutes "${STANCTL_UP_TIMEOUT:-}" >/dev/null || STANCTL_UP_TIMEOUT=$(stanctl_timeout_normalize "$STANCTL_UP_TIMEOUT")
+    return 0
+  fi
+  [[ -n "${STANCTL_UP_TIMEOUT:-}" ]] || STANCTL_UP_TIMEOUT=$(jq -r '.parameters.STANCTL_UP_TIMEOUT // empty' "$CONFIG_FILE" 2>/dev/null || true)
+  [[ -n "${STANCTL_UP_TIMEOUT:-}" ]] || STANCTL_UP_TIMEOUT=$STANCTL_UP_TIMEOUT_DEFAULT
 }
 
 wiz_tls_crt() {
@@ -1992,6 +2013,7 @@ show_plan() {
     printf "  %-30s %s\n" "Backend version:"   "chosen on the Instana host in phase 10 (this control machine could not list the versions)"
   fi
   printf "  %-30s %s\n" "kubectl without sudo:" "${KUBE_USER_ACCESS:-no} (for the SSH user on the Instana host; E changes it)"
+  printf "  %-30s %s\n" "stanctl up timeout:" "$(stanctl_timeout_plan_text)"
   echo ""
   echo -e "  ${BOLD}Access${RESET}"
   printf "  %-30s %s\n" "Base domain:"       "$BASE_DOMAIN"
@@ -2743,6 +2765,376 @@ stanctl_version_flag() {
     printf -- "--instana-version '%s'" "$BACKEND_VERSION"
   fi
 }
+# stanctl up waits for the cluster only as long as its global --timeout
+# (default 30m0s) and then exits 1, even while Kubernetes keeps bringing
+# Instana up. Observed 2026-10-29 (single-node n2-standard-16, stanctl 1.15.0,
+# backend 3.327.712-0): exit 1 after ~63 min with Core still "Progressing";
+# minutes later all pods were Running. The installer therefore passes a longer
+# timeout and, when stanctl up still fails, checks the cluster itself before
+# it decides. The wait is a deployment parameter (STANCTL_UP_TIMEOUT: plan
+# line, E at the plan, --config, saved for --resume; default 90m);
+# INSTANA_STANCTL_TIMEOUT in the environment overrides it, and "default" there
+# passes no --timeout at all (stanctl's own 30 minutes).
+STANCTL_UP_TIMEOUT_DEFAULT=90m
+STANCTL_UP_TIMEOUT=""
+# After a failed stanctl up, and on resume, wait up to this many minutes for
+# Core and Unit to report Ready (checked every INSTANA_READY_POLL seconds).
+INSTANA_READY_WAIT_MIN="${INSTANA_READY_WAIT_MIN:-20}"
+INSTANA_READY_POLL="${INSTANA_READY_POLL:-30}"
+# stanctl up's own output on the VM (for the stop message; no secrets in it).
+STANCTL_UP_OUT=/root/.stanctl-up.out
+STANCTL_CONSOLE_LOG=/root/.stanctl/logs/console.log
+
+# stanctl_timeout_minutes VALUE — minutes for 90, 90m, 2h or 1h30m; 1 otherwise.
+stanctl_timeout_minutes() {
+  local v="$1"
+  if [[ "$v" =~ ^[0-9]{1,4}$ ]]; then echo $(( 10#$v ))
+  elif [[ "$v" =~ ^([0-9]{1,4})m$ ]]; then echo $(( 10#${BASH_REMATCH[1]} ))
+  elif [[ "$v" =~ ^([0-9]{1,2})h(([0-9]{1,3})m)?$ ]]; then echo $(( 10#${BASH_REMATCH[1]} * 60 + 10#${BASH_REMATCH[3]:-0} ))
+  else return 1; fi
+}
+
+# validate_stanctl_timeout VALUE [LABEL] — whole minutes 30-600 (90, 90m, 2h, 1h30m).
+validate_stanctl_timeout() {
+  local m
+  if ! m=$(stanctl_timeout_minutes "$1"); then
+    err "${2:-stanctl up timeout} '${1}' is not a wait time: use whole minutes (90) or 90m, 2h, 1h30m."
+    return 1
+  fi
+  (( m >= 30 && m <= 600 )) ||
+    { err "${2:-stanctl up timeout} '${1}' is ${m} minutes; use 30 to 600 minutes (stanctl's own default is 30)."; return 1; }
+}
+
+stanctl_timeout_normalize() { printf '%sm' "$(stanctl_timeout_minutes "$1")"; }
+
+# The wait passed to stanctl up: "default" (no flag) or "<minutes>m".
+stanctl_timeout_effective() {
+  if [[ -n "${INSTANA_STANCTL_TIMEOUT:-}" ]]; then
+    if [[ "$INSTANA_STANCTL_TIMEOUT" == default ]]; then echo default; else stanctl_timeout_normalize "$INSTANA_STANCTL_TIMEOUT"; fi
+  elif [[ -n "${STANCTL_UP_TIMEOUT:-}" ]]; then stanctl_timeout_normalize "$STANCTL_UP_TIMEOUT"
+  else echo "$STANCTL_UP_TIMEOUT_DEFAULT"; fi
+}
+
+# The plan line: "90 min (E changes it)".
+stanctl_timeout_plan_text() {
+  local e; e=$(stanctl_timeout_effective)
+  if [[ "$e" == default ]]; then echo "30 min, stanctl's own default (INSTANA_STANCTL_TIMEOUT=default; E cannot change it while that is set)"
+  elif [[ -n "${INSTANA_STANCTL_TIMEOUT:-}" ]]; then echo "${e%m} min (from INSTANA_STANCTL_TIMEOUT; E cannot change it while that is set)"
+  else echo "${e%m} min (E changes it)"; fi
+}
+
+check_stanctl_timeout() {
+  if [[ -n "${INSTANA_STANCTL_TIMEOUT:-}" && "$INSTANA_STANCTL_TIMEOUT" != default ]] &&
+     ! validate_stanctl_timeout "$INSTANA_STANCTL_TIMEOUT" INSTANA_STANCTL_TIMEOUT 2>/dev/null; then
+    die_with_steps "INSTANA_STANCTL_TIMEOUT='${INSTANA_STANCTL_TIMEOUT}' is not a valid wait time for stanctl up (whole minutes 30-600, or 90m, 2h, 1h30m)." \
+      "*Why it blocks: it is passed to 'stanctl up --timeout'; a wrong value would only fail later, in phase 11." \
+      "Use minutes or hours, e.g.:|INSTANA_STANCTL_TIMEOUT=2h ./install.sh" \
+      "Or remove it; the plan value is used then (default 90 min, E at the plan changes it):|unset INSTANA_STANCTL_TIMEOUT; ./install.sh" \
+      "*INSTANA_STANCTL_TIMEOUT=default passes no --timeout (stanctl's own 30 minutes)."
+  fi
+  if [[ -n "${STANCTL_UP_TIMEOUT:-}" ]] && ! validate_stanctl_timeout "$STANCTL_UP_TIMEOUT" STANCTL_UP_TIMEOUT 2>/dev/null; then
+    die_with_steps "The saved STANCTL_UP_TIMEOUT='${STANCTL_UP_TIMEOUT}' in .install-config.json is not a valid wait time (whole minutes 30-600, or 90m, 2h, 1h30m)." \
+      "Correct it in the file (e.g. \"STANCTL_UP_TIMEOUT\": \"90m\"), then run again:|nano ${CONFIG_FILE}" \
+      "*Or override it for this run: INSTANA_STANCTL_TIMEOUT=90m ./install.sh --resume"
+  fi
+  if [[ ! "$INSTANA_READY_WAIT_MIN" =~ ^[0-9]+$ || ! "$INSTANA_READY_POLL" =~ ^[0-9]+$ ]]; then
+    die_with_steps "INSTANA_READY_WAIT_MIN='${INSTANA_READY_WAIT_MIN}' / INSTANA_READY_POLL='${INSTANA_READY_POLL}' must be whole numbers (minutes / seconds)." \
+      "Remove them for the defaults (20 minutes, a check every 30 s):|unset INSTANA_READY_WAIT_MIN INSTANA_READY_POLL; ./install.sh"
+  fi
+}
+
+stanctl_timeout_flag() {
+  local e; e=$(stanctl_timeout_effective)
+  [[ "$e" == default ]] || printf -- '--timeout %s' "$e"
+}
+
+stanctl_timeout_text() {
+  local e; e=$(stanctl_timeout_effective)
+  if [[ "$e" == default ]]; then echo "30m (stanctl default)"; else echo "$e"; fi
+}
+
+# stanctl_up_remote_cmd TLS_FLAGS — the env file (keys) is removed when the
+# command ends; stanctl's output still streams and is also kept on the VM.
+stanctl_up_remote_cmd() {
+  printf '%s' "trap 'rm -f /root/.stanctl.env' EXIT; set -o pipefail; umask 077; stanctl up --env-file /root/.stanctl.env $(stanctl_version_flag) $(stanctl_timeout_flag) ${1} --quiet 2>&1 | tee ${STANCTL_UP_OUT}"
+}
+
+# run_stanctl_up NODE ZONE PROJECT TLS_FLAGS EXPECTED_NODES — one attempt (a
+# lost SSH connection is not retried: stanctl may still run on the node and a
+# second one is never started blindly). A failure is followed by a check of the
+# cluster: Instana that came up anyway continues; anything else stops with
+# HOW TO RESOLVE.
+PHASE11_NOTE=""
+run_stanctl_up() {
+  local node="$1" zone="$2" project="$3" tls_flags="$4" nodes="$5" rc=0 started=$SECONDS cmd
+  check_stanctl_timeout
+  cmd=$(stanctl_up_remote_cmd "$tls_flags")
+  [[ "$DRY_RUN" == true ]] || save_state stanctl_up_status running
+  phase_detail active "stanctl up waits up to $(stanctl_timeout_text) for the cluster (plan value STANCTL_UP_TIMEOUT; INSTANA_STANCTL_TIMEOUT overrides it)."
+  SSH_RETRY_MAX=1 HEARTBEAT_LABEL="stanctl up on ${node}" remote_exec_dry "$node" "$zone" "$project" "$cmd" || rc=$?
+  if (( rc == 0 )); then
+    save_state stanctl_up_status completed
+    ok "stanctl up completed on ${node}."
+    return 0
+  fi
+  stanctl_up_recover "$node" "$zone" "$project" "$rc" "$nodes" "$(( SECONDS - started ))"
+}
+
+stanctl_up_recover() {
+  local node="$1" zone="$2" project="$3" rc="$4" nodes="$5" took="$6"
+  echo "" >&2
+  warn "stanctl up on ${node} ended with exit code ${rc} after $(fmt_duration "$took") (its own wait limit: $(stanctl_timeout_text))."
+  (( rc != 255 )) || warn "Exit 255 means the SSH connection to ${node} was lost; stanctl may still be running there. It is not started a second time."
+  stanctl_failure_lines "$node" "$zone" "$project"
+  log "Checking what actually runs on ${node} before deciding: nodes, Instana Core and Unit, pods (up to ${INSTANA_READY_WAIT_MIN} min more)."
+  if wait_for_instana_ready "$node" "$zone" "$project" "$nodes"; then
+    warn "stanctl up reported a failure (exit ${rc}; usually its own timeout), but Instana came up: ${CLUSTER_SHORT}. Continuing with phase 12."
+    save_state stanctl_up_status completed
+    LAST_FAILED_STEP=""
+    PHASE11_NOTE="stanctl up exited ${rc}, but Core and Unit were verified Ready on ${node}."
+    return 0
+  fi
+  save_state stanctl_up_status failed
+  instana_not_ready_stop "$node" "$zone" "$project" \
+    "stanctl up on ${node} failed (exit ${rc} after $(fmt_duration "$took")) and Instana is not ready." fresh
+}
+
+# mask_secrets — hides values of anything that looks like a key, password,
+# token or secret, and the keys/password of this run wherever they appear.
+mask_secrets() {
+  local line v
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    for v in "${DOWNLOAD_KEY:-}" "${SALES_KEY:-}" "${AGENT_KEY:-}" "${ADMIN_PASSWORD:-}"; do
+      [[ ${#v} -lt 4 ]] || line="${line//"$v"/•••}"
+    done
+    printf '%s\n' "$line"
+  done | sed -E 's/([A-Za-z_.-]*([Kk][Ee][Yy]|[Pp][Aa][Ss][Ss][Ww][Oo]?[Rr][Dd]|[Pp][Aa][Ss][Ss]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt])[A-Za-z_.-]*"?[[:space:]]*[=:][[:space:]]*)("[^"]*"|[^[:space:],}]+)/\1•••/g'
+}
+
+# stanctl_failure_lines NODE ZONE PROJECT — fills STANCTL_TAIL with the last
+# lines stanctl printed and the end of its console.log (repeated health-check
+# lines folded into one with a count, the time stamp removed), secrets masked.
+STANCTL_TAIL=()
+stanctl_failure_lines() {
+  local node="$1" zone="$2" project="$3" out line
+  STANCTL_TAIL=()
+  [[ "$DRY_RUN" != true ]] || return 0
+  out=$(HEARTBEAT_LABEL="reading stanctl's last output on ${node}" remote_exec "$node" "$zone" "$project" \
+    "test -s ${STANCTL_UP_OUT} && { echo '== OUT'; tail -n 10 ${STANCTL_UP_OUT}; }; test -s ${STANCTL_CONSOLE_LOG} && { echo '== LOG'; tail -n 400 ${STANCTL_CONSOLE_LOG}; }; true" 2>/dev/null) || out=""
+  local section="" ; local -a log_lines=()
+  while IFS= read -r line; do
+    case "$line" in
+      "== OUT") section=out; continue ;;
+      "== LOG") section=log; continue ;;
+    esac
+    [[ -n "${line//[[:space:]]/}" ]] || continue
+    if [[ "$section" == out ]]; then STANCTL_TAIL+=("stanctl: ${line:0:220}")
+    elif [[ "$section" == log ]]; then log_lines+=("$line"); fi
+  done < <(mask_secrets <<< "$out")
+  if (( ${#log_lines[@]} > 0 )); then
+    while IFS= read -r line; do STANCTL_TAIL+=("console.log: ${line:0:220}"); done < <(
+      printf '%s\n' "${log_lines[@]}" | sed -E 's/^time=("[^"]*"|[^[:space:]]+)[[:space:]]*//' |
+        awk '{ if ($0 == prev) { n++ } else { if (NR > 1) print (n > 1 ? "(" n "x) " : "") prev; prev = $0; n = 1 } } END { if (NR) print (n > 1 ? "(" n "x) " : "") prev }' |
+        tail -n 12)
+  fi
+  if (( ${#STANCTL_TAIL[@]} > 0 )); then
+    echo -e "  ${BOLD}Last lines from stanctl on ${node} (secrets masked):${RESET}" >&2
+    printf '    %s\n' "${STANCTL_TAIL[@]}" >&2
+  else
+    echo "  (no stanctl output found on ${node}: ${STANCTL_UP_OUT} and ${STANCTL_CONSOLE_LOG} are empty or missing)" >&2
+  fi
+}
+
+# One read-only look at the cluster on a node; prints KEY=VALUE lines and
+# CORE/UNIT/POD lines (see instana_cluster_check).
+read -r -d '' INSTANA_STATUS_SCRIPT <<'STATUS' || true
+set +e
+if pgrep -x stanctl >/dev/null 2>&1; then echo "STANCTL_RUNNING=yes"; else echo "STANCTL_RUNNING=no"; fi
+if ! test -e /etc/rancher/k3s/k3s.yaml; then echo "K3S=no"; exit 0; fi
+echo "K3S=yes"
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+k=kubectl; command -v kubectl >/dev/null 2>&1 || k="k3s kubectl"
+nodes=$(timeout 30 $k get nodes --no-headers 2>/dev/null) || { echo "API=down"; exit 0; }
+echo "API=up"
+echo "NODES_TOTAL=$(printf '%s\n' "$nodes" | grep -c .)"
+echo "NODES_READY=$(printf '%s\n' "$nodes" | awk '$2 == "Ready"' | grep -c .)"
+timeout 30 $k get core -A -o jsonpath='{range .items[*]}CORE {.metadata.namespace}/{.metadata.name} {.status.componentsStatus}{"\n"}{end}' 2>/dev/null
+timeout 30 $k get unit -A -o jsonpath='{range .items[*]}UNIT {.metadata.namespace}/{.metadata.name} {.status.componentsStatus}{"\n"}{end}' 2>/dev/null
+pods=$(timeout 30 $k get pods -A --no-headers 2>/dev/null)
+echo "PODS_TOTAL=$(printf '%s\n' "$pods" | grep -c .)"
+printf '%s\n' "$pods" | awk 'NF >= 4 { if ($4 == "Completed") next; split($3, r, "/"); if ($4 != "Running") print "POD " $1 "/" $2 " " $4; else if (r[1] != r[2]) print "POD " $1 "/" $2 " Running-not-ready(" $3 ")" }'
+STATUS
+
+# instana_cluster_check NODE ZONE PROJECT EXPECTED_NODES — sets CLUSTER_* and
+# CLUSTER_VERDICT: ready | progressing | absent (no k3s) | api_down |
+# unreachable (the check itself could not run).
+CLUSTER_VERDICT="" CLUSTER_SHORT="" CLUSTER_STANCTL=no CLUSTER_NODES_READY=0 CLUSTER_NODES_TOTAL=0 CLUSTER_PODS_TOTAL=0
+CLUSTER_CORE=() CLUSTER_UNIT=() CLUSTER_PODS=()
+instana_cluster_check() {
+  local node="$1" zone="$2" project="$3" expected="${4:-1}" out line k3s=unknown api=unknown entry ok_core=0 ok_unit=0
+  CLUSTER_VERDICT=unreachable CLUSTER_STANCTL=no CLUSTER_NODES_READY=0 CLUSTER_NODES_TOTAL=0 CLUSTER_PODS_TOTAL=0
+  CLUSTER_CORE=() CLUSTER_UNIT=() CLUSTER_PODS=()
+  if ! out=$(HEARTBEAT_LABEL="checking Kubernetes, Instana Core and Unit on ${node}" remote_exec "$node" "$zone" "$project" "$INSTANA_STATUS_SCRIPT"); then
+    CLUSTER_SHORT="the status check on ${node} could not run (SSH or sudo failed)"
+    return 0
+  fi
+  while IFS= read -r line; do
+    case "$line" in
+      STANCTL_RUNNING=*) CLUSTER_STANCTL="${line#*=}" ;;
+      K3S=*) k3s="${line#*=}" ;;
+      API=*) api="${line#*=}" ;;
+      NODES_TOTAL=*) CLUSTER_NODES_TOTAL="${line#*=}" ;;
+      NODES_READY=*) CLUSTER_NODES_READY="${line#*=}" ;;
+      PODS_TOTAL=*) CLUSTER_PODS_TOTAL="${line#*=}" ;;
+      "CORE "*) entry="${line#CORE }"; [[ "$entry" == *" "?* ]] || entry="${entry% } Unknown"; CLUSTER_CORE+=("$entry") ;;
+      "UNIT "*) entry="${line#UNIT }"; [[ "$entry" == *" "?* ]] || entry="${entry% } Unknown"; CLUSTER_UNIT+=("$entry") ;;
+      "POD "*) CLUSTER_PODS+=("${line#POD }") ;;
+    esac
+  done <<< "$out"
+  [[ "$CLUSTER_NODES_TOTAL" =~ ^[0-9]+$ ]] || CLUSTER_NODES_TOTAL=0
+  [[ "$CLUSTER_NODES_READY" =~ ^[0-9]+$ ]] || CLUSTER_NODES_READY=0
+  for entry in "${CLUSTER_CORE[@]}"; do [[ "${entry##* }" != Ready ]] || ok_core=$((ok_core + 1)); done
+  for entry in "${CLUSTER_UNIT[@]}"; do [[ "${entry##* }" != Ready ]] || ok_unit=$((ok_unit + 1)); done
+  if [[ "$k3s" == no ]]; then
+    CLUSTER_VERDICT=absent
+    CLUSTER_SHORT="Kubernetes (k3s) is not installed on ${node}"
+  elif [[ "$k3s" != yes ]]; then
+    CLUSTER_SHORT="the status check on ${node} gave no usable answer"
+  elif [[ "$api" != up ]]; then
+    CLUSTER_VERDICT=api_down
+    CLUSTER_SHORT="k3s is installed on ${node}, but the Kubernetes API does not answer"
+  else
+    CLUSTER_SHORT="nodes Ready ${CLUSTER_NODES_READY}/${CLUSTER_NODES_TOTAL}, Core $(cluster_states "${CLUSTER_CORE[@]}"), Unit $(cluster_states "${CLUSTER_UNIT[@]}"), pods not Running ${#CLUSTER_PODS[@]}/${CLUSTER_PODS_TOTAL}"
+    if (( ${#CLUSTER_CORE[@]} > 0 && ok_core == ${#CLUSTER_CORE[@]} && ${#CLUSTER_UNIT[@]} > 0 && ok_unit == ${#CLUSTER_UNIT[@]} &&
+          CLUSTER_NODES_TOTAL >= expected && CLUSTER_NODES_READY == CLUSTER_NODES_TOTAL )); then
+      CLUSTER_VERDICT=ready
+    else
+      CLUSTER_VERDICT=progressing
+    fi
+  fi
+  return 0
+}
+
+# cluster_states "ns/name STATUS"... → "Ready" / "Progressing, Ready" / "not created yet"
+cluster_states() {
+  (( $# > 0 )) || { echo "not created yet"; return; }
+  local e; local -a s=()
+  for e in "$@"; do s+=("${e##* }"); done
+  printf '%s\n' "${s[@]}" | awk '!seen[$0]++' | paste -sd, - | sed 's/,/, /g'
+}
+
+# wait_for_instana_ready NODE ZONE PROJECT EXPECTED_NODES — 0 once Core and
+# Unit are Ready and every node is Ready; 1 when that did not happen within
+# INSTANA_READY_WAIT_MIN minutes, or at once when there is no cluster at all
+# (or the check cannot run). Every check and every pause shows a spinner.
+wait_for_instana_ready() {
+  local node="$1" zone="$2" project="$3" expected="$4" start=$SECONDS limit last="" waited
+  limit=$(( INSTANA_READY_WAIT_MIN * 60 ))
+  while :; do
+    instana_cluster_check "$node" "$zone" "$project" "$expected"
+    [[ "$CLUSTER_SHORT" == "$last" ]] || phase_detail active "${node}: ${CLUSTER_SHORT}"
+    last="$CLUSTER_SHORT"
+    case "$CLUSTER_VERDICT" in
+      ready) return 0 ;;
+      absent) [[ "$CLUSTER_STANCTL" == yes ]] || return 1 ;;
+      unreachable) return 1 ;;
+    esac
+    waited=$(( SECONDS - start ))
+    (( waited < limit )) || return 1
+    spin_run "waiting for Instana Core and Unit to report Ready on ${node} (waited $(fmt_duration "$waited") of ${INSTANA_READY_WAIT_MIN}m)" sleep "$INSTANA_READY_POLL"
+  done
+}
+
+# instana_not_ready_stop NODE ZONE PROJECT HEADLINE fresh|resume — what was
+# found (cluster state, stanctl's last lines), why it blocks, the commands to
+# inspect it and how to continue.
+instana_not_ready_stop() {
+  local node="$1" zone="$2" project="$3" headline="$4" ctx="$5" p
+  local -a steps=()
+  local inspect_pods inspect_core inspect_log remove
+  inspect_pods=$(provider_hint ssh "$node" "$zone" "$project" 'sudo kubectl get pods -A | grep -v Running')
+  inspect_core=$(provider_hint ssh "$node" "$zone" "$project" 'sudo kubectl get core -n instana-core -o yaml | grep -A5 status; sudo kubectl get unit -A')
+  inspect_log=$(provider_hint ssh "$node" "$zone" "$project" "sudo tail -n 100 ${STANCTL_CONSOLE_LOG}")
+  if [[ "$(provider_name)" == ssh ]]; then
+    remove="If it does not recover: forget this deployment here (./install.sh --destroy), remove k3s on the host (sudo /usr/local/bin/k3s-uninstall.sh), then install again:|./install.sh --destroy"
+  else
+    remove="If it does not recover: delete the lab (menu: destroy or clean up) and install again:|./install.sh --destroy"
+  fi
+  steps+=("*Found: ${CLUSTER_SHORT}.")
+  if [[ "$CLUSTER_VERDICT" == progressing ]]; then
+    for p in "${CLUSTER_CORE[@]}"; do [[ "${p##* }" == Ready ]] || steps+=("*  Core ${p% *}: ${p##* } (not Ready)"); done
+    for p in "${CLUSTER_UNIT[@]}"; do [[ "${p##* }" == Ready ]] || steps+=("*  Unit ${p% *}: ${p##* } (not Ready)"); done
+    (( ${#CLUSTER_CORE[@]} > 0 )) || steps+=("*  Core: not created yet")
+    (( ${#CLUSTER_UNIT[@]} > 0 )) || steps+=("*  Unit: not created yet")
+    (( CLUSTER_NODES_READY == CLUSTER_NODES_TOTAL )) || steps+=("*  Kubernetes nodes Ready: ${CLUSTER_NODES_READY} of ${CLUSTER_NODES_TOTAL}")
+    for p in "${CLUSTER_PODS[@]:0:10}"; do steps+=("*  pod ${p}"); done
+    (( ${#CLUSTER_PODS[@]} <= 10 )) || steps+=("*  ... and $(( ${#CLUSTER_PODS[@]} - 10 )) more pods not Running")
+  fi
+  for p in "${STANCTL_TAIL[@]}"; do steps+=("*  ${p}"); done
+  if [[ "$CLUSTER_STANCTL" == yes ]]; then
+    steps+=("*Why it blocks: stanctl is still running on ${node} (e.g. after a lost SSH connection); a second stanctl up is never started next to it, and the result is not known yet."
+      "Watch it until it ends:|$(provider_hint ssh "$node" "$zone" "$project" "pgrep -a stanctl; sudo tail -f ${STANCTL_CONSOLE_LOG}")"
+      "When stanctl has ended, continue; resume checks the cluster again and, when Core and Unit are Ready, finishes phase 12 and the report:|./install.sh --resume")
+  elif [[ "$CLUSTER_VERDICT" == absent ]]; then
+    steps+=("*Why it blocks: stanctl stopped before the Kubernetes cluster existed, so there is nothing to finish; its last lines above say why.")
+    [[ " ${STANCTL_TAIL[*]} " != *"unknown flag: --timeout"* ]] ||
+      steps+=("This stanctl does not know --timeout: continue without it (stanctl's own 30 minutes):|INSTANA_STANCTL_TIMEOUT=default ./install.sh --resume")
+    steps+=("Full stanctl log on ${node}:|${inspect_log}"
+      "Correct the cause, then continue; with no cluster on ${node}, resume runs stanctl up again:|./install.sh --resume" "$remove")
+  elif [[ "$CLUSTER_VERDICT" == unreachable || "$CLUSTER_VERDICT" == api_down ]]; then
+    steps+=("*Why it blocks: without an answer from Kubernetes the installer cannot tell whether Instana is running; it never reports success without that check."
+      "Check that ${node} answers and that k3s runs:|$(provider_hint ssh "$node" "$zone" "$project" 'sudo systemctl status k3s --no-pager | head -20; sudo kubectl get nodes')"
+      "Full stanctl log on ${node}:|${inspect_log}"
+      "When k3s answers again, continue; resume checks the cluster again:|./install.sh --resume" "$remove")
+  else
+    steps+=("*Why it blocks: phase 12 (health check, hosts lines, final report) needs Instana Core and Unit Ready; the installer waited ${INSTANA_READY_WAIT_MIN} more minutes and never reports success without that."
+      "See which pods are not running (Pending / ContainerCreating = still starting; CrashLoopBackOff / Error = broken):|${inspect_pods}"
+      "Status of Instana Core and Unit:|${inspect_core}"
+      "Full stanctl log on ${node}:|${inspect_log}"
+      "If it is still starting, continue later; resume checks again (waits up to ${INSTANA_READY_WAIT_MIN} min) and, once Core and Unit are Ready, finishes phase 12 and the report without running stanctl up again:|./install.sh --resume"
+      "If it is stuck, let stanctl apply the configuration to this cluster again (same pinned stanctl and backend; cluster and data disks are kept), then the same checks follow:|INSTANA_RERUN_STANCTL_UP=yes ./install.sh --resume"
+      "$remove")
+  fi
+  [[ "$ctx" != fresh ]] || steps+=("*The VM/hosts and disks are kept (on Google Cloud they are billed meanwhile). Log: ${LOG_FILE}")
+  die_with_steps "$headline" "${steps[@]}"
+}
+
+# True when this deployment ran (or started) stanctl up: recorded in the
+# state, or phase 10 (install stanctl, directly followed by stanctl up) is
+# recorded as completed (states written before stanctl_up_status existed).
+stanctl_up_was_started() {
+  [[ -n "$(get_state stanctl_up_status)" || "$(get_state progress_phase_10)" == completed || "$(get_state progress_phase_11)" == completed ]]
+}
+
+# resume_after_stanctl_up NODE ZONE PROJECT EXPECTED_NODES — resume when this
+# deployment's stanctl up already ran: never repeated automatically. 0 = Instana
+# is up (phase 11 done); 1 = run stanctl up now (no cluster exists and no
+# stanctl runs, or INSTANA_RERUN_STANCTL_UP=yes); otherwise stops and explains.
+resume_after_stanctl_up() {
+  local node="$1" zone="$2" project="$3" expected="$4" status
+  status=$(get_state stanctl_up_status)
+  log "This deployment already ran stanctl up on ${node} (recorded: ${status:-not recorded; phase 10 completed}). It is not started again before the cluster is checked."
+  STANCTL_TAIL=()
+  if wait_for_instana_ready "$node" "$zone" "$project" "$expected"; then
+    ok "Instana is up on ${node}: ${CLUSTER_SHORT}."
+    save_state stanctl_up_status completed
+    PHASE11_NOTE="stanctl up was not repeated: Core and Unit were verified Ready on ${node}."
+    return 0
+  fi
+  if [[ "$CLUSTER_VERDICT" == absent && "$CLUSTER_STANCTL" != yes ]]; then
+    warn "No Kubernetes cluster and no running stanctl on ${node}: the earlier stanctl up stopped before the cluster existed; running it again."
+    return 1
+  fi
+  if [[ "${INSTANA_RERUN_STANCTL_UP:-}" == yes && "$CLUSTER_STANCTL" != yes && "$CLUSTER_VERDICT" != unreachable ]]; then
+    warn "INSTANA_RERUN_STANCTL_UP=yes: running stanctl up again on ${node} with the pinned versions; it applies the configuration to the existing cluster."
+    return 1
+  fi
+  stanctl_failure_lines "$node" "$zone" "$project"
+  save_state stanctl_up_status failed
+  instana_not_ready_stop "$node" "$zone" "$project" \
+    "Resume found Kubernetes from this deployment's stanctl up on ${node}, but Instana is not ready." resume
+}
+
 run_stanctl_up_single_node() {
   local vm_name="$1" zone="$2" project="$3"
   log "Running stanctl up on ${vm_name}..."
@@ -2762,10 +3154,7 @@ run_stanctl_up_single_node() {
     tls_flags="--core-tls-crt=/root/instana.crt --core-tls-key=/root/instana.key"
   fi
 
-  HEARTBEAT_LABEL="stanctl up on ${vm_name}" remote_exec_dry "$vm_name" "$zone" "$project" \
-    "trap 'rm -f /root/.stanctl.env' EXIT; stanctl up --env-file /root/.stanctl.env $(stanctl_version_flag) ${tls_flags} --quiet"
-
-  ok "stanctl up completed on ${vm_name}."
+  run_stanctl_up "$vm_name" "$zone" "$project" "$tls_flags" 1
 }
 
 run_stanctl_up_multi_node() {
@@ -2785,10 +3174,7 @@ run_stanctl_up_multi_node() {
     tls_flags="--core-tls-crt=/root/instana.crt --core-tls-key=/root/instana.key"
   fi
 
-  HEARTBEAT_LABEL="stanctl up on ${node0_name}" remote_exec_dry "$node0_name" "$zone" "$project" \
-    "trap 'rm -f /root/.stanctl.env' EXIT; stanctl up --env-file /root/.stanctl.env $(stanctl_version_flag) ${tls_flags} --quiet"
-
-  ok "stanctl up completed on ${node0_name}."
+  run_stanctl_up "$node0_name" "$zone" "$project" "$tls_flags" 3
 }
 
 # =============================================================================
@@ -2960,7 +3346,9 @@ main_single_node() {
 
   # Kernel parameters (verbatim from documentation)
   phase_start 7 "Apply Instana sysctl and Transparent Huge Pages settings, reboot, and verify both a new boot ID and THP=never."
-  lab_kernel "$VM_NAME"
+  # Resume after stanctl up: the cluster is running; a recorded kernel step is
+  # verified without rebooting it.
+  if [[ "${RESUME_AFTER_STANCTL_UP:-false}" == true ]]; then resume_kernel "$VM_NAME"; else lab_kernel "$VM_NAME"; fi
   phase_done 7 "Kernel settings and reboot were verified."
 
   # UFW firewall rules (single-node, from documentation)
@@ -2987,8 +3375,14 @@ main_single_node() {
 
   # Run stanctl up
   phase_start 11 "Run stanctl up with the selected topology, tenant, unit, domain and TLS settings. This is normally the longest phase."
-  run_stanctl_up_single_node "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
-  phase_done 11 "Instana backend installation command completed."
+  PHASE11_NOTE="Instana backend installation command completed."
+  if [[ "${RESUME_AFTER_STANCTL_UP:-false}" == true ]]; then
+    resume_after_stanctl_up "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT" 1 ||
+      run_stanctl_up_single_node "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
+  else
+    run_stanctl_up_single_node "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
+  fi
+  phase_done 11 "$PHASE11_NOTE"
 
   # Health check
   phase_start 12 "Wait for Kubernetes nodes and Instana workloads, then print exact DNS or hosts-file entries for macOS, Linux and Windows."
@@ -3065,13 +3459,40 @@ validate_resume() {
     die "$(provider_text_or resume_mismatch "Project, zone or VM differs from the saved state. No changes made.")"
   provider_resume_check_vm "$VM_NAME"
   wait_for_ssh "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT"
-  remote_exec "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT" '
-    set -e
-    if test -e /etc/rancher/k3s/k3s.yaml; then
-      echo "STOP: Kubernetes installation already started; automatic single-node continuation is refused." >&2; exit 1
-    fi
-  '
+  resume_check_existing_cluster
   warn "Partial single-node resume validated. VM and every disk will be checked individually; only missing resources will be created."
+}
+
+# Kubernetes on the VM decides how a single-node resume continues: none =
+# the normal partial resume; k3s from this deployment's stanctl up = phase 11
+# checks the cluster instead of running stanctl up again (RESUME_AFTER_STANCTL_UP);
+# k3s although this deployment never got to stanctl up = an unknown cluster: stop.
+RESUME_AFTER_STANCTL_UP=false
+resume_check_existing_cluster() {
+  local last=0 i
+  RESUME_AFTER_STANCTL_UP=false
+  instana_cluster_check "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT" 1
+  case "$CLUSTER_VERDICT" in
+    absent) return 0 ;;
+    unreachable)
+      die_with_steps "Resume could not check ${VM_NAME} for an existing Kubernetes cluster: ${CLUSTER_SHORT}." \
+        "*Why it blocks: whether k3s already runs there decides between installing and only checking; the installer does not guess." \
+        "Check that SSH and sudo work on ${VM_NAME}:|$(provider_hint ssh "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT" 'sudo -n true && echo sudo OK')" \
+        "Then continue:|./install.sh --resume" ;;
+  esac
+  if stanctl_up_was_started; then
+    RESUME_AFTER_STANCTL_UP=true
+    warn "Kubernetes already exists on ${VM_NAME} (${CLUSTER_SHORT}); it comes from this deployment's stanctl up. Phase 11 checks the cluster instead of running stanctl up again."
+    return 0
+  fi
+  for ((i=1; i<=12; i++)); do [[ "$(get_state "progress_phase_${i}")" == completed ]] && last=$i; done
+  die_with_steps "Kubernetes (k3s) already exists on ${VM_NAME} (/etc/rancher/k3s/k3s.yaml), but this deployment never got to stanctl up (last completed phase in .install-state.json: ${last}/12)." \
+    "*Found: ${CLUSTER_SHORT}." \
+    "*Why it blocks: this cluster was not created by the installation recorded in this folder (or the state file belongs to another VM); continuing could install on top of it and destroy it. Nothing was changed on ${VM_NAME}." \
+    "Look at what runs there:|$(provider_hint ssh "$VM_NAME" "$GCP_ZONE" "$GCP_PROJECT" 'sudo kubectl get nodes; sudo kubectl get pods -A | head -30')" \
+    "Only if that cluster is not needed: remove it on ${VM_NAME} (deletes the cluster), then continue:|sudo /usr/local/bin/k3s-uninstall.sh" \
+    "*  then: ./install.sh --resume" \
+    "Otherwise install on another VM (new name or new folder):|./install.sh"
 }
 
 # True when the state file holds nothing but progress checkpoints of the
@@ -3369,6 +3790,7 @@ main() {
   flock -n 9 || die "Another installer is running from this deployment folder."
   provider_check_auth
   choose_parameter_source
+  check_stanctl_timeout
   save_parameters
   validate_vm_names
   phase_done 1 "Local prerequisites and non-secret parameters are ready."

@@ -14,12 +14,11 @@ validate_multinode_resume() {
       "Compare the recorded and the current parameters:|jq -r .deployment_manifest .install-state.json; jq -cS .parameters .install-config.json" \
       "Restore the original .install-config.json (from a copy of this folder), then continue:|./install.sh --resume" \
       "*Or remove that deployment first: ./install.sh --destroy"
-  if [[ "$(get_state stanctl_up_status)" == running ]]; then
-    die_with_steps "A previous 'stanctl up' on ${NODE0_NAME} may still be running or ended without a recorded result; a second installer is not started automatically." \
-      "Check on node0 whether stanctl is still running and what the cluster looks like:|$(provider_hint ssh "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" 'pgrep -a stanctl; sudo kubectl get nodes; sudo kubectl get pods -A | head -40')" \
-      "If the original installer is still running in screen, reattach to it (./install.sh offers it); it records the result itself, then continue:|./install.sh --resume" \
-      "If no installer is running any more, the outcome cannot be confirmed automatically: inspect the cluster above, then remove the deployment with the destroy / clean-up menu option:|./install.sh --destroy"
-  fi
+  # A stanctl up that was running or failed is not repeated blindly:
+  # resume_stanctl_up checks node0 first (running stanctl, cluster, Core/Unit).
+  case "$(get_state stanctl_up_status)" in
+    running|failed) warn "The last stanctl up on ${NODE0_NAME} did not record success; phase 11 checks the cluster on ${NODE0_NAME} before anything is started again." ;;
+  esac
   # RESUME may have been switched on only now (answer "resume" to the existing
   # state prompt), after the parameters were loaded: check the package here too.
   [[ "$INSTALL_MODE" != air-gapped ]] || verify_airgap_archive_matches_state
@@ -87,9 +86,18 @@ resume_install_stanctl() {
 }
 
 resume_stanctl_up() {
-  if [[ "$RESUME" == true && "$(get_state stanctl_up_status)" == completed ]]; then
+  local status
+  status=$(get_state stanctl_up_status)
+  if [[ "$RESUME" == true && "$status" == completed ]]; then
     ok 'stanctl up previously succeeded; rechecking readiness without reinstalling.'
     return 0
+  fi
+  PHASE11_NOTE="Multi-node Instana installation completed."
+  # Started before but no recorded success: check node0 first; 0 = Instana is
+  # up, 1 = run stanctl up (no cluster and no stanctl there, or
+  # INSTANA_RERUN_STANCTL_UP=yes); anything else stops with HOW TO RESOLVE.
+  if [[ "$RESUME" == true && ( "$status" == running || "$status" == failed ) ]]; then
+    resume_after_stanctl_up "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" 3 && return 0
   fi
   [[ "$DRY_RUN" == true ]] || save_state stanctl_up_status running
   run_stanctl_up_multi_node "$NODE0_NAME" "$GCP_ZONE" "$GCP_PROJECT" "$(get_state "${NODE0_NAME}_private_ip"),$(get_state "${NODE1_NAME}_private_ip"),$(get_state "${NODE2_NAME}_private_ip")"

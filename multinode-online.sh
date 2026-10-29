@@ -118,8 +118,9 @@ main_three_node() {
   phase_done 10 "stanctl is installed on node0."
 
   phase_start 11 "Run stanctl up --multi-node-enable from node0 and let it build the Kubernetes cluster, data stores and backend applications."
+  PHASE11_NOTE="Multi-node Instana installation completed."
   resume_stanctl_up
-  phase_done 11 "Multi-node Instana installation completed."
+  phase_done 11 "$PHASE11_NOTE"
 
   phase_start 12 "Verify three Ready Kubernetes nodes and Instana workloads, then print local hosts-file instructions for macOS, Linux and Windows."
   if [[ "$DRY_RUN" != true ]]; then

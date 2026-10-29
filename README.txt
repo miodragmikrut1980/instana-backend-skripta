@@ -172,6 +172,35 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
    stranu (fajlovi se preimenuju, nista se ne brise) i kreni novi; za
    GCP lab koji vise ne treba prvo ./install.sh --destroy.
 
+STANCTL UP TIMEOUT I NASTAVAK POSLE NJEGA (faza 11):
+   stanctl up ceka klaster samo do svog --timeout (stanctl default 30 min)
+   pa izlazi sa greskom, iako Instana i dalje uredno startuje (2026-10-29:
+   single-node demo, exit 1 posle ~63 min, nekoliko minuta kasnije svih 59
+   podova Running). Skripta zato:
+   - salje stanctl up --timeout 90m. Vrednost je parametar STANCTL_UP_TIMEOUT:
+     red "stanctl up timeout   90 min (E changes it)" u planu, menja se sa E
+     (cele minute 30-600, ili 90m / 2h / 1h30m), moze u --config fajlu
+     (STANCTL_UP_TIMEOUT, alias stanctl_timeout; config-generator.html:
+     Advanced), cuva se za --resume i ide u --export-config. Varijabla
+     okruzenja INSTANA_STANCTL_TIMEOUT ima prednost; "default" = bez --timeout.
+   - kad stanctl up ipak padne: prikaze poslednje linije stanctl-a i
+     /root/.stanctl/logs/console.log (kljucevi/lozinke maskirani), pa proveri
+     klaster na VM-u (nodovi Ready, Core i Unit status, podovi koji nisu
+     Running), do 20 min (INSTANA_READY_WAIT_MIN). Ako su Core i Unit Ready:
+     upozorenje "stanctl up reported a failure ..., but Instana came up" i
+     normalno faza 12 + izvestaj. Inace HOW TO RESOLVE: koje komponente nisu
+     spremne, tacne kubectl komande, putanja console.log-a, kako dalje.
+   - stanctl up se ne ponavlja na slepo: izgubljena SSH veza se tu ne
+     pokusava ponovo (stanctl mozda jos radi na VM-u).
+   - ./install.sh --resume kad k3s vec postoji: ako je ovaj deployment stigao
+     do faze 11 (stanctl_up_status u state-u, ili zavrsena faza 10 kod starijih
+     state fajlova), faza 11 samo proverava klaster (bez ponovnog stanctl up i
+     bez reboot-a u fazi 7) i kad je Instana gore zavrsava fazu 12 i izvestaj.
+     Ako nije gore: objasnjen STOP; INSTANA_RERUN_STANCTL_UP=yes ./install.sh
+     --resume pusta stanctl up ponovo sa istim verzijama. k3s na VM-u a
+     deployment nikad nije stigao do stanctl up = tudji klaster: STOP sa
+     objasnjenjem, nista se ne menja. Three-node resume radi isto na node0.
+
 POZNATI PROBLEMI:
    - stanctl 1.15.1 (uoceno 2026-10-29): "stanctl versions identify" kao root
      dobija HTTP 401 za listu backend verzija, i sa ispravnim download
