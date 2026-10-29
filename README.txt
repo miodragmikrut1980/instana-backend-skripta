@@ -202,14 +202,20 @@ STANCTL UP TIMEOUT I NASTAVAK POSLE NJEGA (faza 11):
      objasnjenjem, nista se ne menja. Three-node resume radi isto na node0.
 
 POZNATI PROBLEMI:
-   - stanctl 1.15.1 (uoceno 2026-10-29): "stanctl versions identify" kao root
-     dobija HTTP 401 za listu backend verzija, i sa ispravnim download
-     kljucem; kao obican korisnik radi, a 1.15.0 radi i kao root. Skripta
-     na VM-u pokrece stanctl kao root. Pre Start-a lista se zato cita kao
-     root i na ovoj masini: takva verzija se izostavi i lista stanctl
-     verzija se ponudi ponovo. Ako se ipak zaustavi u fazi 10 (HOW TO RESOLVE
-     okvir), ./install.sh --resume pita "choose another stanctl version"
-     (Enter) i instalira drugu verziju na isti VM; VM i diskovi ostaju.
+   - stanctl 1.15.1 (provereno 2026-10-29): "stanctl versions identify" ne
+     koristi download kljuc koji mu se da (--download-key, STANCTL_DOWNLOAD_KEY,
+     --env-file, ni registry user/password): na masini bez ranijih stanctl
+     podataka u ~/.stanctl (npr. nova VM) dobija HTTP 401 za listu backend
+     verzija, za bilo kog korisnika, i sa ispravnim kljucem; radi samo tamo
+     gde je raniji stanctl ostavio te podatke. Nije vezano za root (raniji
+     opis "kao root" je bio pogresan). 1.15.0 koristi dati kljuc i radi.
+     Pre Start-a skripta zato cita listu u praznom privremenom HOME (kao na
+     novoj VM); ako tamo padne a kljuc radi (curl 200 za istu listu), ta
+     verzija se izostavi i lista stanctl verzija se ponudi ponovo; pogresan
+     kljuc (i curl 401) = STOP sa objasnjenjem. Ako se ipak zaustavi u fazi 10
+     (HOW TO RESOLVE okvir), ./install.sh --resume pita "choose another
+     stanctl version" (Enter) i instalira drugu verziju na isti VM; VM i
+     diskovi ostaju.
 
 Ne klonirati repo unutar postojeceg klona (nastaje ugnjezdeni folder sa
 odvojenim state fajlovima). Ne koristiti rm -r * bez pwd provere.

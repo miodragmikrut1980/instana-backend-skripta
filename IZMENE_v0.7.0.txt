@@ -805,3 +805,35 @@ and every answer was lost.
   re-asked, 2h -> --timeout 120m); test-config-file.sh (value from a file
   via alias, invalid without a terminal, invalid re-asked on import,
   --export-config carries it).
+
+2026-10-29 — correction: stanctl 1.15.1 ignores the download key it is given
+- Why: the entry "stanctl that cannot list backend versions as root (1.15.1)"
+  above rests on a wrong diagnosis. Verified later on the control VM:
+  stanctl 1.15.1 "versions identify" gets HTTP 401 for ANY user (root or
+  not) when HOME has no data from an earlier stanctl run in ~/.stanctl,
+  with the correct key passed as --download-key, STANCTL_DOWNLOAD_KEY,
+  --env-file or as registry user/password; where an earlier run left that
+  data it works, even with a wrong key. So 1.15.1 does not use the key it
+  is given; root only failed because root had no such data. stanctl 1.15.0
+  uses the given key (empty HOME: wrong key 401, correct key works). The
+  entry above is kept as written; this one replaces its diagnosis.
+- Before Start the backend list is now read with "stanctl versions identify
+  --env-file <600 temp file>" in a fresh empty HOME (mktemp -d, removed
+  afterwards), as on a new VM; no sudo for this check. The user-vs-root
+  comparison is gone. A 401/403 there is checked against the same list with
+  curl and the key in an owner-only netrc temp file (never printed): 200 =
+  the key works, so "stanctl X cannot read the version list with the
+  download key it is given (known for 1.15.1: HTTP 401 on a machine without
+  earlier stanctl data in ~/.stanctl); choose another version", it is left
+  out ("Left out (cannot read the version list with the download key it is
+  given): 1.15.1") and the stanctl list is offered again. curl refused too
+  (wrong key) or no answer: the explained stop as before, nothing created.
+- Corrected texts: phase-10 HOW TO RESOLVE (cause, and the check is now
+  stanctl in an empty HOME next to the curl check instead of user vs
+  root), the resume hint "stanctl X failed last time", README POZNATI
+  PROBLEMI.
+- Tests: test-version-selection.sh mock: 1.15.1 fails whenever HOME has no
+  earlier stanctl data, for any user; asserts the upfront check runs in an
+  empty, removed HOME (the caller's HOME has the data, so using it would
+  hide the problem), without sudo, re-offers the list, a wrong key stops
+  with HOW TO RESOLVE, and no key and no "as root" wording in the output.

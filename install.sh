@@ -1602,11 +1602,11 @@ select_and_install_local_stanctl() {
   mapfile -t stanctl_versions < <(apt-cache madison stanctl 2>/dev/null | awk '{print $3}' | sed '/^$/d' | sort -Vu -r | grep -E '^[0-9]+([:.+~_-]?[0-9A-Za-z]+)*$' | awk '!seen[$0]++')
   local bad v; local -a usable=()
   for v in "${stanctl_versions[@]}"; do
-    bad=false; for b in "${STANCTL_ROOT_FAILED[@]}"; do [[ "$v" != "$b" ]] || bad=true; done
+    bad=false; for b in "${STANCTL_KEY_IGNORED[@]}"; do [[ "$v" != "$b" ]] || bad=true; done
     [[ "$bad" == true ]] || usable+=("$v")
   done
-  (( ${#STANCTL_ROOT_FAILED[@]} == 0 )) ||
-    echo -e "  ${DIM}Left out (cannot list backend versions as root): ${STANCTL_ROOT_FAILED[*]}${RESET}" >&2
+  (( ${#STANCTL_KEY_IGNORED[@]} == 0 )) ||
+    echo -e "  ${DIM}Left out (cannot read the version list with the download key it is given): ${STANCTL_KEY_IGNORED[*]}${RESET}" >&2
   stanctl_versions=("${usable[@]}")
   (( ${#stanctl_versions[@]} > 0 )) || { err "The Instana repository returned no installable stanctl versions."; return 1; }
   installed=$(dpkg-query -W -f='${Version}' stanctl 2>/dev/null || true)
@@ -1647,9 +1647,12 @@ stanctl_error_line() {
 # stanctl_identify_stop WHERE ERROR [VM] — stops with HOW TO RESOLVE when
 # "stanctl versions identify" fails. WHERE is "local" (this machine, nothing
 # created yet) or "vm" (phase 10; the VM and disks exist and are kept).
-# Known case, observed 2026-10-29: stanctl 1.15.1 gets HTTP 401 for the
-# version list whenever it runs as root (env var, --env-file or flag), with a
-# valid key; as a normal user it works, and 1.15.0 works as root.
+# Known case, verified 2026-10-29: stanctl 1.15.1 ignores the download key it
+# is given (--download-key, STANCTL_DOWNLOAD_KEY, --env-file, also registry
+# user/password) and gets HTTP 401 for the version list on a machine without
+# earlier stanctl data in ~/.stanctl, for any user; it works only where an
+# earlier stanctl run left that data (then even with a wrong key). 1.15.0
+# uses the key it is given.
 stanctl_identify_stop() {
   local where="$1" error="${2:-no error text}" vm="${3:-}" on
   if [[ "$where" == vm ]]; then on="on ${vm}"; else on="on this machine"; fi
@@ -1659,23 +1662,35 @@ stanctl_identify_stop() {
     "*Why it stops: without that list no compatible backend version can be chosen, so the backend is not installed."
   )
   if [[ "$error" =~ (401|403) ]]; then
-    steps+=("*HTTP ${BASH_REMATCH[1]}: the request was refused. Either the download key is wrong, or this stanctl"
-      "*cannot read the list as root (the installer runs stanctl as root on the VM). Known case: stanctl 1.15.1"
-      "*gets HTTP 401 as root even with a valid key, works as a normal user; stanctl 1.15.0 works as root.")
+    steps+=("*HTTP ${BASH_REMATCH[1]}: the request was refused. Either the download key is wrong, or this stanctl cannot read"
+      "*the version list with the download key it is given. Known case: stanctl 1.15.1 gets HTTP 401 on a machine without"
+      "*earlier stanctl data in ~/.stanctl (such as a new VM), for any user, even with a valid key; stanctl 1.15.0 works.")
   fi
   if [[ "$where" == vm ]]; then
     steps+=("Check the key with the APT login already on the VM (200 = the key works, 401 = refused). On ${vm}:|sudo curl -s -o /dev/null -w '%{http_code}\\\\n' --netrc-file /etc/apt/auth.conf.d/instana.conf ${STANCTL_RELEASES_URL}"
-      "Compare stanctl as your user and as root on ${vm} (the key is not shown or saved); works as user, 401 as root = the root problem above:|read -rsp 'Download key: ' K; echo; STANCTL_DOWNLOAD_KEY=\"\$K\" stanctl versions identify; sudo STANCTL_DOWNLOAD_KEY=\"\$K\" stanctl versions identify; unset K"
+      "Try stanctl with the key in an empty HOME, as on a new VM (the key is not shown or saved); curl 200 but stanctl 401 = the stanctl problem above:|read -rsp 'Download key: ' K; echo; H=\$(mktemp -d); HOME=\"\$H\" STANCTL_DOWNLOAD_KEY=\"\$K\" stanctl versions identify; rm -rf \"\$H\"; unset K"
       "If both are refused: make sure it is the Instana DOWNLOAD key, not the agent or sales key (resume asks for the keys again)."
       "Continue with another stanctl version (e.g. 1.15.0); resume asks \"choose another stanctl version\" (Enter) or keep ${STANCTL_APT_VERSION:-it}. The VM and disks are kept (and billed meanwhile):|./install.sh --resume"
       "Or remove the lab: ./install.sh, menu \"destroy or clean up\".|./install.sh")
   else
     steps+=("Check the key with the APT login on this machine (200 = the key works, 401 = refused):|sudo curl -s -o /dev/null -w '%{http_code}\\\\n' --netrc-file /etc/apt/auth.conf.d/instana.conf ${STANCTL_RELEASES_URL}"
-      "Check stanctl with the same key (the key is not shown or saved):|read -rsp 'Download key: ' K; echo; STANCTL_DOWNLOAD_KEY=\"\$K\" stanctl versions identify; unset K"
+      "Check stanctl with the same key in an empty HOME, as on a new VM (the key is not shown or saved):|read -rsp 'Download key: ' K; echo; H=\$(mktemp -d); HOME=\"\$H\" STANCTL_DOWNLOAD_KEY=\"\$K\" stanctl versions identify; rm -rf \"\$H\"; unset K"
       "Make sure it is the Instana DOWNLOAD key, not the agent key or the sales key (order of the questions: download, agent, sales)."
       "Nothing was created yet. Run the installer again and type the download key:|./install.sh")
   fi
   die_with_steps "stanctl ${STANCTL_CLI_VERSION:-?} ${on} could not list the backend versions: ${error}" "${steps[@]}"
+}
+
+# download_key_http_code — HTTP status of the version list with the download
+# key (netrc file, owner-only, removed at once; the key is never printed).
+download_key_http_code() {
+  local netrc code
+  command -v curl >/dev/null 2>&1 || { echo none; return 0; }
+  netrc=$(mktemp); chmod 600 "$netrc"
+  printf 'machine artifact-public.instana.io\n  login _\n  password %s\n' "$DOWNLOAD_KEY" > "$netrc"
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 --netrc-file "$netrc" "$STANCTL_RELEASES_URL" 2>/dev/null || true)
+  rm -f "$netrc"
+  printf '%s' "${code:-000}"
 }
 
 # The installed CLI reports the backend versions it supports; the operator
@@ -1686,16 +1701,22 @@ select_local_backend_version() {
   local -a backend_versions
   tmp_key=$(mktemp); chmod 600 "$tmp_key"
   printf 'STANCTL_DOWNLOAD_KEY=%s\n' "$DOWNLOAD_KEY" > "$tmp_key"
-  if [[ "${LOCAL_IDENTIFY_AS_ROOT:-0}" == 1 ]]; then
-    # As on the Instana VM (phase 10 runs stanctl as root), so a stanctl that
-    # cannot read the list as root is found before anything is created.
-    raw_backends=$(sudo stanctl versions identify --env-file "$tmp_key" --quiet 2>&1) || rc=$?
-    if (( rc != 0 )) && stanctl versions identify --env-file "$tmp_key" --quiet >/dev/null 2>&1; then
-      rm -f "$tmp_key"
-      err_line=$(stanctl_error_line "$raw_backends")
-      warn "stanctl ${STANCTL_CLI_VERSION} cannot read the backend version list as root (${err_line}); as your user it works."
-      warn "The installer runs stanctl as root on the Instana VM, so this version would stop in phase 10 (known for stanctl 1.15.1: HTTP 401 as root). Choose another stanctl version."
-      return 2
+  if [[ "${LOCAL_IDENTIFY_FRESH:-0}" == 1 ]]; then
+    # As on a new Instana VM: no stanctl data in HOME, so a stanctl that does
+    # not use the key it is given fails here, before anything is created.
+    local fresh_home key_code
+    fresh_home=$(mktemp -d)
+    raw_backends=$(HOME="$fresh_home" stanctl versions identify --env-file "$tmp_key" --quiet 2>&1) || rc=$?
+    rm -rf "$fresh_home"
+    if (( rc != 0 )) && [[ "$raw_backends" =~ (401|403) ]]; then
+      key_code=$(download_key_http_code)
+      if [[ "$key_code" == 200 ]]; then
+        rm -f "$tmp_key"
+        err_line=$(stanctl_error_line "$raw_backends")
+        warn "stanctl ${STANCTL_CLI_VERSION} cannot read the version list with the download key it is given (known for 1.15.1: HTTP 401 on a machine without earlier stanctl data in ~/.stanctl); choose another version."
+        warn "stanctl said: ${err_line}. The key itself works (HTTP 200 for the same list); the new Instana VM has no such data either, so this version would stop in phase 10."
+        return 2
+      fi
     fi
   else
     raw_backends=$(stanctl versions identify --env-file "$tmp_key" --quiet 2>&1) || rc=$?
@@ -1721,14 +1742,15 @@ select_local_backend_version() {
 # pair is then pinned for the whole run (REQUESTED_* globals, honoured by
 # install_stanctl on the VM). When this machine cannot do that (not
 # Ubuntu/Debian, no sudo, repository unreachable) the selection falls back
-# to phase 10 on the VM; a version list refused also as the normal user
-# (wrong key) stops with HOW TO RESOLVE before anything is created.
+# to phase 10 on the VM; a version list refused because the key is wrong
+# stops with HOW TO RESOLVE before anything is created.
 REQUESTED_STANCTL_APT_VERSION=""
 REQUESTED_BACKEND_VERSION=""
-STANCTL_ROOT_FAILED=()   # stanctl packages that could not list backend versions as root (this run)
+STANCTL_KEY_IGNORED=()   # stanctl packages that cannot read the version list with the given key (this run)
 # select_local_versions — exact stanctl and backend chosen on this machine.
-# The backend list is read as root, as phase 10 does on the VM; a stanctl
-# that cannot do that is left out and the stanctl list is offered again.
+# The backend list is read in an empty HOME, as on the new VM in phase 10; a
+# stanctl that fails there while the key works is left out and the stanctl
+# list is offered again.
 # Returns 1 (after a warning) when the choice must move to phase 10.
 select_local_versions() {
   local rc
@@ -1737,8 +1759,8 @@ select_local_versions() {
       warn "stanctl could not be installed here; the version will be chosen on the Instana VM in phase 10 instead."
       return 1
     fi
-    rc=0; LOCAL_IDENTIFY_AS_ROOT=1 select_local_backend_version "Select the exact Instana backend version to install (the customer's version):" || rc=$?
-    if (( rc == 2 )); then STANCTL_ROOT_FAILED+=("$STANCTL_APT_VERSION"); continue; fi
+    rc=0; LOCAL_IDENTIFY_FRESH=1 select_local_backend_version "Select the exact Instana backend version to install (the customer's version):" || rc=$?
+    if (( rc == 2 )); then STANCTL_KEY_IGNORED+=("$STANCTL_APT_VERSION"); continue; fi
     if (( rc != 0 )); then
       warn "Backend versions could not be listed here; the version will be chosen on the Instana VM in phase 10 instead."
       return 1
@@ -2614,8 +2636,9 @@ install_stanctl() {
   if [[ -n "$failed" && "$saved" == "$failed" ]]; then
     echo "" >&2
     hint "Last time stanctl ${failed} on ${vm_name} could not list the backend versions (see the HOW TO RESOLVE box of that stop)." \
-      "Known case: stanctl 1.15.1 gets HTTP 401 for the list when run as root, which the installer does on the VM;" \
-      "1.15.0 works. Another version is installed on the VM (downgrade allowed); the VM and disks are kept."
+      "Known case: stanctl 1.15.1 cannot read the version list with the download key it is given (HTTP 401 on a machine" \
+      "without earlier stanctl data in ~/.stanctl, such as this new VM); 1.15.0 works. Another version is installed" \
+      "on the VM (downgrade allowed); the VM and disks are kept."
     choice=$(PROMPT_CHOICE_DEFAULT="choose another stanctl version" prompt_choice "stanctl ${failed} failed last time. What now?" \
       "choose another stanctl version" "keep stanctl ${failed} and try again") ||
       die "stanctl version selection was cancelled."
