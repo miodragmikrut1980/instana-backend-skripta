@@ -710,3 +710,38 @@ and every answer was lost.
 - Tests: test-answer-keys.sh 7 (terminal: Space, Space+Enter, a, a number
   beyond the shown page, Enter = 1, short list unchanged; without a terminal:
   Space/m + Enter, a, 08, 0 = back on a long list).
+
+2026-10-29 — stanctl that cannot list backend versions as root (1.15.1)
+- Why: a real run stopped in phase 10 with "Error: status 401 for GET
+  .../versioning/standard-edition-releases.yaml" from "stanctl versions
+  identify", and the stop only said "Correct the reported problem".
+  Observed 2026-10-29 on the control VM: stanctl 1.15.1 gets HTTP 401 for
+  that list whenever it runs as root (env var, --env-file, --download-key,
+  even with an empty environment), with a valid download key; as the
+  normal user it works, and stanctl 1.15.0 works as root. The installer
+  runs stanctl as root on the VM, so 1.15.1 always stopped in phase 10.
+- Before Start (online, version chosen on this machine): the backend list
+  is now read as root (sudo stanctl versions identify --env-file <600 file>),
+  as phase 10 does on the VM. If that fails but works as the user, the
+  installer says so (stanctl's error line, never the key), leaves that
+  stanctl out ("Left out ...: 1.15.1") and offers the stanctl list again;
+  nothing stops. If it fails also as the user (e.g. wrong key), it stops
+  with HOW TO RESOLVE before anything is created (it used to fall back
+  silently to phase 10). stanctl's stderr is no longer hidden.
+- Phase 10 on the VM: a failed version list keeps stanctl's error line and
+  stops with HOW TO RESOLVE: what stanctl said, why it blocks, for 401/403
+  the two causes (wrong key, or a stanctl that cannot read the list as
+  root, known for 1.15.1), the curl check with the APT login on the VM
+  (200 = key works), the user-vs-root stanctl check with a hidden key
+  prompt, and how to continue: ./install.sh --resume (VM and disks kept and
+  billed) or remove the lab via the menu. The failed stanctl is recorded
+  in .install-state.json (stanctl_identify_failed).
+- Resume after that stop asks "stanctl X failed last time. What now?":
+  choose another stanctl version (Enter; X is not offered) or keep X and
+  try again. Another version is installed on the same VM (apt-get now
+  passes --allow-downgrades, needed for 1.15.1 -> 1.15.0); a requested
+  backend the new stanctl does not offer is chosen again from its list.
+  The record is cleared once the list was read.
+- Tests: test-version-selection.sh (mock stanctl with 401 as root for
+  1.15.1: re-offered before Start, phase-10 stop with HOW TO RESOLVE and no
+  key in the output, resume switches to 1.15.0 and proceeds).

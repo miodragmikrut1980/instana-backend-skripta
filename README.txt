@@ -172,6 +172,16 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
    stranu (fajlovi se preimenuju, nista se ne brise) i kreni novi; za
    GCP lab koji vise ne treba prvo ./install.sh --destroy.
 
+POZNATI PROBLEMI:
+   - stanctl 1.15.1 (uoceno 2026-10-29): "stanctl versions identify" kao root
+     dobija HTTP 401 za listu backend verzija, i sa ispravnim download
+     kljucem; kao obican korisnik radi, a 1.15.0 radi i kao root. Skripta
+     na VM-u pokrece stanctl kao root. Pre Start-a lista se zato cita kao
+     root i na ovoj masini: takva verzija se izostavi i lista stanctl
+     verzija se ponudi ponovo. Ako se ipak zaustavi u fazi 10 (HOW TO RESOLVE
+     okvir), ./install.sh --resume pita "choose another stanctl version"
+     (Enter) i instalira drugu verziju na isti VM; VM i diskovi ostaju.
+
 Ne klonirati repo unutar postojeceg klona (nastaje ugnjezdeni folder sa
 odvojenim state fajlovima). Ne koristiti rm -r * bez pwd provere.
 

@@ -1576,9 +1576,17 @@ configure_local_instana_repository() {
 # installed and held. The archive is later packaged by exactly this CLI.
 select_and_install_local_stanctl() {
   local prompt="${1:-Select the exact stanctl version for the air-gapped package:}"
-  local installed selected
+  local installed selected b
   local -a stanctl_versions
   mapfile -t stanctl_versions < <(apt-cache madison stanctl 2>/dev/null | awk '{print $3}' | sed '/^$/d' | sort -Vu -r | grep -E '^[0-9]+([:.+~_-]?[0-9A-Za-z]+)*$' | awk '!seen[$0]++')
+  local bad v; local -a usable=()
+  for v in "${stanctl_versions[@]}"; do
+    bad=false; for b in "${STANCTL_ROOT_FAILED[@]}"; do [[ "$v" != "$b" ]] || bad=true; done
+    [[ "$bad" == true ]] || usable+=("$v")
+  done
+  (( ${#STANCTL_ROOT_FAILED[@]} == 0 )) ||
+    echo -e "  ${DIM}Left out (cannot list backend versions as root): ${STANCTL_ROOT_FAILED[*]}${RESET}" >&2
+  stanctl_versions=("${usable[@]}")
   (( ${#stanctl_versions[@]} > 0 )) || { err "The Instana repository returned no installable stanctl versions."; return 1; }
   installed=$(dpkg-query -W -f='${Version}' stanctl 2>/dev/null || true)
   echo "" >&2
@@ -1602,16 +1610,77 @@ select_and_install_local_stanctl() {
   ok "stanctl on this machine: package ${STANCTL_APT_VERSION} (CLI ${STANCTL_CLI_VERSION}), held."
 }
 
+# The list stanctl reads for "versions identify" (with the download key).
+STANCTL_RELEASES_URL="https://artifact-public.instana.io/artifactory/instana-team-release-generic-virtual/versioning/standard-edition-releases.yaml"
+
+# stanctl_error_line OUTPUT — the first error line of a stanctl call (the
+# download key is masked if it ever appears), at most 300 characters.
+stanctl_error_line() {
+  local line
+  line=$(printf '%s\n' "$1" | grep -m1 -iE 'error|status [0-9]{3}|unauthori|forbidden|denied' || true)
+  [[ -n "$line" ]] || line=$(printf '%s\n' "$1" | sed '/^[[:space:]]*$/d' | tail -1)
+  [[ -z "${DOWNLOAD_KEY:-}" ]] || line="${line//"$DOWNLOAD_KEY"/***}"
+  printf '%s' "${line:0:300}"
+}
+
+# stanctl_identify_stop WHERE ERROR [VM] — stops with HOW TO RESOLVE when
+# "stanctl versions identify" fails. WHERE is "local" (this machine, nothing
+# created yet) or "vm" (phase 10; the VM and disks exist and are kept).
+# Known case, observed 2026-10-29: stanctl 1.15.1 gets HTTP 401 for the
+# version list whenever it runs as root (env var, --env-file or flag), with a
+# valid key; as a normal user it works, and 1.15.0 works as root.
+stanctl_identify_stop() {
+  local where="$1" error="${2:-no error text}" vm="${3:-}" on
+  if [[ "$where" == vm ]]; then on="on ${vm}"; else on="on this machine"; fi
+  local steps=(
+    "*Found: stanctl ${STANCTL_CLI_VERSION:-?} ${on} could not read the backend version list (${STANCTL_RELEASES_URL})."
+    "*stanctl said: ${error}"
+    "*Why it stops: without that list no compatible backend version can be chosen, so the backend is not installed."
+  )
+  if [[ "$error" =~ (401|403) ]]; then
+    steps+=("*HTTP ${BASH_REMATCH[1]}: the request was refused. Either the download key is wrong, or this stanctl"
+      "*cannot read the list as root (the installer runs stanctl as root on the VM). Known case: stanctl 1.15.1"
+      "*gets HTTP 401 as root even with a valid key, works as a normal user; stanctl 1.15.0 works as root.")
+  fi
+  if [[ "$where" == vm ]]; then
+    steps+=("Check the key with the APT login already on the VM (200 = the key works, 401 = refused). On ${vm}:|sudo curl -s -o /dev/null -w '%{http_code}\\\\n' --netrc-file /etc/apt/auth.conf.d/instana.conf ${STANCTL_RELEASES_URL}"
+      "Compare stanctl as your user and as root on ${vm} (the key is not shown or saved); works as user, 401 as root = the root problem above:|read -rsp 'Download key: ' K; echo; STANCTL_DOWNLOAD_KEY=\"\$K\" stanctl versions identify; sudo STANCTL_DOWNLOAD_KEY=\"\$K\" stanctl versions identify; unset K"
+      "If both are refused: make sure it is the Instana DOWNLOAD key, not the agent or sales key (resume asks for the keys again)."
+      "Continue with another stanctl version (e.g. 1.15.0); resume asks \"choose another stanctl version\" (Enter) or keep ${STANCTL_APT_VERSION:-it}. The VM and disks are kept (and billed meanwhile):|./install.sh --resume"
+      "Or remove the lab: ./install.sh, menu \"destroy or clean up\".|./install.sh")
+  else
+    steps+=("Check the key with the APT login on this machine (200 = the key works, 401 = refused):|sudo curl -s -o /dev/null -w '%{http_code}\\\\n' --netrc-file /etc/apt/auth.conf.d/instana.conf ${STANCTL_RELEASES_URL}"
+      "Check stanctl with the same key (the key is not shown or saved):|read -rsp 'Download key: ' K; echo; STANCTL_DOWNLOAD_KEY=\"\$K\" stanctl versions identify; unset K"
+      "Make sure it is the Instana DOWNLOAD key, not the agent key or the sales key (order of the questions: download, agent, sales)."
+      "Nothing was created yet. Run the installer again and type the download key:|./install.sh")
+  fi
+  die_with_steps "stanctl ${STANCTL_CLI_VERSION:-?} ${on} could not list the backend versions: ${error}" "${steps[@]}"
+}
+
 # The installed CLI reports the backend versions it supports; the operator
 # picks one and it is pinned into the package (--instana-version).
 select_local_backend_version() {
   local prompt="${1:-Select the exact Instana backend version to package:}"
-  local tmp_key raw_backends selected
+  local tmp_key raw_backends selected rc=0 err_line
   local -a backend_versions
   tmp_key=$(mktemp); chmod 600 "$tmp_key"
   printf 'STANCTL_DOWNLOAD_KEY=%s\n' "$DOWNLOAD_KEY" > "$tmp_key"
-  raw_backends=$(stanctl versions identify --env-file "$tmp_key" --quiet 2>/dev/null)
+  if [[ "${LOCAL_IDENTIFY_AS_ROOT:-0}" == 1 ]]; then
+    # As on the Instana VM (phase 10 runs stanctl as root), so a stanctl that
+    # cannot read the list as root is found before anything is created.
+    raw_backends=$(sudo stanctl versions identify --env-file "$tmp_key" --quiet 2>&1) || rc=$?
+    if (( rc != 0 )) && stanctl versions identify --env-file "$tmp_key" --quiet >/dev/null 2>&1; then
+      rm -f "$tmp_key"
+      err_line=$(stanctl_error_line "$raw_backends")
+      warn "stanctl ${STANCTL_CLI_VERSION} cannot read the backend version list as root (${err_line}); as your user it works."
+      warn "The installer runs stanctl as root on the Instana VM, so this version would stop in phase 10 (known for stanctl 1.15.1: HTTP 401 as root). Choose another stanctl version."
+      return 2
+    fi
+  else
+    raw_backends=$(stanctl versions identify --env-file "$tmp_key" --quiet 2>&1) || rc=$?
+  fi
   rm -f "$tmp_key"
+  (( rc == 0 )) || stanctl_identify_stop local "$(stanctl_error_line "$raw_backends")"
   mapfile -t backend_versions < <(printf '%s\n' "$raw_backends" | sed -nE 's/^[[:space:]]*-[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+[-.+~][0-9A-Za-z.-]+)[[:space:]]*$/\1/p' | sort -rV | awk '!seen[$0]++')
   (( ${#backend_versions[@]} > 0 )) ||
     { err "stanctl ${STANCTL_CLI_VERSION} returned no supported backend versions (check the download key)."; return 1; }
@@ -1630,10 +1699,33 @@ select_local_backend_version() {
 # authenticated repository and asked which backend versions it supports; the
 # pair is then pinned for the whole run (REQUESTED_* globals, honoured by
 # install_stanctl on the VM). When this machine cannot do that (not
-# Ubuntu/Debian, no sudo, repository unreachable, wrong key) the selection
-# falls back to phase 10 on the VM exactly as before.
+# Ubuntu/Debian, no sudo, repository unreachable) the selection falls back
+# to phase 10 on the VM; a version list refused also as the normal user
+# (wrong key) stops with HOW TO RESOLVE before anything is created.
 REQUESTED_STANCTL_APT_VERSION=""
 REQUESTED_BACKEND_VERSION=""
+STANCTL_ROOT_FAILED=()   # stanctl packages that could not list backend versions as root (this run)
+# select_local_versions — exact stanctl and backend chosen on this machine.
+# The backend list is read as root, as phase 10 does on the VM; a stanctl
+# that cannot do that is left out and the stanctl list is offered again.
+# Returns 1 (after a warning) when the choice must move to phase 10.
+select_local_versions() {
+  local rc
+  while true; do
+    if ! select_and_install_local_stanctl "Select the exact stanctl version (newest first; the backend list depends on it):"; then
+      warn "stanctl could not be installed here; the version will be chosen on the Instana VM in phase 10 instead."
+      return 1
+    fi
+    rc=0; LOCAL_IDENTIFY_AS_ROOT=1 select_local_backend_version "Select the exact Instana backend version to install (the customer's version):" || rc=$?
+    if (( rc == 2 )); then STANCTL_ROOT_FAILED+=("$STANCTL_APT_VERSION"); continue; fi
+    if (( rc != 0 )); then
+      warn "Backend versions could not be listed here; the version will be chosen on the Instana VM in phase 10 instead."
+      return 1
+    fi
+    return 0
+  done
+}
+
 select_versions_upfront() {
   [[ "$INSTALL_MODE" == online ]] || return 0
   [[ "${RESUME:-false}" == true ]] && return 0
@@ -1667,14 +1759,7 @@ select_versions_upfront() {
     warn "The Instana repository could not be configured here; the version will be chosen on the Instana VM in phase 10 instead."
     return 0
   fi
-  if ! select_and_install_local_stanctl "Select the exact stanctl version (newest first; the backend list depends on it):"; then
-    warn "stanctl could not be installed here; the version will be chosen on the Instana VM in phase 10 instead."
-    return 0
-  fi
-  if ! select_local_backend_version "Select the exact Instana backend version to install (the customer's version):"; then
-    warn "Backend versions could not be listed here; the version will be chosen on the Instana VM in phase 10 instead."
-    return 0
-  fi
+  select_local_versions || return 0
   REQUESTED_STANCTL_APT_VERSION="$STANCTL_APT_VERSION"
   REQUESTED_BACKEND_VERSION="$BACKEND_VERSION"
   ok "Pinned for this run: stanctl ${STANCTL_APT_VERSION} → backend ${BACKEND_VERSION}"
@@ -2500,6 +2585,26 @@ install_stanctl() {
 
   saved=$(get_state stanctl_apt_version)
   [[ -n "$saved" ]] || saved="$REQUESTED_STANCTL_APT_VERSION"
+  # The previous run stopped because this stanctl could not list the backend
+  # versions: resume offers another version instead of repeating the stop.
+  local failed change=false choice
+  failed=$(get_state stanctl_identify_failed)
+  if [[ -n "$failed" && "$saved" == "$failed" ]]; then
+    echo "" >&2
+    hint "Last time stanctl ${failed} on ${vm_name} could not list the backend versions (see the HOW TO RESOLVE box of that stop)." \
+      "Known case: stanctl 1.15.1 gets HTTP 401 for the list when run as root, which the installer does on the VM;" \
+      "1.15.0 works. Another version is installed on the VM (downgrade allowed); the VM and disks are kept."
+    choice=$(PROMPT_CHOICE_DEFAULT="choose another stanctl version" prompt_choice "stanctl ${failed} failed last time. What now?" \
+      "choose another stanctl version" "keep stanctl ${failed} and try again") ||
+      die "stanctl version selection was cancelled."
+    if [[ "$choice" == "choose another stanctl version" ]]; then
+      saved=""; change=true
+      local -a others=(); local v
+      for v in "${stanctl_versions[@]}"; do [[ "$v" == "$failed" ]] || others+=("$v"); done
+      (( ${#others[@]} > 0 )) || die "The repository offers no stanctl version other than ${failed}."
+      stanctl_versions=("${others[@]}")
+    fi
+  fi
   if [[ -n "$saved" ]]; then
     printf '%s\n' "${stanctl_versions[@]}" | grep -Fxq "$saved" ||
       die "Saved stanctl version ${saved} is no longer available from the configured repository."
@@ -2516,7 +2621,7 @@ install_stanctl() {
   installed=$(remote_exec "$vm_name" "$zone" "$project" "dpkg-query -W -f='\${Version}' stanctl 2>/dev/null || true")
   if [[ "$installed" != "$STANCTL_APT_VERSION" ]]; then
     remote_exec "$vm_name" "$zone" "$project" \
-      "apt-mark unhold stanctl >/dev/null 2>&1 || true; if ! DEBIAN_FRONTEND=noninteractive apt-get install -y 'stanctl=$STANCTL_APT_VERSION'; then apt-mark hold stanctl >/dev/null 2>&1 || true; exit 1; fi; apt-mark hold stanctl"
+      "apt-mark unhold stanctl >/dev/null 2>&1 || true; if ! DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades 'stanctl=$STANCTL_APT_VERSION'; then apt-mark hold stanctl >/dev/null 2>&1 || true; exit 1; fi; apt-mark hold stanctl"
   else
     remote_exec "$vm_name" "$zone" "$project" "apt-mark hold stanctl"
   fi
@@ -2540,15 +2645,26 @@ install_stanctl() {
   upload_private_file "$tmp_key" "$vm_name" "$zone" "$project" .stanctl-version.env
   rm -f "$tmp_key"
   trap - RETURN
+  # stderr is kept for the stop message (the key is never in it).
+  local identify_rc=0
   raw_backends=$(remote_exec "$vm_name" "$zone" "$project" \
-    "set -a; . /root/.stanctl-version.env; set +a; trap 'rm -f /root/.stanctl-version.env' EXIT; stanctl versions identify --quiet") ||
-    die "stanctl ${STANCTL_CLI_VERSION} could not retrieve its compatible backend versions."
+    "set -a; . /root/.stanctl-version.env; set +a; trap 'rm -f /root/.stanctl-version.env' EXIT; stanctl versions identify --quiet 2>&1") || identify_rc=$?
+  if (( identify_rc != 0 )); then
+    save_state stanctl_identify_failed "$STANCTL_APT_VERSION"
+    stanctl_identify_stop vm "$(stanctl_error_line "$raw_backends")" "$vm_name"
+  fi
+  save_state stanctl_identify_failed ""
   mapfile -t backend_versions < <(printf '%s\n' "$raw_backends" | sed -nE 's/^[[:space:]]*-[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+[-.+~][0-9A-Za-z.-]+)[[:space:]]*$/\1/p' | sort -rV | awk '!seen[$0]++')
   (( ${#backend_versions[@]} > 0 )) ||
     die "stanctl returned no selectable compatible backend versions; no backend installation was started."
 
   saved=$(get_state backend_version)
   [[ -n "$saved" ]] || saved="$REQUESTED_BACKEND_VERSION"
+  # A stanctl changed on resume may not offer the requested backend: ask.
+  if [[ "$change" == true && -n "$saved" ]] && ! printf '%s\n' "${backend_versions[@]}" | grep -Fxq "$saved"; then
+    warn "Backend ${saved} is not offered by stanctl ${STANCTL_CLI_VERSION}; choose a backend version from its list."
+    saved=""
+  fi
   if [[ -n "$saved" ]]; then
     printf '%s\n' "${backend_versions[@]}" | grep -Fxq "$saved" ||
       die "Saved backend ${saved} is not compatible with stanctl ${STANCTL_CLI_VERSION}."
