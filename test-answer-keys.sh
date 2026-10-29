@@ -2,7 +2,8 @@
 # How answers are read: the left-arrow key on an empty answer writes "<" and
 # Enter goes back (arrow + Enter, arrow + < + Enter and ESC O D all go back
 # exactly once); "?" shows the longer help; pick lists end with "0) ← back";
-# escape sequences of special keys never reach a value.
+# escape sequences of special keys never reach a value; long lists show 10 at
+# a time (Space = next 10, a = all), version lists: Enter = 1 newest.
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 command -v python3 >/dev/null || { echo "SKIP: python3 not installed (needed for a real terminal)"; exit 0; }
@@ -124,5 +125,44 @@ OUT="$CASE/pty.txt"
 grep -q "Installation cancelled by the operator. Nothing was created or changed." "$OUT" || fail "Ctrl+D twice must cancel"
 if grep -q "RESULT" "$OUT"; then fail "Ctrl+D twice: nothing may continue"; fi
 echo "PASS: Ctrl+D asks before cancelling (N = same question, Y or Ctrl+D again = cancel); control keys ignored"
+
+# 7. A long pick list (55 versions) shows 10 at a time. In a terminal Space
+#    shows the next 10 at once (no Enter; Space + Enter typed fast counts as
+#    one), "a" + Enter all the rest; any number of the whole list is accepted,
+#    Enter = 1 (newest). A short list is shown whole, as before.
+newcase longlist
+cat > "$CASE/drv.sh" <<'EOF'
+set --; source ./install.sh
+mapfile -t V < <(for i in $(seq 55 -1 1); do echo "1.$i.0-1"; done)
+for i in 1 2 3 4 5; do rc=0; v=$(PROMPT_CHOICE_NEWEST=1 prompt_choice "Version" "${V[@]}") || rc=$?; echo "RESULT[$v] rc=$rc"; done
+rc=0; v=$(prompt_choice "Short" a b c d e) || rc=$?; echo "RESULT[$v] rc=$rc"
+EOF
+PTY_SCRIPT=./drv.sh pty_install "$CASE" 'RAW: ' '25' '' '40' 'a' '55' 'RAW: \n' '2' '3'
+OUT="$CASE/pty.txt"
+mapfile -t res < <(grep -o 'RESULT\[[^]]*\] rc=[0-9]' "$OUT")
+expected=("RESULT[1.31.0-1] rc=0" "RESULT[1.55.0-1] rc=0" "RESULT[1.16.0-1] rc=0" "RESULT[1.1.0-1] rc=0" "RESULT[1.54.0-1] rc=0" "RESULT[c] rc=0")
+[[ "${res[*]}" == "${expected[*]}" ]] || fail "long list, got: ${res[*]}"
+grep -q "Select \[1-55, Enter = 1 newest\]" "$OUT" || fail "a version list must say Enter = 1 newest"
+grep -q "… 45 older versions (11-55): Space = next 10, a = all, or type any number" "$OUT" || fail "the long list must say how to see more"
+grep -q "… 35 older versions (21-55)" "$OUT" || fail "Space must show the next 10"
+[[ "$(grep -c '^  10) 1.46.0-1$' "$OUT")" == 5 ]] || fail "each long list must show the first 10"
+[[ "$(grep -c '  11) 1.45.0-1$' "$OUT")" == 3 ]] || fail "11 only after Space or a"
+[[ "$(grep -c '^  21) 1.35.0-1$' "$OUT")" == 1 ]] || fail "21 only after a (all)"
+grep -q "^  55) 1.1.0-1$" "$OUT" || fail "a must show all the rest"
+grep -q "Select \[1-5\]:" "$OUT" || fail "a short list keeps its prompt"
+grep -q "^  5) e$" "$OUT" || fail "a short list is shown whole"
+[[ "$(grep -c "older versions\|more options" "$OUT")" == 7 ]] || fail "a short list has no more-line"
+# Without a terminal: Space + Enter or m + Enter show the next 10, a + Enter all.
+OUT="$CASE/piped.txt"
+( cd "$CASE"; set --; source ./install.sh
+  mapfile -t V < <(for i in $(seq 55 -1 1); do echo "1.$i.0-1"; done)
+  for i in 1 2 3 4; do rc=0; v=$(PROMPT_CHOICE_NEWEST=1 prompt_choice "Version" "${V[@]}") || rc=$?; echo "RESULT[$v] rc=$rc"; done
+  rc=0; v=$(NAV_CHOICE_BACK=1 prompt_choice "Pick" $(seq 1 20)) || rc=$?; echo "RESULT[$v] rc=$rc"
+) <<< $' \n12\nm\nm\n\n55\na\n08\n0\n' > "$OUT" 2>&1
+mapfile -t res < <(grep -o 'RESULT\[[^]]*\] rc=[0-9]' "$OUT")
+expected=("RESULT[1.44.0-1] rc=0" "RESULT[1.55.0-1] rc=0" "RESULT[1.1.0-1] rc=0" "RESULT[1.48.0-1] rc=0" "RESULT[] rc=3")
+[[ "${res[*]}" == "${expected[*]}" ]] || fail "long list without a terminal, got: ${res[*]}"
+grep -q "… 10 more options (11-20): Space = next 10" "$OUT" || fail "a long non-version list says more options"
+echo "PASS: long lists show 10 at a time (Space at once, m/Space + Enter, a = all), any number is accepted, Enter = 1 newest; short lists unchanged"
 
 echo "All answer-key tests passed."

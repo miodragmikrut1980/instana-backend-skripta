@@ -688,3 +688,25 @@ and every answer was lost.
   resource, and in a dry-run, the message and exit 0 stay as before.
 - Inside screen, a non-zero end with a stop reason prints that reason.
 - Tests: test-start-flow.sh 6b (gcp and ssh state with resources, dry-run).
+
+2026-10-29 — Long pick lists show 10 at a time; version lists: Enter = newest
+- Why: in a real run the stanctl version list had 55 entries (1.15.1-1 …
+  0.1.0-1) and "Select [1-55]:" without a default; it did not fit on one
+  screen and the newest versions scrolled away.
+- A pick list with more than 12 options shows the first 10, then a dim line
+  "… 45 older versions (11-55): Space = next 10, a = all, or type any
+  number" ("more options" for lists that are not versions). In a terminal
+  Space as the first key shows the next 10 at once, without Enter (an Enter
+  typed right after it is swallowed); Space or m + Enter does the same
+  without a terminal (pipes, tests), a + Enter shows all the rest. Numbering
+  stays 1..N and every number of the whole list is accepted, also one not
+  shown yet. Backspace/arrow editing, "0) ← back", "?" and Ctrl+D are
+  unchanged. Lists of up to 12 options are shown as before.
+- Version lists (stanctl and backend, chosen up front on this machine or in
+  phase 10 on the VM): Enter = 1 (newest) and the prompt says so: "Select
+  [1-55, Enter = 1 newest]". The backend list is now sorted newest first
+  too (it was in stanctl's order). Other lists keep their own Enter default.
+- A number with a leading zero (08) is read as decimal.
+- Tests: test-answer-keys.sh 7 (terminal: Space, Space+Enter, a, a number
+  beyond the shown page, Enter = 1, short list unchanged; without a terminal:
+  Space/m + Enter, a, 08, 0 = back on a long list).

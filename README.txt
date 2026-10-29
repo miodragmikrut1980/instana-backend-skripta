@@ -99,6 +99,11 @@ ponudi screen (i instalira ga) da instalacija prezivi prekid SSH veze.
      objasnjenje. ./install.sh --verbose (ili INSTANA_VERBOSE=1) uvek sve.
    - Boje samo u terminalu i bez NO_COLOR; logovi su uvek cist tekst.
    - Liste imaju podrazumevani izbor: "Select [1-2, Enter = 1]".
+   - Duge liste (vise od 12, npr. 55 stanctl verzija) prikazuju 10 po 10:
+     Space = sledecih 10 (u terminalu odmah, bez Entera; inace Space ili m +
+     Enter), a + Enter = sve ostale. Svaki broj iz cele liste vazi i kad jos
+     nije prikazan. Liste verzija: Enter = 1 (najnovija),
+     "Select [1-55, Enter = 1 newest]".
    - GCP: projekat, zona (region iz zone), mreza i SSH CIDR su JEDAN blok
      "Use detected" (iz gcloud-a i ove masine): Enter = prihvati, c = promeni.
      Ako javna IP ove masine nije otkrivena, 0.0.0.0/0 se ne prihvata Enterom.

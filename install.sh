@@ -518,7 +518,7 @@ show_more_help() {
 ctrl_d_cancel() {
   local a="" rc=0
   echo "" >&2
-  CANCEL_ASKING=1 read_answer a "$(echo -e "${YELLOW}!${RESET} Cancel the ${OPERATION_NAME:-installation}? [y/N]: ")" || rc=$?
+  READ_ANSWER_SPACE=0 CANCEL_ASKING=1 read_answer a "$(echo -e "${YELLOW}!${RESET} Cancel the ${OPERATION_NAME:-installation}? [y/N]: ")" || rc=$?
   if (( rc != 0 )) || [[ "${a,,}" == y || "${a,,}" == yes ]]; then
     if [[ "$BASHPID" == "$$" ]]; then operator_cancel; fi
     kill -USR1 "$$"; exit 0
@@ -535,18 +535,35 @@ ctrl_d_cancel() {
 # longer help and asks again. On a terminal the answer is edited with
 # readline (arrows, Backspace, Tab completes paths). Escape sequences of
 # special keys never reach the answer.
+# With READ_ANSWER_SPACE=1 (a long pick list with more to show) Space as the
+# first key of an empty answer returns 4 at once, without Enter; an Enter typed
+# right after it is swallowed. Without a terminal a line of only spaces
+# returns 4.
 read_answer() {
   local __var="$1" __p="$2" __back="${3:-0}" __v __first __rest __arrow __pre __k __backre='^[<]+$'
   while true; do
     __v="" __arrow=0 __pre=""
     if [[ ! -t 0 ]]; then
-      read -r __v || return 1
-    elif [[ "$__back" == 1 ]]; then
+      if [[ "${READ_ANSWER_SPACE:-0}" == 1 ]]; then
+        IFS= read -r __v || return 1
+        [[ -z "$__v" || -n "${__v//[[:space:]]/}" ]] || return 4          # Space(s) + Enter: more
+        __v="${__v#"${__v%%[![:space:]]*}"}"; __v="${__v%"${__v##*[![:space:]]}"}"
+      else
+        read -r __v || return 1
+      fi
+    elif [[ "$__back" == 1 || "${READ_ANSWER_SPACE:-0}" == 1 ]]; then
       printf '%s' "$__p" >&2
-      IFS= read -rsn1 __first || { echo "" >&2; return 1; }
+      if [[ -n "${READ_ANSWER_PENDING:-}" ]]; then __first="$READ_ANSWER_PENDING"; READ_ANSWER_PENDING=""
+      else IFS= read -rsn1 __first || { echo "" >&2; return 1; }; fi
+      if [[ "$__first" == " " && "${READ_ANSWER_SPACE:-0}" == 1 ]]; then   # Space: more, at once
+        # An Enter typed right after Space belongs to it (Space + Enter);
+        # any other key typed that fast starts the next answer.
+        if IFS= read -rsn1 -t 0.3 __k && [[ -n "$__k" ]]; then READ_ANSWER_PENDING="$__k"; fi
+        printf '\r\033[K' >&2; return 4
+      fi
       if [[ "$__first" == $'\e' ]]; then
         __rest=$(read_key_rest)
-        if [[ "$__rest" != "[D" && "$__rest" != "OD" ]]; then printf '\r\033[K' >&2; continue; fi   # other keys: ignored
+        if [[ "$__back" != 1 ]] || [[ "$__rest" != "[D" && "$__rest" != "OD" ]]; then printf '\r\033[K' >&2; continue; fi   # other keys: ignored
         # Left arrow: "<" is shown; the next key decides (read here, not by
         # readline, so Backspace works the same at any typing speed).
         printf '<' >&2
@@ -640,41 +657,74 @@ prompt_secret() {
 # it is shown dimmed (a literal \n in it starts a new line), and only the
 # label is printed as the answer. With NAV_CHOICE_BACK=1 the list ends with
 # "0) ← back" (0, < or the left-arrow key: return 3).
+# PROMPT_CHOICE_NEWEST=1 marks a version list (newest first): without another
+# default, Enter selects 1 and the prompt says so.
+# A list of more than 12 options shows 10 at a time: Space (on a terminal at
+# once, otherwise Space or m and Enter) shows the next 10, a and Enter all the
+# rest. Numbering stays global and any number of the whole list is accepted.
+PROMPT_CHOICE_PAGE=10
 prompt_choice() {
   local prompt_text="$1"; shift
-  local options=("$@") def="${PROMPT_CHOICE_DEFAULT:-}" def_i=0 back="${NAV_CHOICE_BACK:-0}"
-  local opt label detail line width=0
+  local options=("$@") def="${PROMPT_CHOICE_DEFAULT:-}" def_i=0 back="${NAV_CHOICE_BACK:-0}" newest="${PROMPT_CHOICE_NEWEST:-0}"
+  local opt label detail line width=0 n=$# shown=0 page=$# what="more options" i
+  (( n <= 12 )) || page=$PROMPT_CHOICE_PAGE
+  [[ "$newest" != 1 ]] || what="older versions"
   for opt in "${options[@]}"; do label="${opt%%$'\t'*}"; (( ${#label} <= width )) || width=${#label}; done
-  echo -e "${CYAN}?${RESET} ${BOLD}${prompt_text}${RESET}" >&2
-  local i=1
-  for opt in "${options[@]}"; do
-    label="${opt%%$'\t'*}"; detail=""
-    [[ "$opt" != *$'\t'* ]] || detail="${opt#*$'\t'}"
-    if [[ -z "$detail" ]]; then
-      echo "  $i) $label" >&2
-    elif [[ "$detail" != *'\n'* ]]; then
-      printf '  %s) %-*s   %b\n' "$i" "$width" "$label" "${DIM}${detail}${RESET}" >&2
-    else
-      echo "  $i) $label" >&2
-      while IFS= read -r line; do echo -e "       ${DIM}${line}${RESET}" >&2; done <<< "${detail//'\n'/$'\n'}"
-    fi
+  for (( i = 1; i <= n; i++ )); do
+    label="${options[$((i - 1))]%%$'\t'*}"
     # The default matches an option exactly or its first word ("demo" → "demo (suggested)").
     [[ -z "$def" || "$def_i" != 0 ]] || [[ "$label" != "$def" && "$label" != "$def "* ]] || def_i=$i
-    (( i++ ))
   done
+  (( def_i != 0 || newest != 1 )) || def_i=1
+  # _pc_show_upto N — prints the options after the ones already shown, up to N.
+  _pc_show_upto() {
+    local upto=$1
+    (( upto <= n )) || upto=$n
+    while (( shown < upto )); do
+      opt="${options[$shown]}"; (( ++shown ))
+      label="${opt%%$'\t'*}"; detail=""
+      [[ "$opt" != *$'\t'* ]] || detail="${opt#*$'\t'}"
+      if [[ -z "$detail" ]]; then
+        echo "  $shown) $label" >&2
+      elif [[ "$detail" != *'\n'* ]]; then
+        printf '  %s) %-*s   %b\n' "$shown" "$width" "$label" "${DIM}${detail}${RESET}" >&2
+      else
+        echo "  $shown) $label" >&2
+        while IFS= read -r line; do echo -e "       ${DIM}${line}${RESET}" >&2; done <<< "${detail//'\n'/$'\n'}"
+      fi
+    done
+  }
+  _pc_more_line() {
+    local left=$(( n - shown )) next=$PROMPT_CHOICE_PAGE
+    (( left > 0 )) || return 0
+    (( next <= left )) || next=$left
+    echo -e "  ${DIM}… ${left} ${what} ($(( shown + 1 ))-${n}): Space = next ${next}, a = all, or type any number${RESET}" >&2
+  }
+  echo -e "${CYAN}?${RESET} ${BOLD}${prompt_text}${RESET}" >&2
+  _pc_show_upto "$page"
   [[ "$back" != 1 ]] || echo "  0) ← back" >&2
-  local choice range="1-${#options[@]}" rc
-  (( def_i == 0 )) || range+=", Enter = ${def_i}"
+  _pc_more_line
+  local choice range="1-${n}" rc
+  if (( def_i != 0 )); then
+    range+=", Enter = ${def_i}"
+    [[ "$newest" != 1 || "$def_i" != 1 ]] || range+=" newest"
+  fi
   while true; do
-    rc=0; read_answer choice "$(echo -e "  ${BOLD}Select [${range}]:${RESET} ")" "$back" || rc=$?
+    rc=0; READ_ANSWER_SPACE=$(( shown < n ? 1 : 0 )) read_answer choice "$(echo -e "  ${BOLD}Select [${range}]:${RESET} ")" "$back" || rc=$?
+    if (( shown < n )) && [[ "$rc" == 4 || ( "$rc" == 0 && "${choice,,}" =~ ^(m|more)$ ) ]]; then
+      _pc_show_upto $(( shown + PROMPT_CHOICE_PAGE )); _pc_more_line; continue
+    fi
+    if (( shown < n )) && [[ "$rc" == 0 && "${choice,,}" =~ ^(a|all)$ ]]; then
+      _pc_show_upto "$n"; continue
+    fi
     (( rc == 0 )) || return "$rc"
     [[ "$back" != 1 || "$choice" != 0 ]] || return 3
     [[ -n "$choice" || "$def_i" == 0 ]] || choice=$def_i
-    [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )) && break
-    if [[ "$back" == 1 ]]; then echo "Invalid selection: type a number from 1 to ${#options[@]}, or 0 to go back." >&2
-    else echo "Invalid selection: type a number from 1 to ${#options[@]}." >&2; fi
+    [[ "$choice" =~ ^[0-9]+$ ]] && (( 10#$choice >= 1 && 10#$choice <= n )) && break
+    if [[ "$back" == 1 ]]; then echo "Invalid selection: type a number from 1 to ${n}, or 0 to go back." >&2
+    else echo "Invalid selection: type a number from 1 to ${n}." >&2; fi
   done
-  label="${options[$((choice - 1))]}"
+  label="${options[$(( 10#$choice - 1 ))]}"
   echo "${label%%$'\t'*}"
 }
 
@@ -1533,7 +1583,7 @@ select_and_install_local_stanctl() {
   installed=$(dpkg-query -W -f='${Version}' stanctl 2>/dev/null || true)
   echo "" >&2
   echo -e "${BOLD}Available stanctl package versions (newest first)${RESET}${installed:+; currently installed: ${installed}}:" >&2
-  selected=$(pick_from_list STANCTL_VERSION "$prompt" "${stanctl_versions[@]}") ||
+  selected=$(PROMPT_CHOICE_NEWEST=1 pick_from_list STANCTL_VERSION "$prompt" "${stanctl_versions[@]}") ||
     { err "stanctl version selection was cancelled."; return 1; }
   if [[ "$installed" != "$selected" ]]; then
     log "Installing stanctl ${selected} on this machine..."
@@ -1562,12 +1612,12 @@ select_local_backend_version() {
   printf 'STANCTL_DOWNLOAD_KEY=%s\n' "$DOWNLOAD_KEY" > "$tmp_key"
   raw_backends=$(stanctl versions identify --env-file "$tmp_key" --quiet 2>/dev/null)
   rm -f "$tmp_key"
-  mapfile -t backend_versions < <(printf '%s\n' "$raw_backends" | sed -nE 's/^[[:space:]]*-[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+[-.+~][0-9A-Za-z.-]+)[[:space:]]*$/\1/p' | awk '!seen[$0]++')
+  mapfile -t backend_versions < <(printf '%s\n' "$raw_backends" | sed -nE 's/^[[:space:]]*-[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+[-.+~][0-9A-Za-z.-]+)[[:space:]]*$/\1/p' | sort -rV | awk '!seen[$0]++')
   (( ${#backend_versions[@]} > 0 )) ||
     { err "stanctl ${STANCTL_CLI_VERSION} returned no supported backend versions (check the download key)."; return 1; }
   echo "" >&2
   echo -e "${BOLD}Backend versions supported by stanctl ${STANCTL_CLI_VERSION}:${RESET}" >&2
-  selected=$(pick_from_list BACKEND_VERSION "$prompt" "${backend_versions[@]}") ||
+  selected=$(PROMPT_CHOICE_NEWEST=1 pick_from_list BACKEND_VERSION "$prompt" "${backend_versions[@]}") ||
     { err "Backend version selection was cancelled."; return 1; }
   BACKEND_VERSION="$selected"
   ok "Selected: stanctl ${STANCTL_CLI_VERSION} → backend ${BACKEND_VERSION}"
@@ -2458,7 +2508,7 @@ install_stanctl() {
   else
     echo ""
     echo -e "${BOLD}Available stanctl package versions (newest first):${RESET}" >&2
-    selected=$(prompt_choice "Select the exact stanctl version to install:" "${stanctl_versions[@]}") ||
+    selected=$(PROMPT_CHOICE_NEWEST=1 prompt_choice "Select the exact stanctl version to install:" "${stanctl_versions[@]}") ||
       die "stanctl version selection was cancelled."
   fi
   STANCTL_APT_VERSION="$selected"
@@ -2493,7 +2543,7 @@ install_stanctl() {
   raw_backends=$(remote_exec "$vm_name" "$zone" "$project" \
     "set -a; . /root/.stanctl-version.env; set +a; trap 'rm -f /root/.stanctl-version.env' EXIT; stanctl versions identify --quiet") ||
     die "stanctl ${STANCTL_CLI_VERSION} could not retrieve its compatible backend versions."
-  mapfile -t backend_versions < <(printf '%s\n' "$raw_backends" | sed -nE 's/^[[:space:]]*-[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+[-.+~][0-9A-Za-z.-]+)[[:space:]]*$/\1/p' | awk '!seen[$0]++')
+  mapfile -t backend_versions < <(printf '%s\n' "$raw_backends" | sed -nE 's/^[[:space:]]*-[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+[-.+~][0-9A-Za-z.-]+)[[:space:]]*$/\1/p' | sort -rV | awk '!seen[$0]++')
   (( ${#backend_versions[@]} > 0 )) ||
     die "stanctl returned no selectable compatible backend versions; no backend installation was started."
 
@@ -2508,7 +2558,7 @@ install_stanctl() {
   else
     echo ""
     echo -e "${BOLD}Backend versions compatible with stanctl ${STANCTL_CLI_VERSION}:${RESET}" >&2
-    selected=$(prompt_choice "Select the exact Instana backend version to install:" "${backend_versions[@]}") ||
+    selected=$(PROMPT_CHOICE_NEWEST=1 prompt_choice "Select the exact Instana backend version to install:" "${backend_versions[@]}") ||
       die "Backend version selection was cancelled."
     save_state backend_version "$selected"
   fi
